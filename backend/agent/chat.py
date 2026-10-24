@@ -36,6 +36,32 @@ from tools.schemas import TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
+_PATH_ARGUMENT_KEYS = (
+    "path",
+    "root",
+    "source_path",
+    "destination_path",
+    "archive_path",
+    "extract_to",
+)
+
+_PLACEHOLDER_HOME = re.compile(
+    r"(?i)^([a-z]:[\\/]+users[\\/]+)"
+    r"(?:your[-_ ]?(?:user[-_ ]?)?name|your[-_ ]?user|username|<username>|user)"
+    r"(?=[\\/]|$)"
+)
+
+
+def _fix_placeholder_path(value: str) -> str:
+    """Replace invented home folders like ``C:\\Users\\YourName`` with the real home."""
+    match = _PLACEHOLDER_HOME.match(value)
+    if match is None:
+        return value
+
+    remainder = value[match.end() :].lstrip("\\/")
+    home = Path.home()
+    return str(home / remainder) if remainder else str(home)
+
 
 class LLMError(RuntimeError):
     """A user-facing LLM failure with an HTTP status code."""
@@ -696,12 +722,41 @@ class ChatService:
         call: dict[str, Any],
     ) -> dict[str, Any]:
         name = call.get("function", {}).get("name", "")
-        arguments = call.get("function", {}).get("arguments", "{}")
-        if name != "search_system":
+        raw_arguments = call.get("function", {}).get("arguments", "{}")
+
+        if isinstance(raw_arguments, dict):
+            parsed = dict(raw_arguments)
+            original = json.dumps(raw_arguments, ensure_ascii=False)
+        elif isinstance(raw_arguments, str):
+            try:
+                parsed = json.loads(raw_arguments or "{}")
+            except json.JSONDecodeError:
+                return call
+            original = raw_arguments
+        else:
             return call
 
-        normalized = self._normalize_search_arguments(conversation_id, arguments)
-        if normalized == arguments:
+        if not isinstance(parsed, dict):
+            return call
+
+        normalized = original
+        changed = False
+
+        for key in _PATH_ARGUMENT_KEYS:
+            value = parsed.get(key)
+            if isinstance(value, str):
+                fixed = _fix_placeholder_path(value)
+                if fixed != value:
+                    parsed[key] = fixed
+                    changed = True
+
+        if name == "search_system":
+            normalized = self._normalize_search_arguments(conversation_id, parsed)
+            changed = changed or normalized != original
+        elif changed:
+            normalized = json.dumps(parsed, ensure_ascii=False)
+
+        if not changed:
             return call
 
         return {

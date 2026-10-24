@@ -22,12 +22,19 @@ file system and applications through a Human-in-the-Loop approval flow.
   language is hardcoded
 - Graceful error messages when Ollama is offline, slow, or missing the model
 - System tray with show/hide, quit, and close-to-tray behavior
+- Dark, minimal chat UI with Markdown rendering (GFM tables, task lists, and
+  syntax-highlighted code blocks with copy buttons)
+- Frameless, transparent window with rounded corners, a custom drag region, and
+  a hide-to-tray window button
 
 ## Structure
 
 ```
 frontend/            Tauri v2 + React + TypeScript + Tailwind CSS
-  src/App.tsx        Streaming chat UI, status timeline, approval card
+  src/App.tsx        App shell: gradient frame, chat layout, empty state
+  src/components/    Header, messages, Markdown, approval card, composer
+  src/hooks/         Streaming chat state and approval flow
+  src/lib/           API/SSE client, quick prompts, window controls
   src-tauri/         Rust shell, system tray, and Tauri configuration
 backend/             FastAPI backend
   main.py            API entrypoint (SSE, approvals, history)
@@ -271,10 +278,17 @@ The app starts hidden in the system tray. Click the tray icon to show or hide th
 chat window; right-click it for **Show / Hide** and **Quit**. Closing the window
 hides it instead of quitting.
 
+The window is frameless and transparent: the header is a Tauri drag region, and
+the **Hide to tray** button in the top-right calls `getCurrentWindow().hide()`.
+The rounded card is drawn in CSS, so the area outside its corners stays
+transparent. Use the tray icon to bring the window back.
+
 The chat UI consumes `POST /chat/stream`, renders intermediate statuses, shows an
-**Action Required** card with **Approve/Deny** for modifying tools, and restores a
-pending approval after a reload. Set `VITE_API_URL` to override the default
-backend URL `http://127.0.0.1:8000`.
+**Approval required** card with **Approve/Deny** for modifying tools, and restores
+a pending approval after a reload. Messages render GitHub-flavored Markdown with
+syntax-highlighted code blocks, tables, task lists, and copy buttons. The dark
+theme uses Inter and a subtle violet-to-emerald gradient frame. Set
+`VITE_API_URL` to override the default backend URL `http://127.0.0.1:8000`.
 
 ## Known limitation
 

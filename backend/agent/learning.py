@@ -81,6 +81,16 @@ _PATH_LIKE = re.compile(
     r"(?:[A-Za-z]:\\|[/\\]|\.(?:txt|md|pdf|zip|docx?|xlsx?|pptx?|png|jpe?g)\b)",
     re.I,
 )
+_IMPERATIVE_ACTION = re.compile(
+    r"^(?:create|make|delete|move|copy|extract|unzip|search|read|open|write|rename)\b",
+    re.I,
+)
+_TOOL_MENTION = re.compile(
+    r"\b(?:create_folder|create_file|copy_file|delete_file_or_folder|"
+    r"move_file_or_folder|unzip_file|read_file_content|search_system|"
+    r"start_program)\b",
+    re.I,
+)
 _LANGUAGE_INSTRUCTION_FACT = re.compile(
     r"\b(?:prefers?|wants?|would\s+like|likes?|asked?|requested?|should)\s+"
     r"(?:to\s+)?(?:speak|talk|answer|reply|respond|communicate|write|switch|change|use)\b"
@@ -191,6 +201,15 @@ def _is_concrete_fact(fact: str) -> bool:
         return False
     if _ACTION_REQUEST.search(fact) and (
         "file" in lowered or "folder" in lowered or _PATH_LIKE.search(fact)
+    ):
+        return False
+    if _TOOL_MENTION.search(fact):
+        return False
+    if _IMPERATIVE_ACTION.match(fact.strip()) and (
+        "file" in lowered
+        or "folder" in lowered
+        or "permission" in lowered
+        or _PATH_LIKE.search(fact)
     ):
         return False
 

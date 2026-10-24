@@ -416,6 +416,69 @@ def test_normalization_replaces_missing_placeholder_path(tmp_path: Path) -> None
     assert parsed["sort_by"] == "modified_desc"
 
 
+def test_normalization_replaces_placeholder_home_for_modifying_tools(
+    tmp_path: Path,
+) -> None:
+    service, store, _client = make_service(tmp_path, [])
+    conversation_id = store.new_conversation_id()
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "create_folder",
+            "arguments": json.dumps(
+                {"path": r"C:\Users\YourName\Downloads\UIRedesignCheck"}
+            ),
+        },
+    }
+
+    normalized = service._normalize_serialized_call(conversation_id, call)
+    parsed = json.loads(normalized["function"]["arguments"])
+
+    assert parsed["path"] == str(
+        Path.home() / "Downloads" / "UIRedesignCheck"
+    )
+
+
+def test_normalization_replaces_your_username_placeholder(tmp_path: Path) -> None:
+    service, store, _client = make_service(tmp_path, [])
+    conversation_id = store.new_conversation_id()
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "create_file",
+            "arguments": json.dumps(
+                {
+                    "path": r"C:\Users\YourUsername\Downloads\note.txt",
+                    "content": "x",
+                }
+            ),
+        },
+    }
+
+    normalized = service._normalize_serialized_call(conversation_id, call)
+    parsed = json.loads(normalized["function"]["arguments"])
+
+    assert parsed["path"] == str(Path.home() / "Downloads" / "note.txt")
+    assert parsed["content"] == "x"
+
+
+def test_normalization_leaves_real_home_paths_untouched(tmp_path: Path) -> None:
+    service, store, _client = make_service(tmp_path, [])
+    conversation_id = store.new_conversation_id()
+    arguments = json.dumps({"path": r"C:\Users\Flo\Downloads\KeepMe"})
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "create_folder", "arguments": arguments},
+    }
+
+    normalized = service._normalize_serialized_call(conversation_id, call)
+
+    assert normalized is call
+
+
 def test_normalization_drops_redundant_folder_name_filter(tmp_path: Path) -> None:
     service, store, _client = make_service(tmp_path, [])
     conversation_id = store.new_conversation_id()
