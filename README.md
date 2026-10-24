@@ -21,8 +21,10 @@ file system and applications through a Human-in-the-Loop approval flow.
   exact command shown first
 - Window awareness and UI Automation text reading, plus local screen analysis
   with `qwen3-vl:8b-instruct`
-- Human-in-the-Loop approvals for every modifying, file-opening, program-launch,
-  or PowerShell action
+- Human-in-the-Loop approval once per request: the card lists the first step and
+  approving lets the agent finish the remaining steps in order automatically
+- Multi-step and sequence requests ("first do this, then that") run to completion
+  without a second approval card
 - Compact in-place tool status: one animated row per task, with expandable
   stderr/exit-code details when an action fails
 - Real-time SSE status updates: thinking, tool started, tool result, approval
@@ -270,7 +272,8 @@ Endpoints:
   the last error
 - `POST /chat/stream` — send a message; returns `text/event-stream`
 - `POST /chat/approve` — `{"approval_id": "...", "approved": true|false}`;
-  resumes the paused agent and returns a stream
+  resumes the paused agent and returns a stream. Approval also covers the
+  remaining steps of that request, so the agent does not ask again between steps.
 - `GET /chat/pending/{conversation_id}` — restores a pending approval after a UI
   reload
 - `POST /chat` — non-streaming compatibility endpoint for simple chats
@@ -328,7 +331,8 @@ fact-learning still uses the same warm model and does not evict the chat prefix.
 ```text
 status           thinking, generating, tool_started, approval
 tool_result      tool name, ok flag, human-readable summary, raw result
-action_required  approval_id, conversation_id, action descriptions
+action_required  approval_id, conversation_id, action descriptions,
+                 auto_approve_remaining
 assistant_start  a streamed assistant text block begins
 assistant_delta  incremental text; emitted as soon as tokens arrive
 assistant_end    the full text of the block that just streamed
@@ -354,12 +358,16 @@ and prompt token counts, prompt evaluation, model load, and total time.
    `semantic_image_search`, `get_open_windows`, `read_window_content`,
    `analyze_screen`) run immediately and stream `tool_started` / `tool_result`
    events.
-3. Any modifying tool pauses the loop. The assistant tool-call message is stored,
-   a pending approval is created, and an `action_required` event is streamed.
-   The HTTP stream then closes; no thread waits for a click.
+3. The first modifying tool of a request pauses the loop. The assistant tool-call
+   message is stored, a pending approval is created, and an `action_required`
+   event is streamed. The HTTP stream then closes; no thread waits for a click.
+   The card is marked `auto_approve_remaining`.
 4. `POST /chat/approve` either executes the pending actions and appends
    `role: "tool"` results, or appends an “Action cancelled by user” result.
-   It then continues the agent loop and streams the next steps.
+   After an approval, every remaining modifying step of the same request runs
+   automatically, in the model's order, until the final answer. A denial does
+   not grant that permission. An identical action repeated in one request is
+   skipped, and a request is capped at 25 automatic actions.
 5. Pending approvals are one per conversation, expire after the configured TTL,
    and are consumed exactly once. Unknown or reused IDs return 404.
 6. If the user closes the UI, `GET /chat/pending/{id}` restores the approval card.
@@ -396,18 +404,21 @@ The agent can use sixteen tools:
 Security boundaries:
 
 - No sandbox. The tools can reach the whole file system, as requested.
-- Modifying actions always require explicit approval; read-only actions do not.
+- The first modifying action of a request requires explicit approval; read-only
+  actions do not. After approval, the remaining modifying steps of that same
+  request run automatically, in order, without another card.
 - `run_powershell_query` is guarded as read-only: it rejects state-changing
   cmdlets and aliases, output redirection, file-writing parameters, mutating
   .NET calls, and dynamic code execution. If an inspection command is rejected,
   the agent must use `run_powershell_action`, which pauses for approval.
-- `run_powershell_action` always requires approval and a required description of
-  exactly what will change. The approval card shows that description and the
-  command before the user clicks Approve.
+- `run_powershell_action` always requires the first approval of a request and a
+  required description of exactly what will change. The approval card shows that
+  description and the command before the user clicks **Approve all**; following
+  PowerShell steps in the same request run automatically.
 - If a PowerShell action fails, the backend forces one recovery round: the agent
   reads `stderr`, `exit_code`, and the failure hint, verifies the current state
-  with `run_powershell_query`, and tries another safe approach. Any new action
-  still needs approval.
+  with `run_powershell_query`, and tries another safe approach. The recovery
+  action runs under the same request approval.
 - Every PowerShell command has a strict timeout and kills its process tree on
   timeout; large stdout/stderr is truncated before reaching the model.
 - Critical locations (`Windows`, `Program Files`, `Program Files (x86)`,
@@ -419,10 +430,10 @@ Security boundaries:
 - Zip extraction rejects path escapes, caps entry count, and caps uncompressed
   size.
 - Searches cap results, scanned files, and elapsed time.
-- `start_program` can launch any installed program or executable, but always
-  requires approval. It passes no arguments and never uses a shell.
+- `start_program` can launch any installed program or executable. Its first use
+  in a request requires approval. It passes no arguments and never uses a shell.
 - `open_file` requires an explicit editor/program; the agent asks the user when
-  none is named. It also always requires approval.
+  none is named. Its first use in a request requires approval.
 - Window awareness is read-only: it lists windows and reads UI Automation text,
   but does not click, type, or control applications.
 - `analyze_screen` captures the primary monitor in memory, sends it only to the
@@ -564,7 +575,8 @@ The suite covers the API, identity endpoint, validation, full in-memory chat
 history, the knowledge base, fact extraction and deduplication, prompt
 composition, context assembly, Ollama error mapping, full-filesystem tool
 behavior, protected paths, Recycle Bin deletion, tool schemas, dispatch,
-HITL pause/approve/deny, approval TTL/idempotency, SSE frames, rollback, and the
+HITL pause/approve/deny, one-approval multi-step execution, duplicate-action
+protection, approval TTL/idempotency, SSE frames, rollback, and the
 incremental CLIP image index (crawl, skip rules, updates, pruning, search, search
 confidence), plus window enumeration and screen-analysis routing.
 Ollama is not required for the tests; the vision tests use a fake embedder and
@@ -572,13 +584,31 @@ fake capture/model methods.
 
 ## Frontend
 
-Start Ollama and the backend first, then:
+Ollama must be running. The desktop app starts the FastAPI backend itself as a
+hidden child process, so no terminal is needed. In development:
 
 ```powershell
 cd frontend
 npm install
 npm run tauri dev
 ```
+
+For a terminal-free standalone window, build the release binary. It bundles the
+frontend, so Vite does not need to run:
+
+```powershell
+cd frontend/src-tauri
+cargo build --release
+.\target\release\personal-agent.exe
+```
+
+The app reuses a healthy backend if one is already listening on port 8000.
+Otherwise it starts `backend\.venv\Scripts\python.exe -m uvicorn` with
+`CREATE_NO_WINDOW`, redirects its output to
+`%LOCALAPPDATA%\com.personalagent.desktop\logs`, and stops the whole backend
+process tree when the app is quit. Launcher diagnostics are in `launcher.log` in
+the same folder. Set `PERSONAL_AGENT_BACKEND` to the path of a packaged backend
+executable to use it instead.
 
 The app starts hidden in the system tray. Click the tray icon to show or hide the
 chat window; right-click it for **Show / Hide** and **Quit**. Closing the window
@@ -590,11 +620,13 @@ The rounded card is drawn in CSS, so the area outside its corners stays
 transparent. Use the tray icon to bring the window back.
 
 The chat UI consumes `POST /chat/stream`, renders intermediate statuses, shows an
-**Approval required** card with **Approve/Deny** for modifying tools, and restores
-a pending approval after a reload. Messages render GitHub-flavored Markdown with
-syntax-highlighted code blocks, tables, task lists, and copy buttons. The dark
-theme uses Inter and a subtle violet-to-emerald gradient frame. Set
-`VITE_API_URL` to override the default backend URL `http://127.0.0.1:8000`.
+**Approval required** card with **Approve all / Deny** for the first modifying
+step of a request, and restores a pending approval after a reload. Approving
+runs the remaining steps of that request without another card. Messages render
+GitHub-flavored Markdown with syntax-highlighted code blocks, tables, task lists,
+and copy buttons. The dark theme uses Inter and a subtle violet-to-emerald
+gradient frame. Set `VITE_API_URL` to override the default backend URL
+`http://127.0.0.1:8000`.
 
 File references are intercepted in Markdown links, `file:///` URLs, raw
 `C:\...` paths, and bare paths in prose:

@@ -14,6 +14,7 @@ import {
   postChatStream,
   readStoredConversationId,
   storeConversationId,
+  waitForBackend,
 } from "../lib/api";
 import {
   extractToolFiles,
@@ -41,8 +42,14 @@ async function loadSnapshot(
   storedId: string | null,
   signal?: AbortSignal,
 ): Promise<Snapshot> {
-  const [identity, history, pending] = await Promise.all([
-    fetchIdentity(signal),
+  let identity = await fetchIdentity(signal);
+
+  if (!identity) {
+    await waitForBackend(signal);
+    identity = await fetchIdentity(signal);
+  }
+
+  const [history, pending] = await Promise.all([
     storedId ? fetchHistory(storedId, signal) : Promise.resolve([]),
     storedId ? fetchPending(storedId, signal) : Promise.resolve(null),
   ]);

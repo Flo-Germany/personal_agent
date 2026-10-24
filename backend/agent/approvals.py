@@ -44,6 +44,9 @@ class PendingAction:
             "actions": self.actions,
             "message": self.assistant_message,
             "expires_in_seconds": max(0, int(self.expires_at - time.time())),
+            # Approving grants this user turn permission to finish the
+            # remaining steps without another card per step.
+            "auto_approve_remaining": True,
         }
 
 

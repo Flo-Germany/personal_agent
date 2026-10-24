@@ -152,7 +152,20 @@ class ClipEmbedder:
                     pass
 
                 logger.info("Loading CLIP model %s", self.model_name)
-                self._model = SentenceTransformer(self.model_name)
+                try:
+                    # The model is normally already cached. Avoid a Hugging
+                    # Face round-trip on every startup; fall back to a normal
+                    # download on a fresh machine.
+                    self._model = SentenceTransformer(
+                        self.model_name,
+                        local_files_only=True,
+                    )
+                except Exception:
+                    logger.info(
+                        "CLIP model %s is not cached; downloading it",
+                        self.model_name,
+                    )
+                    self._model = SentenceTransformer(self.model_name)
                 logger.info("CLIP model %s loaded", self.model_name)
 
         return self._model

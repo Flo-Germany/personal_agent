@@ -28,8 +28,9 @@ export const ApprovalCard = memo(function ApprovalCard({
       </div>
 
       <p className="mt-2 text-[11px] leading-5 text-white/45">
-        The agent wants to change something on your system. Review the exact
-        actions before continuing.
+        {pending.auto_approve_remaining
+          ? "Review the first step. Approving lets the agent finish the remaining steps of this request automatically."
+          : "The agent wants to change something on your system. Review the exact actions before continuing."}
       </p>
 
       <ul className="mt-3 space-y-1.5">
@@ -48,6 +49,12 @@ export const ApprovalCard = memo(function ApprovalCard({
         ))}
       </ul>
 
+      {pending.auto_approve_remaining && (
+        <p className="mt-2 text-[10px] leading-4 text-amber-100/45">
+          The remaining steps of this request will run without another prompt.
+        </p>
+      )}
+
       <div className="mt-3 flex gap-2">
         <button
           type="button"
@@ -55,7 +62,7 @@ export const ApprovalCard = memo(function ApprovalCard({
           disabled={busy}
           className="h-9 flex-1 rounded-xl bg-emerald-300 text-[12px] font-semibold text-[#0c0c0c] transition-all duration-200 ease-out hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Approve
+          {pending.auto_approve_remaining ? "Approve all" : "Approve"}
         </button>
         <button
           type="button"

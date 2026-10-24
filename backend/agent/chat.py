@@ -44,6 +44,9 @@ from tools.schemas import TOOL_SCHEMAS
 logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW_MESSAGES = 10
+# A single user request may auto-run its remaining steps after one approval.
+# This cap stops a runaway model from executing an unbounded action chain.
+MAX_AUTO_APPROVED_ACTIONS = 25
 
 _FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
 _SCREEN_REQUEST = re.compile(
@@ -418,9 +421,22 @@ class ChatService:
                     and not result.get("cancelled")
                     for call, result in results
                 )
+                executed_signatures = (
+                    {
+                        self._call_signature(
+                            call["function"]["name"],
+                            call["function"]["arguments"],
+                        )
+                        for call in pending.calls
+                    }
+                    if approved
+                    else set()
+                )
                 yield from self._run_segment(
                     conversation_id,
                     recover_failed_action=failed_powershell_action,
+                    auto_approve=approved,
+                    executed_signatures=executed_signatures,
                 )
             except GeneratorExit:
                 raise
@@ -432,10 +448,14 @@ class ChatService:
         conversation_id: str,
         *,
         recover_failed_action: bool = False,
+        auto_approve: bool = False,
+        executed_signatures: set[tuple[str, str]] | None = None,
     ) -> Iterator[dict[str, Any]]:
         max_tool_rounds = self._settings.agent.max_iterations
         screen_forced = False
         recovery_attempted = False
+        executed = set(executed_signatures or ())
+        auto_approved_actions = 0
 
         for round_index in range(max_tool_rounds + 1):
             yield {
@@ -809,6 +829,77 @@ class ChatService:
                     "streamed": False,
                 }
                 return
+
+            if auto_approve:
+                # The user approved this request once. Execute every call in
+                # the model's order, including mixed read-only and modifying
+                # calls, and keep going until the final answer.
+                for call in serialized_calls:
+                    name = call["function"]["name"]
+                    arguments = call["function"]["arguments"]
+                    parsed = _parse_arguments(call)
+                    requires_confirmation = self._tools.requires_confirmation(name)
+                    duplicate = False
+
+                    if requires_confirmation:
+                        signature = self._call_signature(name, arguments)
+                        if signature in executed:
+                            duplicate = True
+                            result = {
+                                "ok": False,
+                                "error": (
+                                    "This action already ran in the current "
+                                    "request and was not repeated."
+                                ),
+                            }
+                        else:
+                            executed.add(signature)
+                            auto_approved_actions += 1
+                            if auto_approved_actions > MAX_AUTO_APPROVED_ACTIONS:
+                                raise LLMError(
+                                    "The agent exceeded the maximum number of "
+                                    "automatic actions for one request.",
+                                    status_code=502,
+                                )
+                            yield {
+                                "type": "status",
+                                "conversation_id": conversation_id,
+                                "phase": "tool_started",
+                                "tool": name,
+                                "arguments": parsed,
+                                "message": _tool_status_message(name, parsed),
+                            }
+                            result = self._tools.execute(name, arguments)
+                    else:
+                        yield {
+                            "type": "status",
+                            "conversation_id": conversation_id,
+                            "phase": "tool_started",
+                            "tool": name,
+                            "arguments": parsed,
+                            "message": _tool_status_message(name, parsed),
+                        }
+                        result = self._tools.execute(name, arguments)
+
+                    self._store.append(
+                        conversation_id,
+                        "tool",
+                        json.dumps(result, ensure_ascii=False, default=str),
+                        tool_call_id=call["id"],
+                        name=name,
+                    )
+                    yield self._tool_result_event(
+                        conversation_id,
+                        name,
+                        result,
+                    )
+                    if (
+                        not duplicate
+                        and name == "run_powershell_action"
+                        and not result.get("ok")
+                    ):
+                        recover_failed_action = True
+                continue
 
             for call in read_only_calls:
                 name = call["function"]["name"]
@@ -1302,6 +1393,18 @@ class ChatService:
             lambda match: f"file:///{match.group(1).upper()}:/",
             text,
         )
+
+    @staticmethod
+    def _call_signature(name: str, arguments: Any) -> tuple[str, str]:
+        """Normalize a tool call for duplicate detection within one turn."""
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                return name, arguments
+        else:
+            parsed = arguments
+        return name, json.dumps(parsed, sort_keys=True, default=str)
 
     @staticmethod
     def _serialize_tool_call(call: Any) -> dict[str, Any]:

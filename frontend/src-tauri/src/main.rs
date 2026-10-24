@@ -1,5 +1,5 @@
-// Prevents an additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Keep the app window-only in debug and release builds: no terminal window.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 fn main() {
     personal_agent_lib::run()

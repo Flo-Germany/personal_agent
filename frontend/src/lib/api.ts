@@ -198,6 +198,7 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
         actions: event.actions,
         message: event.message,
         expires_in_seconds: event.expires_in_seconds,
+        auto_approve_remaining: event.auto_approve_remaining,
       });
       return true;
     case "final":
@@ -297,6 +298,39 @@ export async function fetchIdentity(
   } catch {
     return null;
   }
+}
+
+/**
+ * Wait for the local backend to accept requests.
+ *
+ * The desktop app starts the backend as a hidden child process. The webview
+ * may load a fraction of a second earlier, so the first identity request is
+ * retried instead of rendering an empty conversation.
+ */
+export async function waitForBackend(
+  signal?: AbortSignal,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/health`, { signal });
+      if (response.ok) {
+        return true;
+      }
+    } catch {
+      // The backend is still starting.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  return false;
 }
 
 export async function fetchHistory(

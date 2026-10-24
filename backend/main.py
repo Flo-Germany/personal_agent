@@ -32,6 +32,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+for _noisy_logger in (
+    "httpx",
+    "httpx2",
+    "huggingface_hub",
+    "sentence_transformers",
+    "urllib3",
+):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 ALLOWED_ORIGINS = [
     "http://localhost:1420",

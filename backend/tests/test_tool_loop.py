@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from agent.chat import ChatService, ConfirmationRequired, LLMError
+from agent.chat import ChatService, ConfirmationRequired
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import AgentSettings, MemorySettings, OllamaSettings, Settings
@@ -204,6 +204,7 @@ def test_multiple_modifications_share_one_approval(tmp_path: Path) -> None:
     action = action_event(paused)
 
     assert len(action["actions"]) == 2
+    assert action["auto_approve_remaining"] is True
     assert not first.exists() and not second.exists()
 
     resumed = list(service.resume(action["approval_id"], True))
@@ -212,6 +213,140 @@ def test_multiple_modifications_share_one_approval(tmp_path: Path) -> None:
     assert final_event(resumed)["reply"] == "Both folders are ready."
     tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
     assert len(tool_messages) == 2
+
+
+def test_approval_covers_remaining_steps_in_the_same_turn(tmp_path: Path) -> None:
+    folder = tmp_path / "sequence-folder"
+    note = folder / "note.txt"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            tool_calls_message(
+                tool_call(
+                    "create_file",
+                    {"path": str(note), "content": "hello"},
+                    "call_2",
+                )
+            ),
+            content_message("Created the folder and the note."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            "First create a folder, then create a note inside it.",
+        )
+    )
+    action = action_event(paused)
+    assert not folder.exists()
+
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert folder.is_dir()
+    assert note.read_text(encoding="utf-8") == "hello"
+    assert final_event(resumed)["reply"] == "Created the folder and the note."
+    assert not any(event["type"] == "action_required" for event in resumed)
+    tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert all(json.loads(m["content"])["ok"] for m in tool_messages)
+
+
+def test_denied_approval_does_not_authorize_following_steps(tmp_path: Path) -> None:
+    first = tmp_path / "denied-first"
+    second = tmp_path / "denied-second"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(first)})
+            ),
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(second)}, "call_2")
+            ),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(conversation_id, "First create one, then another.")
+    )
+    first_action = action_event(paused)
+    resumed = list(service.resume(first_action["approval_id"], False))
+
+    second_action = action_event(resumed)
+    assert not second.exists()
+    assert second_action["actions"][0]["tool"] == "create_folder"
+
+    list(service.resume(second_action["approval_id"], False))
+
+
+def test_auto_approval_does_not_repeat_an_action(tmp_path: Path) -> None:
+    folder = tmp_path / "duplicate-folder"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)}, "call_2")
+            ),
+            content_message("Done."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(service.start_turn(conversation_id, "Create the folder."))
+    action = action_event(paused)
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert final_event(resumed)["reply"] == "Done."
+    tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    assert json.loads(tool_messages[0]["content"])["ok"] is True
+    assert "already ran" in json.loads(tool_messages[1]["content"])["error"]
+
+
+def test_auto_approval_preserves_mixed_call_order(tmp_path: Path) -> None:
+    folder = tmp_path / "ordered-folder"
+    note = folder / "note.txt"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            tool_calls_message(
+                tool_call(
+                    "create_file",
+                    {"path": str(note), "content": "hello"},
+                    "call_2",
+                ),
+                tool_call("read_file_content", {"path": str(note)}, "call_3"),
+            ),
+            content_message("Created and read it."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(service.start_turn(conversation_id, "Create the folder."))
+    action = action_event(paused)
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert final_event(resumed)["reply"] == "Created and read it."
+    tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
+    read_result = next(
+        json.loads(message["content"])
+        for message in tool_messages
+        if message.get("name") == "read_file_content"
+    )
+    assert read_result["ok"] is True
+    assert read_result["content"] == "hello"
 
 
 def test_protected_path_is_refused_after_approval(tmp_path: Path) -> None:

@@ -67,6 +67,7 @@ export type PendingAction = {
   actions: ActionItem[];
   message?: string;
   expires_in_seconds?: number;
+  auto_approve_remaining?: boolean;
 };
 
 export type ToolResult = Record<string, unknown>;
@@ -127,6 +128,7 @@ export type AgentActionRequiredEvent = {
   actions: ActionItem[];
   message?: string;
   expires_in_seconds?: number;
+  auto_approve_remaining?: boolean;
 };
 
 export type AgentFinalEvent = {
