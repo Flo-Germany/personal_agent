@@ -25,8 +25,8 @@ class OllamaSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    # Kept for the future ReAct/tool loop.
     max_iterations: int = Field(default=5, ge=1)
+    approval_ttl_seconds: float = Field(default=600.0, gt=0)
 
 
 class MemorySettings(BaseModel):
@@ -41,6 +41,14 @@ class MemorySettings(BaseModel):
         return PROJECT_ROOT / self.knowledge_base_path
 
 
+class ToolSettings(BaseModel):
+    max_read_bytes: int = Field(default=1_000_000, ge=1)
+    max_search_results: int = Field(default=50, ge=1, le=200)
+    max_search_files: int = Field(default=20_000, ge=1, le=200_000)
+    max_search_seconds: float = Field(default=30.0, gt=0, le=300)
+    max_unzip_bytes: int = Field(default=200_000_000, ge=1)
+
+
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
     personality: str = ""
@@ -50,6 +58,7 @@ class Settings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    tools: ToolSettings = Field(default_factory=ToolSettings)
 
 
 def load_settings(path: Path | None = None) -> Settings:

@@ -4,10 +4,20 @@ import type { FormEvent } from "react";
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 const CONVERSATION_STORAGE_KEY = "personal-agent.conversation-id";
 
+type ChatRole = "user" | "assistant" | "status";
+
+type StatusKind =
+  | "thinking"
+  | "tool"
+  | "result-ok"
+  | "result-error"
+  | "approval";
+
 type ChatMessage = {
   id: string;
-  role: "user" | "assistant";
+  role: ChatRole;
   content: string;
+  statusKind?: StatusKind;
 };
 
 type Identity = {
@@ -21,21 +31,62 @@ type HistoryMessage = {
   content: string;
 };
 
-type ChatResponse = {
-  reply: string;
+type ActionItem = {
+  tool: string;
+  description: string;
+  arguments?: Record<string, unknown>;
+};
+
+type PendingAction = {
+  approval_id: string;
   conversation_id: string;
+  actions: ActionItem[];
+  message?: string;
+  expires_in_seconds?: number;
+};
+
+type AgentEvent = {
+  type:
+    | "status"
+    | "tool_result"
+    | "action_required"
+    | "final"
+    | "error"
+    | "assistant";
+  conversation_id?: string;
+  phase?: string;
+  message?: string;
+  summary?: string;
+  ok?: boolean;
+  reply?: string;
+  content?: string;
+  approval_id?: string;
+  actions?: ActionItem[];
+  status?: number;
+  expires_in_seconds?: number;
+};
+
+type StreamCallbacks = {
+  onStatus: (message: string, phase?: string) => void;
+  onToolResult: (ok: boolean, summary: string) => void;
+  onAssistant: (content: string) => void;
+  onActionRequired: (action: PendingAction) => void;
+  onFinal: (reply: string, conversationId?: string) => void;
+  onError: (message: string) => void;
 };
 
 function buildWelcomeMessage(name: string): ChatMessage {
   return {
     id: "welcome",
     role: "assistant",
-    content: `Hi! I'm ${name}. I run locally through Ollama. I'll remember this chat, and I keep a knowledge base about you across chats. How can I help?`,
+    content: `Hi! I'm ${name}. I can work with your files and applications. I'll always ask for your approval before changing anything. How can I help?`,
   };
 }
 
 const NETWORK_ERROR_MESSAGE =
   "I couldn't reach the local backend. Make sure FastAPI is running on 127.0.0.1:8000.";
+const STREAM_CLOSED_MESSAGE =
+  "The agent connection closed before it finished. Please try again.";
 const UNEXPECTED_RESPONSE_MESSAGE =
   "The local backend returned an unexpected response.";
 
@@ -112,14 +163,132 @@ function describeHttpError(
     : `The backend returned an error (${label}).`;
 }
 
+function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
+  switch (event.type) {
+    case "status":
+      if (event.message) {
+        callbacks.onStatus(event.message, event.phase);
+      }
+      return false;
+    case "tool_result":
+      callbacks.onToolResult(
+        Boolean(event.ok),
+        event.summary ?? "Tool completed.",
+      );
+      return false;
+    case "assistant":
+      if (event.content) {
+        callbacks.onAssistant(event.content);
+      }
+      return false;
+    case "action_required":
+      if (!event.approval_id || !Array.isArray(event.actions)) {
+        callbacks.onError(UNEXPECTED_RESPONSE_MESSAGE);
+        return true;
+      }
+      callbacks.onActionRequired({
+        approval_id: event.approval_id,
+        conversation_id: event.conversation_id ?? "",
+        actions: event.actions,
+        message: event.message,
+        expires_in_seconds: event.expires_in_seconds,
+      });
+      return true;
+    case "final":
+      if (typeof event.reply !== "string") {
+        callbacks.onError(UNEXPECTED_RESPONSE_MESSAGE);
+      } else {
+        callbacks.onFinal(event.reply, event.conversation_id);
+      }
+      return true;
+    case "error":
+      callbacks.onError(event.message ?? "The agent failed.");
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Read an SSE response produced by POST and dispatch parsed events. */
+async function consumeEventStream(
+  response: Response,
+  callbacks: StreamCallbacks,
+): Promise<boolean> {
+  if (!response.body) {
+    throw new Error("The response has no body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let terminal = false;
+
+  const processBlock = (block: string) => {
+    const dataLines = block
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim());
+
+    if (dataLines.length === 0) {
+      return;
+    }
+
+    let event: AgentEvent;
+    try {
+      event = JSON.parse(dataLines.join("\n")) as AgentEvent;
+    } catch {
+      return;
+    }
+
+    if (dispatchEvent(event, callbacks)) {
+      terminal = true;
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n");
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      processBlock(block);
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  buffer += decoder.decode();
+  buffer = buffer.replace(/\r\n/g, "\n").trim();
+  if (buffer) {
+    processBlock(buffer);
+  }
+
+  return terminal;
+}
+
+const STATUS_STYLES: Record<StatusKind, string> = {
+  thinking: "border-white/10 bg-white/5 text-slate-400",
+  tool: "border-sky-400/20 bg-sky-400/5 text-sky-300",
+  "result-ok": "border-emerald-400/20 bg-emerald-400/5 text-emerald-300",
+  "result-error": "border-rose-400/20 bg-rose-400/5 text-rose-300",
+  approval: "border-amber-400/20 bg-amber-400/5 text-amber-300",
+};
+
 function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     buildWelcomeMessage("your local agent"),
   ]);
   const [input, setInput] = useState("");
-  const [isSending, setIsSending] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(() =>
     readStoredConversationId(),
   );
@@ -127,7 +296,26 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isSending]);
+  }, [messages, isStreaming, pendingAction]);
+
+  const rememberConversation = (id?: string) => {
+    if (!id) {
+      return;
+    }
+    setConversationId(id);
+    storeConversationId(id);
+  };
+
+  const addMessage = (role: ChatRole, content: string, statusKind?: StatusKind) => {
+    setMessages((current) => [
+      ...current,
+      { id: crypto.randomUUID(), role, content, statusKind },
+    ]);
+  };
+
+  const addAssistant = (content: string) => addMessage("assistant", content);
+  const addStatus = (content: string, statusKind: StatusKind) =>
+    addMessage("status", content, statusKind);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +337,7 @@ function App() {
 
       let history: ChatMessage[] = [];
       const storedId = readStoredConversationId();
+      let restoredPending: PendingAction | null = null;
 
       if (storedId) {
         try {
@@ -168,10 +357,28 @@ function App() {
         } catch {
           // Keep the stored id; the history will load on the next start.
         }
+
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/chat/pending/${storedId}`,
+          );
+          if (response.ok) {
+            const data = (await response.json()) as {
+              pending?: PendingAction | null;
+            };
+            restoredPending = data.pending ?? null;
+          }
+        } catch {
+          // No pending check available; the send path still works.
+        }
       }
 
       if (cancelled) {
         return;
+      }
+
+      if (restoredPending) {
+        setPendingAction(restoredPending);
       }
 
       setMessages(
@@ -189,33 +396,72 @@ function App() {
     };
   }, []);
 
-  const addAssistantMessage = (content: string) => {
-    setMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: "assistant", content },
-    ]);
-  };
+  const streamCallbacks = (): StreamCallbacks => ({
+    onStatus: (message, phase) => {
+      if (phase === "tool_started") {
+        addStatus(message, "tool");
+      } else if (phase === "approval") {
+        addStatus(message, "approval");
+      } else {
+        addStatus(message, "thinking");
+      }
+    },
+    onToolResult: (ok, summary) => {
+      addStatus(summary, ok ? "result-ok" : "result-error");
+    },
+    onAssistant: (content) => {
+      addAssistant(content);
+    },
+    onActionRequired: (action) => {
+      setPendingAction(action);
+      rememberConversation(action.conversation_id);
+      addStatus("Waiting for your approval.", "approval");
+    },
+    onFinal: (reply, id) => {
+      addAssistant(reply);
+      rememberConversation(id);
+      setPendingAction(null);
+    },
+    onError: (message) => {
+      addAssistant(message);
+      setPendingAction(null);
+    },
+  });
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleStreamResponse = async (response: Response): Promise<void> => {
+    if (!response.ok) {
+      let body: unknown = null;
 
-    const text = input.trim();
-    if (!text || isSending || isLoadingHistory) {
+      try {
+        body = await response.json();
+      } catch {
+        // Non-JSON error body; fall back to the status in the message.
+      }
+
+      addAssistant(describeHttpError(response.status, response.statusText, body));
       return;
     }
 
-    setMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: "user", content: text },
-    ]);
+    const terminal = await consumeEventStream(response, streamCallbacks());
+    if (!terminal) {
+      addAssistant(STREAM_CLOSED_MESSAGE);
+    }
+  };
+
+  const sendMessage = async (text: string) => {
+    if (!text || isStreaming || isLoadingHistory || pendingAction) {
+      return;
+    }
+
+    addMessage("user", text);
     setInput("");
-    setIsSending(true);
+    setIsStreaming(true);
 
     try {
       let response: Response;
 
       try {
-        response = await fetch(`${API_BASE_URL}/chat`, {
+        response = await fetch(`${API_BASE_URL}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -224,53 +470,65 @@ function App() {
           }),
         });
       } catch {
-        // fetch rejects on connection failures, DNS errors, and CORS blocks.
-        addAssistantMessage(NETWORK_ERROR_MESSAGE);
+        addAssistant(NETWORK_ERROR_MESSAGE);
         return;
       }
 
-      if (!response.ok) {
-        let body: unknown = null;
+      await handleStreamResponse(response);
+    } catch {
+      addAssistant(NETWORK_ERROR_MESSAGE);
+    } finally {
+      setIsStreaming(false);
+    }
+  };
 
-        try {
-          body = await response.json();
-        } catch {
-          // Non-JSON error body; fall back to the status in the message.
-        }
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
 
-        addAssistantMessage(
-          describeHttpError(response.status, response.statusText, body),
-        );
-        return;
-      }
+    const text = input.trim();
+    if (!text || isStreaming || isLoadingHistory || pendingAction) {
+      return;
+    }
 
-      let data: ChatResponse;
+    void sendMessage(text);
+  };
+
+  const handleApproval = async (approved: boolean) => {
+    const action = pendingAction;
+    if (!action || isStreaming) {
+      return;
+    }
+
+    setPendingAction(null);
+    setIsStreaming(true);
+
+    try {
+      let response: Response;
 
       try {
-        data = (await response.json()) as ChatResponse;
+        response = await fetch(`${API_BASE_URL}/chat/approve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            approval_id: action.approval_id,
+            approved,
+          }),
+        });
       } catch {
-        addAssistantMessage(UNEXPECTED_RESPONSE_MESSAGE);
+        addAssistant(NETWORK_ERROR_MESSAGE);
         return;
       }
 
-      if (typeof data.reply !== "string") {
-        addAssistantMessage(UNEXPECTED_RESPONSE_MESSAGE);
-        return;
-      }
-
-      if (typeof data.conversation_id === "string" && data.conversation_id) {
-        setConversationId(data.conversation_id);
-        storeConversationId(data.conversation_id);
-      }
-
-      addAssistantMessage(data.reply);
+      await handleStreamResponse(response);
+    } catch {
+      addAssistant(NETWORK_ERROR_MESSAGE);
     } finally {
-      setIsSending(false);
+      setIsStreaming(false);
     }
   };
 
   const handleClearConversation = async () => {
-    if (isSending || isLoadingHistory) {
+    if (isStreaming || isLoadingHistory) {
       return;
     }
 
@@ -278,6 +536,7 @@ function App() {
 
     setMessages([buildWelcomeMessage(identity?.name ?? "your local agent")]);
     setConversationId(null);
+    setPendingAction(null);
     storeConversationId(null);
 
     if (!previousId) {
@@ -295,9 +554,9 @@ function App() {
 
   const hasUserMessages = messages.some((message) => message.role === "user");
   const displayName = identity?.name ?? "Personal Agent";
-  const initials = identity
-    ? identity.name.slice(0, 2).toUpperCase()
-    : "PA";
+  const initials = identity ? identity.name.slice(0, 2).toUpperCase() : "PA";
+  const isBusy = isStreaming || isLoadingHistory;
+  const inputDisabled = isBusy || pendingAction !== null;
 
   return (
     <div className="flex h-screen flex-col bg-[#0b0f14] text-slate-100">
@@ -311,14 +570,14 @@ function App() {
           </h1>
           <p className="truncate text-[11px] text-slate-400">
             {identity
-              ? `${identity.model} · Local · Private`
+              ? `${identity.model} · Local · HITL`
               : "Local · Private · Tray enabled"}
           </p>
         </div>
         <button
           type="button"
           onClick={() => void handleClearConversation()}
-          disabled={isSending || isLoadingHistory || !hasUserMessages}
+          disabled={isBusy || !hasUserMessages}
           aria-label="Clear this chat (knowledge base is kept)"
           title="Clear this chat (knowledge base is kept)"
           className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 transition hover:border-white/20 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-30"
@@ -348,32 +607,100 @@ function App() {
         aria-live="polite"
         className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-5"
       >
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`flex ${
-              message.role === "user" ? "justify-end" : "justify-start"
-            }`}
-          >
+        {messages.map((message) => {
+          if (message.role === "status") {
+            const kind = message.statusKind ?? "thinking";
+            return (
+              <div key={message.id} className="flex justify-center">
+                <div
+                  className={`flex max-w-[90%] items-center gap-2 rounded-full border px-3 py-1 text-[11px] leading-5 ${STATUS_STYLES[kind]}`}
+                >
+                  <span
+                    className={`size-1.5 shrink-0 rounded-full bg-current ${
+                      kind === "thinking" ? "animate-pulse" : ""
+                    }`}
+                  />
+                  <span className="break-words">{message.content}</span>
+                </div>
+              </div>
+            );
+          }
+
+          return (
             <div
-              className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm leading-6 ${
-                message.role === "user"
-                  ? "rounded-br-md bg-emerald-400 text-slate-950"
-                  : "rounded-bl-md border border-white/10 bg-white/5 text-slate-200"
+              key={message.id}
+              className={`flex ${
+                message.role === "user" ? "justify-end" : "justify-start"
               }`}
             >
-              {message.content}
+              <div
+                className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3.5 py-2.5 text-sm leading-6 ${
+                  message.role === "user"
+                    ? "rounded-br-md bg-emerald-400 text-slate-950"
+                    : "rounded-bl-md border border-white/10 bg-white/5 text-slate-200"
+                }`}
+              >
+                {message.content}
+              </div>
+            </div>
+          );
+        })}
+
+        {pendingAction && (
+          <div className="rounded-2xl border border-amber-400/30 bg-amber-400/5 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-300">
+              <span className="flex size-5 items-center justify-center rounded-full border border-amber-400/40 text-[11px]">
+                !
+              </span>
+              Action Required
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-400">
+              The agent wants to modify your system. Review the exact actions
+              before approving.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {pendingAction.actions.map((action) => (
+                <li
+                  key={`${action.tool}-${action.description}`}
+                  className="rounded-xl border border-white/10 bg-black/20 px-3 py-2"
+                >
+                  <p className="break-all text-xs font-medium text-slate-200">
+                    {action.description}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[10px] text-slate-500">
+                    {action.tool}
+                  </p>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleApproval(true)}
+                disabled={isStreaming}
+                className="h-9 flex-1 rounded-xl bg-emerald-400 text-xs font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleApproval(false)}
+                disabled={isStreaming}
+                className="h-9 flex-1 rounded-xl border border-rose-400/30 bg-rose-400/10 text-xs font-semibold text-rose-300 transition hover:bg-rose-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Deny
+              </button>
             </div>
           </div>
-        ))}
+        )}
 
-        {isSending && (
+        {isStreaming && (
           <div className="flex justify-start">
             <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-white/10 bg-white/5 px-3.5 py-3">
               <span className="size-1.5 animate-pulse rounded-full bg-slate-400" />
               <span className="size-1.5 animate-pulse rounded-full bg-slate-400 [animation-delay:150ms]" />
               <span className="size-1.5 animate-pulse rounded-full bg-slate-400 [animation-delay:300ms]" />
-              <span className="sr-only">Waiting for the local model</span>
+              <span className="sr-only">Agent is working</span>
             </div>
           </div>
         )}
@@ -388,16 +715,23 @@ function App() {
             value={input}
             onChange={(event) => setInput(event.target.value)}
             placeholder={
-              isLoadingHistory ? "Loading conversation..." : "Send a message..."
+              pendingAction
+                ? "Approve or deny the pending action..."
+                : isLoadingHistory
+                  ? "Loading conversation..."
+                  : isStreaming
+                    ? "Agent is working..."
+                    : "Send a message..."
             }
             aria-label="Message"
             maxLength={8000}
             autoFocus
-            className="h-11 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-emerald-400/40 focus:outline-none focus:ring-2 focus:ring-emerald-400/10"
+            disabled={inputDisabled}
+            className="h-11 min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-emerald-400/40 focus:outline-none focus:ring-2 focus:ring-emerald-400/10 disabled:cursor-not-allowed disabled:opacity-50"
           />
           <button
             type="submit"
-            disabled={!input.trim() || isSending || isLoadingHistory}
+            disabled={!input.trim() || inputDisabled}
             aria-label="Send message"
             className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-emerald-400 text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -418,7 +752,7 @@ function App() {
           </button>
         </form>
         <p className="mt-2 text-center text-[10px] text-slate-600">
-          Ollama · {identity?.model ?? "hermes3"} ·{" "}
+          Ollama · {identity?.model ?? "hermes3"} · Streaming + HITL ·{" "}
           {API_BASE_URL.replace(/^https?:\/\//, "")}
         </p>
       </footer>

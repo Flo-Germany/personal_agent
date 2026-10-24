@@ -88,6 +88,59 @@ def test_pop_last_removes_newest_message() -> None:
     assert store.pop_last(conversation_id) is None
 
 
+def test_tool_messages_roundtrip_and_are_copied() -> None:
+    store = ConversationStore()
+    conversation_id = store.new_conversation_id()
+
+    store.append(
+        conversation_id,
+        "assistant",
+        "",
+        tool_calls=[
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "create_folder", "arguments": '{"path":"x"}'},
+            }
+        ],
+    )
+    store.append(
+        conversation_id,
+        "tool",
+        '{"ok": true}',
+        tool_call_id="call_1",
+        name="create_folder",
+    )
+
+    messages = store.load(conversation_id)
+    assert [message["role"] for message in messages] == ["assistant", "tool"]
+    assert messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert messages[1]["tool_call_id"] == "call_1"
+    assert messages[1]["name"] == "create_folder"
+
+    messages[0]["tool_calls"][0]["function"]["name"] = "changed"
+    assert store.load(conversation_id)[0]["tool_calls"][0]["function"]["name"] == (
+        "create_folder"
+    )
+
+
+def test_truncate_keeps_only_the_requested_prefix() -> None:
+    store = ConversationStore()
+    conversation_id = store.new_conversation_id()
+    for content in ("one", "two", "three", "four"):
+        store.append(conversation_id, "user", content)
+
+    store.truncate(conversation_id, 2)
+    assert [message["content"] for message in store.load(conversation_id)] == [
+        "one",
+        "two",
+    ]
+
+    store.truncate(conversation_id, 0)
+    assert store.load(conversation_id) == []
+    assert store.conversation_count == 0
+
+
 def test_clear_removes_conversation() -> None:
     store = ConversationStore()
     conversation_id = store.new_conversation_id()

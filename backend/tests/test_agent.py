@@ -16,7 +16,7 @@ from agent.language import detect_language_request, detect_requested_language
 from agent.prompt import build_system_prompt
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
-from settings import MemorySettings, OllamaSettings, Settings
+from settings import MemorySettings, OllamaSettings, Settings, ToolSettings
 
 
 class FakeCompletions:
@@ -80,6 +80,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
             knowledge_base_path=tmp_path / "knowledge.md",
             max_conversations=10,
         ),
+        "tools": ToolSettings(sandbox_dir=tmp_path / "sandbox"),
     }
     values.update(overrides)
     return Settings(**values)
@@ -147,6 +148,8 @@ def test_parse_facts_rejects_temporary_language_instructions() -> None:
         "COMMUNICATION: The user prefers to speak Chinese in every conversation "
         "with the assistant.\n"
         "COMMUNICATION: The user wants to speak Spanish during this chat.\n"
+        "COMMUNICATION: The user would like to switch to speaking English for "
+        "the conversation.\n"
         "COMMUNICATION: Prefers short answers.\n"
     )
 
@@ -394,6 +397,21 @@ def test_parse_facts_accepts_only_concrete_categorized_lines() -> None:
     assert result.facts["preferences"] == ["Is allergic to peanuts"]
     assert result.facts["other"] == ["random line"]
     assert result.deletions == ["Name is Alex"]
+
+
+def test_parse_facts_rejects_none_and_query_requests() -> None:
+    result = parse_facts(
+        "PROJECTS: NONE\n"
+        "LEARNED: SEARCH_FILES: The user asked the assistant to search for files.\n"
+        "PROJECTS: The user wants to create a new folder named AgentFeatureTest "
+        "in Downloads.\n"
+        "PROJECTS: The user wants to use unzip_file on C:\\Downloads\\x.zip.\n"
+        "PREFERENCES: The user prefers short answers.\n"
+    )
+
+    assert result.facts["projects"] == []
+    assert result.facts["other"] == []
+    assert result.facts["preferences"] == ["The user prefers short answers."]
 
 
 def test_parse_facts_handles_nested_delete_and_replace() -> None:

@@ -50,6 +50,7 @@ Rules:
 - Daily routines and workspace setup belong to HABITS.
 - Formatting and social preferences belong to COMMUNICATION.
 - Never store a temporary language instruction for this conversation (for example "answer in Spanish" or "speak Chinese from now on") as a durable user fact. Language choices are handled separately.
+- Never store search/read/list requests or the folders the user asked to search as preferences, habits, or projects. Those are one-off actions, not durable facts.
 - Output one fact per line in the format `LABEL: fact`.
 - If there is nothing new and durable, output exactly: NONE
 
@@ -71,9 +72,18 @@ _GENERIC_ENDINGS = (
     "has an interest in",
 )
 _REJECTED_MARKERS = ("unknown", "not provided", "n/a", "no information")
+_ACTION_REQUEST = re.compile(
+    r"\b(?:wants to|would like to|asked the assistant to)\s+"
+    r"(?:create|use|delete|move|copy|extract|search|read|open)\b",
+    re.I,
+)
+_PATH_LIKE = re.compile(
+    r"(?:[A-Za-z]:\\|[/\\]|\.(?:txt|md|pdf|zip|docx?|xlsx?|pptx?|png|jpe?g)\b)",
+    re.I,
+)
 _LANGUAGE_INSTRUCTION_FACT = re.compile(
-    r"\b(?:prefers?|wants?|likes?|asked?|requested?|should)\s+"
-    r"(?:to\s+)?(?:speak|talk|answer|reply|respond|communicate|write)\b"
+    r"\b(?:prefers?|wants?|would\s+like|likes?|asked?|requested?|should)\s+"
+    r"(?:to\s+)?(?:speak|talk|answer|reply|respond|communicate|write|switch|change|use)\b"
     r".*\b(?:assistant|conversation|chat|language)\b",
     re.I,
 )
@@ -163,9 +173,25 @@ def _is_concrete_fact(fact: str) -> bool:
         return False
 
     lowered = fact.lower().rstrip(".")
+    if lowered in {"none", "(none)", "no facts", "no new facts"}:
+        return False
     if lowered.endswith(":"):
         return False
     if any(marker in lowered for marker in _REJECTED_MARKERS):
+        return False
+    if any(
+        phrase in lowered
+        for phrase in (
+            "asked the assistant",
+            "asked me to",
+            "asked you to",
+            "requested that the assistant",
+        )
+    ):
+        return False
+    if _ACTION_REQUEST.search(fact) and (
+        "file" in lowered or "folder" in lowered or _PATH_LIKE.search(fact)
+    ):
         return False
 
     return not lowered.endswith(_GENERIC_ENDINGS)

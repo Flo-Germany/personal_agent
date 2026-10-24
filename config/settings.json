@@ -14,11 +14,19 @@
     "max_retries": 1
   },
   "agent": {
-    "max_iterations": 5
+    "max_iterations": 5,
+    "approval_ttl_seconds": 600
   },
   "memory": {
     "knowledge_base_path": "memory/knowledge_base.md",
     "max_conversations": 100,
     "learn_from_chats": true
+  },
+  "tools": {
+    "max_read_bytes": 1000000,
+    "max_search_results": 50,
+    "max_search_files": 20000,
+    "max_search_seconds": 30,
+    "max_unzip_bytes": 209715200
   }
 }

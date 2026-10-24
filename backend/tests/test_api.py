@@ -35,6 +35,12 @@ class FakeChatService:
     def learn_from_exchange(self, user_message: str) -> None:
         self.learned.append(user_message)
 
+    def discard_pending(self, conversation_id: str) -> bool:
+        return False
+
+    def get_pending_for_conversation(self, conversation_id: str):
+        return None
+
 
 @pytest.fixture
 def store() -> ConversationStore:
@@ -140,6 +146,44 @@ def test_history_roundtrip(client: TestClient) -> None:
         ("assistant", "Echo: Remember the number 42"),
     ]
     assert all(message["created_at"] for message in payload["messages"])
+
+
+def test_history_hides_internal_tool_messages(
+    client: TestClient,
+    store: ConversationStore,
+) -> None:
+    chat = client.post("/chat", json={"message": "Visible"}).json()
+    conversation_id = chat["conversation_id"]
+    store.append(
+        conversation_id,
+        "assistant",
+        "",
+        tool_calls=[
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "create_folder", "arguments": '{"path":"x"}'},
+            }
+        ],
+    )
+    store.append(
+        conversation_id,
+        "tool",
+        '{"ok": true}',
+        tool_call_id="call_1",
+        name="create_folder",
+    )
+
+    response = client.get(f"/chat/history/{conversation_id}")
+
+    assert response.status_code == 200
+    assert [
+        (message["role"], message["content"])
+        for message in response.json()["messages"]
+    ] == [
+        ("user", "Visible"),
+        ("assistant", "Echo: Visible"),
+    ]
 
 
 def test_history_for_unknown_conversation_is_empty(client: TestClient) -> None:

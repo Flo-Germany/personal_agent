@@ -7,13 +7,15 @@ conversation is kept, so the model can recall the whole chat.
 
 from __future__ import annotations
 
+import copy
 import threading
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
 
-VALID_ROLES = {"user", "assistant"}
+VALID_ROLES = {"user", "assistant", "tool"}
+_EXTRA_KEYS = ("tool_calls", "tool_call_id", "name")
 
 
 class ConversationStore:
@@ -42,20 +44,40 @@ class ConversationStore:
                 return []
 
             self._conversations.move_to_end(key)
-            return [dict(message) for message in messages]
+            return [copy.deepcopy(message) for message in messages]
 
-    def append(self, conversation_id: str, role: str, content: str) -> None:
-        """Append one message without discarding earlier ones."""
+    def append(
+        self,
+        conversation_id: str,
+        role: str,
+        content: str,
+        **extra: Any,
+    ) -> None:
+        """Append one message without discarding earlier ones.
+
+        Extra fields are limited to the metadata used by OpenAI tool calling:
+        ``tool_calls``, ``tool_call_id``, and ``name``.
+        """
         if role not in VALID_ROLES:
             raise ValueError(f"Invalid message role: {role}")
 
         key = self._key(conversation_id)
         now = datetime.now(timezone.utc).isoformat()
 
+        message: dict[str, Any] = {
+            "role": role,
+            "content": content,
+            "created_at": now,
+        }
+        for field in _EXTRA_KEYS:
+            value = extra.get(field)
+            if value is not None:
+                message[field] = copy.deepcopy(value)
+
         with self._lock:
             messages = self._conversations.setdefault(key, [])
             self._conversations.move_to_end(key)
-            messages.append({"role": role, "content": content, "created_at": now})
+            messages.append(message)
 
             while len(self._conversations) > self.max_conversations:
                 self._conversations.popitem(last=False)
@@ -94,6 +116,22 @@ class ConversationStore:
 
         with self._lock:
             return self._conversations.pop(key, None) is not None
+
+    def truncate(self, conversation_id: str, length: int) -> None:
+        """Keep only the first ``length`` messages (used to roll back a turn)."""
+        if length < 0:
+            raise ValueError("length must not be negative")
+
+        key = self._key(conversation_id)
+
+        with self._lock:
+            messages = self._conversations.get(key)
+            if messages is None:
+                return
+            if length == 0:
+                self._conversations.pop(key, None)
+            else:
+                del messages[length:]
 
     def clear_all(self) -> None:
         """Drop every conversation (used by tests and a fresh start)."""
