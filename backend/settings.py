@@ -59,6 +59,12 @@ class ToolSettings(BaseModel):
     max_search_seconds: float = Field(default=30.0, gt=0, le=300)
     max_unzip_bytes: int = Field(default=200_000_000, ge=1)
     redact_secrets: bool = True
+    powershell_timeout_seconds: float = Field(default=15.0, ge=0.5, le=300.0)
+    powershell_max_output_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        le=100_000,
+    )
 
 
 class VisionSettings(BaseModel):

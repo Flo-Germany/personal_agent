@@ -20,6 +20,8 @@ def workdir(tmp_path: Path) -> Path:
 
 
 def test_requires_confirmation_flags() -> None:
+    assert os_tools.requires_confirmation("run_powershell_query") is False
+    assert os_tools.requires_confirmation("run_powershell_action") is True
     assert os_tools.requires_confirmation("create_folder") is True
     assert os_tools.requires_confirmation("create_file") is True
     assert os_tools.requires_confirmation("copy_file") is True

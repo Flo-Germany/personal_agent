@@ -5,8 +5,8 @@ import { ApprovalCard } from "./components/ApprovalCard";
 import { AttachmentBlock } from "./components/AttachmentBlock";
 import { ChatComposer } from "./components/ChatComposer";
 import { EmptyState } from "./components/EmptyState";
-import { MessageItem, TypingIndicator } from "./components/MessageItem";
-import { StatusPill } from "./components/StatusPill";
+import { MessageItem } from "./components/MessageItem";
+import { ToolStatus } from "./components/ToolStatus";
 import { useAgentChat } from "./hooks/useAgentChat";
 
 function App() {
@@ -87,13 +87,16 @@ function App() {
             <EmptyState disabled={!canSend} onPrompt={handlePrompt} />
           ) : (
             <div className="mx-auto w-full max-w-3xl space-y-5 px-4 py-5 sm:px-6">
-              {messages.map((message, index) =>
+              {messages.map((message) =>
                 message.role === "status" ? (
-                  <StatusPill
+                  <ToolStatus
                     key={message.id}
-                    kind={message.statusKind ?? "thinking"}
-                    content={message.content}
-                    active={isStreaming && index === messages.length - 1}
+                    status={
+                      message.status ?? {
+                        state: "thinking",
+                        label: "Thinking...",
+                      }
+                    }
                   />
                 ) : message.role === "files" ? (
                   <AttachmentBlock
@@ -113,8 +116,6 @@ function App() {
                   onDeny={handleDeny}
                 />
               )}
-
-              {isStreaming && <TypingIndicator />}
 
               <div ref={messagesEndRef} className="h-px" />
             </div>

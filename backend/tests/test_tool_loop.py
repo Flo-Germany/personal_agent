@@ -320,6 +320,133 @@ def test_screen_question_forces_analyze_screen(tmp_path: Path) -> None:
     assert final_event(events)["reply"] == "The screen shows a test."
 
 
+def test_powershell_query_runs_without_approval(tmp_path: Path) -> None:
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_query",
+                    {
+                        "command": (
+                            "Get-Process -Id $PID | "
+                            "Select-Object Id, ProcessName"
+                        )
+                    },
+                )
+            ),
+            content_message("Done."),
+        ],
+    )
+
+    events = list(
+        service.start_turn(
+            store.new_conversation_id(),
+            "Check your PowerShell process.",
+        )
+    )
+
+    assert any(
+        event["type"] == "tool_result"
+        and event["tool"] == "run_powershell_query"
+        and event["ok"]
+        for event in events
+    )
+    assert not any(event["type"] == "action_required" for event in events)
+    assert final_event(events)["reply"] == "Done."
+
+
+def test_powershell_action_requires_and_executes_after_approval(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "powershell-action.txt"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_action",
+                    {
+                        "command": (
+                            f"New-Item -ItemType File -Path '{target}' -Force"
+                        ),
+                        "description": "Create a PowerShell test file.",
+                    },
+                )
+            ),
+            content_message("Created."),
+        ],
+    )
+
+    paused = list(
+        service.start_turn(
+            store.new_conversation_id(),
+            "Create a test file with PowerShell.",
+        )
+    )
+
+    action = action_event(paused)
+    assert action["actions"][0]["tool"] == "run_powershell_action"
+    assert "Create a PowerShell test file." in action["actions"][0]["description"]
+    assert "Command:" in action["actions"][0]["description"]
+    assert not target.exists()
+
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert target.exists()
+    assert final_event(resumed)["reply"] == "Created."
+
+
+def test_powershell_action_failure_triggers_recovery_attempt(
+    tmp_path: Path,
+) -> None:
+    service, store, client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_action",
+                    {
+                        "command": "Stop-Process -Id 999999 -Force",
+                        "description": "Stop a stale process ID.",
+                    },
+                )
+            ),
+            content_message("The action failed; I could not stop it."),
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_query",
+                    {
+                        "command": (
+                            "Get-Process -Id 999999 -ErrorAction SilentlyContinue"
+                        )
+                    },
+                )
+            ),
+            content_message("The process no longer exists."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(conversation_id, "Close process 999999.")
+    )
+    action = action_event(paused)
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert any(
+        "The last run_powershell_action failed" in request["messages"][-1]["content"]
+        for request in client.completions.requests
+        if request["messages"][-1].get("role") == "user"
+    )
+    assert any(
+        event["type"] == "tool_result"
+        and event["tool"] == "run_powershell_query"
+        for event in resumed
+    )
+    assert final_event(resumed)["reply"] == "The process no longer exists."
+
+
 def test_empty_response_is_retried_with_a_nudge(tmp_path: Path) -> None:
     service, store, client = make_service(
         tmp_path,

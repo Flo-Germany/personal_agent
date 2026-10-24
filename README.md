@@ -9,15 +9,22 @@ file system and applications through a Human-in-the-Loop approval flow.
 ## Features
 
 - Local chat through Ollama (`qwen3-vl:8b-instruct`) — no cloud requests
-- Full chat history in memory: the whole conversation is sent with every request
+- Full chat history kept in memory and shown in the UI; the model receives the
+  latest 10 messages plus the system prompt for fast responses
 - Persistent knowledge base across chats and restarts, stored as an editable
   Markdown file
 - Agentic OS tools: search the file system, read files, create folders, copy,
   move, delete (Recycle Bin), unzip archives, open files in a chosen editor, and
   launch any installed program
+- Universal PowerShell access: read-only inspections run immediately; every
+  state-changing command requires explicit approval with a description and the
+  exact command shown first
 - Window awareness and UI Automation text reading, plus local screen analysis
   with `qwen3-vl:8b-instruct`
-- Human-in-the-Loop approvals for every modifying, file-opening, or program-launch action
+- Human-in-the-Loop approvals for every modifying, file-opening, program-launch,
+  or PowerShell action
+- Compact in-place tool status: one animated row per task, with expandable
+  stderr/exit-code details when an action fails
 - Real-time SSE status updates: thinking, tool started, tool result, approval
   needed, final answer
 - Protected Windows locations and Recycle Bin deletion for destructive actions
@@ -129,7 +136,10 @@ startup, so restart uvicorn after changing it.
     "max_search_results": 50,
     "max_search_files": 20000,
     "max_search_seconds": 30,
-    "max_unzip_bytes": 209715200
+    "max_unzip_bytes": 209715200,
+    "redact_secrets": true,
+    "powershell_timeout_seconds": 15,
+    "powershell_max_output_chars": 12000
   },
   "vision": {
     "enabled": true,
@@ -207,6 +217,9 @@ Two Ollama behaviors break a long identity prompt:
 (default `true`) removes high-confidence API keys, tokens, and private keys from
 `read_file_content` results before they reach the model or the chat. Set it to
 `false` only if you need the agent to read credentials verbatim.
+`tools.powershell_timeout_seconds` (default 15) bounds every PowerShell command
+and kills the process tree on timeout. `tools.powershell_max_output_chars`
+(default 12000) truncates stdout/stderr before they reach the model.
 `vision.*` controls the global CLIP image index: `scan_roots` defaults to the
 current user profile (`~`); add more folders or a drive root such as `C:\` to
 widen it. `scan_interval_seconds` controls how often the crawler rescans for
@@ -274,8 +287,8 @@ The SSE stream ends after `final`, `error`, or `action_required`.
 
 ### Agent loop and HITL
 
-1. The user message is appended and the entire history plus tool schemas is sent
-   to the local model.
+1. The user message is appended and the system prompt plus the latest 10
+   history messages and tool schemas are sent to the local model.
 2. Read-only tools (`search_system`, `read_file_content`,
    `semantic_image_search`, `get_open_windows`, `read_window_content`,
    `analyze_screen`) run immediately and stream `tool_started` / `tool_result`
@@ -298,10 +311,12 @@ If Ollama is not running, streams emit a readable error event; the legacy
 
 ## Tools and security
 
-The agent can use fourteen tools:
+The agent can use sixteen tools:
 
 | Tool | Confirmation | Purpose |
 |---|---|---|
+| `run_powershell_query` | No | Read-only PowerShell inspection: processes/RAM/CPU, services, registry, disks, network, event logs, files. Rejects state-changing commands |
+| `run_powershell_action` | Yes | State-changing PowerShell after approval: kill/stop processes, change services or settings, registry writes, file changes, installs |
 | `search_system` | No | Recursive or direct-child search by name/glob, extension, size, modified time, hidden flag, or all drives; newest/oldest sorting; known-folder aliases |
 | `semantic_image_search` | No | Search the whole PC for images by visual content with a local CLIP index; returns ranked paths and scores |
 | `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
@@ -321,6 +336,19 @@ Security boundaries:
 
 - No sandbox. The tools can reach the whole file system, as requested.
 - Modifying actions always require explicit approval; read-only actions do not.
+- `run_powershell_query` is guarded as read-only: it rejects state-changing
+  cmdlets and aliases, output redirection, file-writing parameters, mutating
+  .NET calls, and dynamic code execution. If an inspection command is rejected,
+  the agent must use `run_powershell_action`, which pauses for approval.
+- `run_powershell_action` always requires approval and a required description of
+  exactly what will change. The approval card shows that description and the
+  command before the user clicks Approve.
+- If a PowerShell action fails, the backend forces one recovery round: the agent
+  reads `stderr`, `exit_code`, and the failure hint, verifies the current state
+  with `run_powershell_query`, and tries another safe approach. Any new action
+  still needs approval.
+- Every PowerShell command has a strict timeout and kills its process tree on
+  timeout; large stdout/stderr is truncated before reaching the model.
 - Critical locations (`Windows`, `Program Files`, `Program Files (x86)`,
   `ProgramData`, `Boot`, `Recovery`, drive roots, `C:\Users`, and the user
   profile root) are hard-denied for create/copy/move/delete/unzip even after
@@ -438,6 +466,11 @@ Chat history is held strictly in memory per conversation ID. Every message is
 kept, including internal tool-call/tool-result messages used by the model, so the
 agent can continue a paused task. Restarting uvicorn or deleting the chat clears
 it. It is never written to disk.
+
+Only the system prompt plus the latest 10 history messages are sent to Ollama;
+older messages stay in the backend store and in the UI. The sliding window moves
+to a user-message boundary and preserves complete tool-call/tool-result groups,
+so a truncated payload never contains an orphaned tool result.
 
 The knowledge base is `memory/knowledge_base.md`, a plain Markdown file that
 persists across chats and restarts. The agent reads it on every request and

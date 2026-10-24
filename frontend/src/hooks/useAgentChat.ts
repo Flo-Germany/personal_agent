@@ -25,8 +25,9 @@ import type {
   ChatRole,
   Identity,
   PendingAction,
-  StatusKind,
   StreamCallbacks,
+  ToolResult,
+  ToolStatusData,
 } from "../types";
 
 type Snapshot = {
@@ -56,6 +57,40 @@ async function loadSnapshot(
   };
 }
 
+function toolFailureDetails(result?: ToolResult): {
+  detail?: string;
+  exitCode?: number;
+} {
+  if (!result) {
+    return {};
+  }
+
+  const exitCode =
+    typeof result.exit_code === "number" ? result.exit_code : undefined;
+  const parts: string[] = [];
+
+  if (exitCode !== undefined) {
+    parts.push(`Exit code: ${exitCode}`);
+  }
+
+  for (const key of ["error", "stderr", "hint", "stdout"] as const) {
+    const value = result[key];
+    if (typeof value === "string" && value.trim()) {
+      parts.push(value.trim());
+    }
+  }
+
+  if (parts.length === 0) {
+    return { exitCode };
+  }
+
+  const detail = parts.join("\n");
+  return {
+    exitCode,
+    detail: detail.length > 4000 ? `${detail.slice(0, 4000)}\n…` : detail,
+  };
+}
+
 export function useAgentChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [identity, setIdentity] = useState<Identity | null>(null);
@@ -71,21 +106,17 @@ export function useAgentChat() {
   const loadControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
   const mountedRef = useRef(true);
+  const activeStatusIdRef = useRef<string | null>(null);
+  const lastStatusStateRef = useRef<ToolStatusData["state"] | null>(null);
 
   const addMessage = useCallback(
-    (
-      role: ChatRole,
-      content: string,
-      statusKind?: StatusKind,
-      files?: string[],
-    ) => {
+    (role: ChatRole, content: string, files?: string[]) => {
       setMessages((current) => [
         ...current,
         {
           id: crypto.randomUUID(),
           role,
           content,
-          statusKind,
           files,
         },
       ]);
@@ -98,17 +129,47 @@ export function useAgentChat() {
     [addMessage],
   );
 
-  const addStatus = useCallback(
-    (content: string, statusKind: StatusKind) =>
-      addMessage("status", content, statusKind),
-    [addMessage],
-  );
+  const updateStatus = useCallback((status: ToolStatusData) => {
+    if (!activeStatusIdRef.current) {
+      activeStatusIdRef.current = crypto.randomUUID();
+    }
+    const statusId = activeStatusIdRef.current;
+    lastStatusStateRef.current = status.state;
+
+    if (!mountedRef.current) {
+      return;
+    }
+
+    setMessages((current) => {
+      const exists = current.some((message) => message.id === statusId);
+      if (!exists) {
+        return [
+          ...current,
+          {
+            id: statusId,
+            role: "status",
+            content: "",
+            status,
+          },
+        ];
+      }
+
+      return current.map((message) =>
+        message.id === statusId ? { ...message, status } : message,
+      );
+    });
+  }, []);
+
+  const beginStatus = useCallback(() => {
+    activeStatusIdRef.current = null;
+    updateStatus({ state: "thinking", label: "Thinking..." });
+  }, [updateStatus]);
 
   const addAttachments = useCallback(
     (files: string[]) => {
       const unique = [...new Set(files)];
       if (unique.length > 0) {
-        addMessage("files", "", undefined, unique);
+        addMessage("files", "", unique);
       }
     },
     [addMessage],
@@ -166,9 +227,17 @@ export function useAgentChat() {
         }
 
         if (mountedRef.current) {
-          addAssistant(
-            describeHttpError(response.status, response.statusText, body),
-          );
+          updateStatus({
+            state: "error",
+            label: "Agent error",
+            detail: describeHttpError(
+              response.status,
+              response.statusText,
+              body,
+            ),
+          });
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
         }
         return;
       }
@@ -179,11 +248,25 @@ export function useAgentChat() {
             return;
           }
           if (phase === "tool_started") {
-            addStatus(message, "tool");
+            updateStatus({ state: "executing", label: message });
           } else if (phase === "approval") {
-            addStatus(message, "approval");
+            if (message.toLowerCase().includes("cancel")) {
+              updateStatus({ state: "cancelled", label: "Action cancelled" });
+            } else {
+              updateStatus({ state: "executing", label: message });
+            }
           } else {
-            addStatus(message, "thinking");
+            const previous = lastStatusStateRef.current;
+            if (
+              previous === "success" ||
+              previous === "error" ||
+              previous === "waiting" ||
+              previous === "cancelled"
+            ) {
+              // Keep the meaningful result visible while the model reads it.
+              return;
+            }
+            updateStatus({ state: "thinking", label: message });
           }
         },
         onToolResult: (ok, summary, tool, result) => {
@@ -197,7 +280,35 @@ export function useAgentChat() {
             usedSemanticSearchRef.current = true;
           }
 
-          addStatus(summary, ok ? "result-ok" : "result-error");
+          if (ok) {
+            updateStatus({
+              state: "success",
+              label: summary,
+              tool,
+            });
+          } else if (result?.cancelled) {
+            updateStatus({
+              state: "cancelled",
+              label: "Action cancelled",
+              tool,
+              detail: summary,
+            });
+          } else {
+            const { detail, exitCode } = toolFailureDetails(result);
+            const label =
+              tool === "run_powershell_action"
+                ? "Action failed"
+                : tool === "run_powershell_query"
+                  ? "Query failed"
+                  : "Tool failed";
+            updateStatus({
+              state: "error",
+              label,
+              tool,
+              detail: detail ?? summary,
+              exitCode,
+            });
+          }
         },
         onAssistant: (content) => {
           if (mountedRef.current) {
@@ -210,7 +321,12 @@ export function useAgentChat() {
           }
           setPendingAction(action);
           rememberConversation(action.conversation_id);
-          addStatus("Waiting for your approval.", "approval");
+          updateStatus({
+            state: "waiting",
+            label: "Waiting for approval",
+            tool: action.actions[0]?.tool,
+            detail: action.actions.map((item) => item.description).join("\n"),
+          });
         },
         onFinal: (reply, id) => {
           if (!mountedRef.current) {
@@ -234,6 +350,18 @@ export function useAgentChat() {
             addAttachments(missingFiles);
           }
 
+          const statusId = activeStatusIdRef.current;
+          const statusState = lastStatusStateRef.current;
+          if (statusState === "thinking" && statusId) {
+            // A simple text answer does not need a permanent "Completed" row.
+            setMessages((current) =>
+              current.filter((message) => message.id !== statusId),
+            );
+          } else if (statusState === "executing" && statusId) {
+            updateStatus({ state: "success", label: "Completed" });
+          }
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
           rememberConversation(id);
@@ -243,6 +371,13 @@ export function useAgentChat() {
           if (!mountedRef.current) {
             return;
           }
+          updateStatus({
+            state: "error",
+            label: "Agent error",
+            detail: message,
+          });
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
           addAssistant(message);
@@ -252,10 +387,17 @@ export function useAgentChat() {
 
       const terminal = await consumeEventStream(response, callbacks, signal);
       if (!terminal && mountedRef.current) {
+        updateStatus({
+          state: "error",
+          label: "Connection closed",
+          detail: STREAM_CLOSED_MESSAGE,
+        });
+        activeStatusIdRef.current = null;
+        lastStatusStateRef.current = null;
         addAssistant(STREAM_CLOSED_MESSAGE);
       }
     },
-    [addAssistant, addAttachments, addStatus, rememberConversation],
+    [addAssistant, addAttachments, rememberConversation, updateStatus],
   );
 
   const sendMessage = useCallback(
@@ -271,6 +413,7 @@ export function useAgentChat() {
       }
 
       addMessage("user", trimmed);
+      beginStatus();
       pendingFilesRef.current.clear();
       usedSemanticSearchRef.current = false;
       streamingRef.current = true;
@@ -288,6 +431,13 @@ export function useAgentChat() {
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
+          updateStatus({
+            state: "error",
+            label: "Connection failed",
+            detail: NETWORK_ERROR_MESSAGE,
+          });
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
           addAssistant(NETWORK_ERROR_MESSAGE);
         }
       } finally {
@@ -303,10 +453,12 @@ export function useAgentChat() {
     [
       addAssistant,
       addMessage,
+      beginStatus,
       conversationId,
       handleStreamResponse,
       isLoadingHistory,
       pendingAction,
+      updateStatus,
     ],
   );
 
@@ -318,6 +470,11 @@ export function useAgentChat() {
       }
 
       setPendingAction(null);
+      updateStatus({
+        state: "executing",
+        label: "Executing approved action...",
+        tool: action.actions[0]?.tool,
+      });
       streamingRef.current = true;
       setIsStreaming(true);
 
@@ -333,6 +490,13 @@ export function useAgentChat() {
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
+          updateStatus({
+            state: "error",
+            label: "Connection failed",
+            detail: NETWORK_ERROR_MESSAGE,
+          });
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
           addAssistant(NETWORK_ERROR_MESSAGE);
         }
       } finally {
@@ -345,7 +509,7 @@ export function useAgentChat() {
         }
       }
     },
-    [addAssistant, handleStreamResponse, pendingAction],
+    [addAssistant, handleStreamResponse, pendingAction, updateStatus],
   );
 
   const clearChat = useCallback(async () => {
@@ -358,6 +522,8 @@ export function useAgentChat() {
     setMessages([]);
     setConversationId(null);
     setPendingAction(null);
+    activeStatusIdRef.current = null;
+    lastStatusStateRef.current = null;
     pendingFilesRef.current.clear();
     usedSemanticSearchRef.current = false;
     storeConversationId(null);
@@ -390,6 +556,8 @@ export function useAgentChat() {
       setIdentity((current) => snapshot.identity ?? current);
       setMessages(snapshot.messages);
       setPendingAction(snapshot.pending);
+      activeStatusIdRef.current = null;
+      lastStatusStateRef.current = null;
     } finally {
       if (loadControllerRef.current === controller) {
         loadControllerRef.current = null;

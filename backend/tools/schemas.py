@@ -24,6 +24,76 @@ TOOL_SCHEMAS: list[ToolSchema] = [
     {
         "type": "function",
         "function": {
+            "name": "run_powershell_query",
+            "description": (
+                "Run a READ-ONLY PowerShell command to inspect this Windows "
+                "machine. No approval is required. Use it for RAM/CPU per "
+                "process, process and service details, registry reads, files, "
+                "network connections, event logs, and other information "
+                "gathering. It rejects state-changing cmdlets, redirection, "
+                "file writes, and dynamic code execution. For a process, "
+                "'Get-Process -Id <pid> | Select-Object Id,ProcessName,"
+                "WorkingSet64,CPU' returns memory in bytes and CPU in processor "
+                "seconds. Investigate first and use run_powershell_action for "
+                "any change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": (
+                            "The PowerShell command to run, for example "
+                            "'Get-Process chrome | Sort-Object WorkingSet64 "
+                            "-Descending | Select-Object -First 5'."
+                        ),
+                    }
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_powershell_action",
+            "description": (
+                "Run a state-changing PowerShell command after explicit user "
+                "approval. This is the ONLY PowerShell tool allowed to kill or "
+                "stop processes, change services or settings, write the "
+                "registry, move or delete files, install software, or otherwise "
+                "modify Windows. Always query first to find exact process IDs "
+                "and paths, then explain precisely what the action will do in "
+                "the description field so the user can approve it safely."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": (
+                            "The exact PowerShell command to execute, for "
+                            "example 'Stop-Process -Id 1234'."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "One clear sentence describing exactly what will "
+                            "change on the system, for example 'Stop the "
+                            "Notepad process with PID 1234 to free its memory.'"
+                        ),
+                    },
+                },
+                "required": ["command", "description"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "start_program",
             "description": (
                 "Launch any installed Windows program by name or executable path. "

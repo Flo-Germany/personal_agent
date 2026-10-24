@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from settings import ToolSettings
-from tools import os_tools, window_tools
+from tools import os_tools, system_tools, window_tools
 from tools.schemas import TOOL_SCHEMAS
 
 if TYPE_CHECKING:
@@ -107,6 +107,21 @@ class ToolExecutor:
             return vision.analyze_screen(user_question)
 
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
+            "run_powershell_query": (
+                lambda command: system_tools.run_powershell_query(
+                    command,
+                    timeout=tool_settings.powershell_timeout_seconds,
+                    max_output_chars=tool_settings.powershell_max_output_chars,
+                )
+            ),
+            "run_powershell_action": (
+                lambda command, description: system_tools.run_powershell_action(
+                    command,
+                    description=description,
+                    timeout=tool_settings.powershell_timeout_seconds,
+                    max_output_chars=tool_settings.powershell_max_output_chars,
+                )
+            ),
             "start_program": lambda program_name, **_ignored: os_tools.start_program(
                 program_name
             ),

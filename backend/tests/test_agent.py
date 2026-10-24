@@ -174,6 +174,19 @@ def test_system_prompt_includes_self_aware_identity() -> None:
     assert "say you are not sure instead of inventing it" in prompt
 
 
+def test_system_prompt_instructs_powershell_administration() -> None:
+    prompt = build_system_prompt(Settings(agent_name="Compa"))
+
+    assert "Windows administrator" in prompt
+    assert "run_powershell_query" in prompt
+    assert "run_powershell_action" in prompt
+    assert "Query first" in prompt
+    assert "description" in prompt
+    assert "Never try to bypass approval" in prompt
+    assert "If a run_powershell_action fails" in prompt
+    assert "stderr" in prompt
+
+
 def test_system_prompt_follows_the_users_language() -> None:
     prompt = build_system_prompt(
         Settings(agent_name="Nova"),
@@ -295,10 +308,13 @@ def test_generate_reply_sends_history_and_stores_exchange(tmp_path) -> None:
     sent = request["messages"]
     assert request["model"] == "hermes3"
     assert request["temperature"] == 0.2
-    # hermes3's Ollama template drops system messages while tools are sent, so
-    # the prompt is folded into the latest user turn instead.
-    assert sent[0] == {"role": "user", "content": "My name is Flo."}
-    assert sent[1] == {"role": "assistant", "content": "Nice to meet you, Flo."}
+    # The system message is always at index 0. Hermes also gets the prompt
+    # folded into the latest user turn because its template drops system
+    # messages when tools are supplied.
+    assert sent[0]["role"] == "system"
+    assert "TestBot" in sent[0]["content"]
+    assert sent[1] == {"role": "user", "content": "My name is Flo."}
+    assert sent[2] == {"role": "assistant", "content": "Nice to meet you, Flo."}
     assert sent[-1]["role"] == "user"
     assert sent[-1]["content"].startswith("SYSTEM PROMPT")
     assert "TestBot" in sent[-1]["content"]
@@ -341,13 +357,14 @@ def test_system_prompt_mode_can_force_user_folding(tmp_path) -> None:
     service.generate_reply(store.new_conversation_id(), "Hello.")
 
     sent = client.completions.requests[0]["messages"]
-    assert all(message["role"] != "system" for message in sent)
+    assert sent[0]["role"] == "system"
+    assert "TestBot" in sent[0]["content"]
     assert sent[-1]["role"] == "user"
     assert "SYSTEM PROMPT" in sent[-1]["content"]
     assert sent[-1]["content"].endswith("Hello.")
 
 
-def test_generate_reply_sends_the_entire_chat_history(tmp_path) -> None:
+def test_generate_reply_sends_recent_chat_history(tmp_path) -> None:
     client = FakeClient()
     service, store, _ = make_service(tmp_path, client)
     conversation_id = store.new_conversation_id()
@@ -358,7 +375,8 @@ def test_generate_reply_sends_the_entire_chat_history(tmp_path) -> None:
     service.generate_reply(conversation_id, "u4")
 
     sent = client.completions.requests[0]["messages"]
-    assert sent[:-1] == [
+    assert sent[0]["role"] == "system"
+    assert sent[1:-1] == [
         {"role": "user", "content": "u1"},
         {"role": "assistant", "content": "a1"},
         {"role": "user", "content": "u2"},
@@ -368,6 +386,58 @@ def test_generate_reply_sends_the_entire_chat_history(tmp_path) -> None:
     ]
     assert sent[-1]["role"] == "user"
     assert sent[-1]["content"].endswith("u4")
+
+
+def test_generate_reply_uses_a_ten_message_context_window(tmp_path) -> None:
+    client = FakeClient()
+    service, store, _ = make_service(tmp_path, client)
+    conversation_id = store.new_conversation_id()
+    for index in range(1, 16):
+        store.append_exchange(conversation_id, f"u{index}", f"a{index}")
+
+    service.generate_reply(conversation_id, "u16")
+
+    sent = client.completions.requests[0]["messages"]
+    assert sent[0]["role"] == "system"
+    assert len(sent) <= 11  # system + at most 10 history messages
+    assert sent[1] == {"role": "user", "content": "u12"}
+    assert sent[-1]["role"] == "user"
+    assert sent[-1]["content"].endswith("u16")
+    sent_contents = {message.get("content", "") for message in sent[1:]}
+    assert "u1" not in sent_contents
+    assert "a1" not in sent_contents
+
+    # The saved history and the UI history remain complete.
+    stored = store.load(conversation_id)
+    assert len(stored) == 32
+    assert stored[0]["content"] == "u1"
+    assert stored[-2]["content"] == "u16"
+
+
+def test_context_window_drops_orphaned_tool_messages() -> None:
+    window = [
+        {"role": "tool", "content": "orphan", "tool_call_id": "call_1"},
+        {"role": "assistant", "content": "ok"},
+    ]
+
+    assert ChatService._context_window(window) == [
+        {"role": "assistant", "content": "ok"}
+    ]
+
+
+def test_context_window_drops_a_tool_call_without_results() -> None:
+    window = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {}}],
+        },
+        {"role": "user", "content": "next"},
+    ]
+
+    assert ChatService._context_window(window) == [
+        {"role": "user", "content": "next"}
+    ]
 
 
 def test_generate_reply_injects_knowledge_base(tmp_path) -> None:

@@ -31,17 +31,3 @@ export const MessageItem = memo(function MessageItem({
     </div>
   );
 });
-
-export const TypingIndicator = memo(function TypingIndicator() {
-  return (
-    <div className="message-in flex gap-2.5">
-      <AgentAvatar size="sm" />
-      <div className="flex items-center gap-1.5 pt-2.5">
-        <span className="size-1.5 animate-pulse rounded-full bg-white/40" />
-        <span className="size-1.5 animate-pulse rounded-full bg-white/40 [animation-delay:150ms]" />
-        <span className="size-1.5 animate-pulse rounded-full bg-white/40 [animation-delay:300ms]" />
-        <span className="sr-only">Agent is working</span>
-      </div>
-    </div>
-  );
-});

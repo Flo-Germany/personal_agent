@@ -38,7 +38,7 @@ export const ApprovalCard = memo(function ApprovalCard({
             key={`${action.tool}-${action.description}`}
             className="rounded-xl border border-white/[0.07] bg-black/25 px-3 py-2"
           >
-            <p className="break-words text-[12px] leading-5 text-white/80">
+            <p className="break-words whitespace-pre-wrap text-[12px] leading-5 text-white/80">
               {action.description}
             </p>
             <p className="mt-0.5 font-mono text-[10px] text-white/30">

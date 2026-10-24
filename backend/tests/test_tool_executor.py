@@ -26,6 +26,8 @@ def test_schemas_use_the_openai_function_format() -> None:
         names.add(function["name"])
 
     assert names == {
+        "run_powershell_query",
+        "run_powershell_action",
         "start_program",
         "open_file",
         "create_folder",
@@ -41,6 +43,21 @@ def test_schemas_use_the_openai_function_format() -> None:
         "read_window_content",
         "analyze_screen",
     }
+
+
+def test_powershell_action_schema_requires_a_description() -> None:
+    schema = next(
+        item
+        for item in TOOL_SCHEMAS
+        if item["function"]["name"] == "run_powershell_action"
+    )
+
+    assert schema["function"]["parameters"]["required"] == [
+        "command",
+        "description",
+    ]
+    assert "state-changing" in schema["function"]["description"]
+    assert "approval" in schema["function"]["description"]
 
 
 def test_start_program_schema_accepts_any_program() -> None:
@@ -135,6 +152,8 @@ def test_executor_runs_create_folder(tmp_path: Path) -> None:
 def test_executor_requires_confirmation() -> None:
     executor = ToolExecutor(ToolSettings())
 
+    assert executor.requires_confirmation("run_powershell_action") is True
+    assert executor.requires_confirmation("run_powershell_query") is False
     assert executor.requires_confirmation("create_folder") is True
     assert executor.requires_confirmation("delete_file_or_folder") is True
     assert executor.requires_confirmation("start_program") is True

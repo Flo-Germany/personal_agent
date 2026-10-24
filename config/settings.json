@@ -30,7 +30,9 @@
     "max_search_files": 20000,
     "max_search_seconds": 30,
     "max_unzip_bytes": 209715200,
-    "redact_secrets": true
+    "redact_secrets": true,
+    "powershell_timeout_seconds": 15,
+    "powershell_max_output_chars": 12000
   },
   "vision": {
     "enabled": true,

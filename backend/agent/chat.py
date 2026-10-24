@@ -41,6 +41,8 @@ from tools.schemas import TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 
+CONTEXT_WINDOW_MESSAGES = 10
+
 _FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
 _SCREEN_REQUEST = re.compile(
     r"(?:\bwhat(?:'s| is)? on (?:my|the) screen\b|"
@@ -55,6 +57,18 @@ _SCREEN_NUDGE = (
     "The user asked about the screen. Call the analyze_screen tool now with "
     "their question. Do not reply that you cannot see the screen; the tool is "
     "how you see it. Answer from the tool result."
+)
+_ACTION_FAILURE_NUDGE = (
+    "The last run_powershell_action failed. Read its stderr, exit_code, and hint. "
+    "Verify the current system state with run_powershell_query and choose a "
+    "different approach if appropriate: re-resolve the exact PID or process name, "
+    "try Stop-Process -Force, taskkill /PID <pid> /T /F, CloseMainWindow(), or "
+    "the exact process name. A window title is not a process name; query "
+    "MainWindowTitle or Get-CimInstance Win32_Process. Apps such as Chrome may "
+    "have several processes. If Windows denied access, explain that the process "
+    "is elevated or protected and that administrator rights are required. Never "
+    "claim the change succeeded. If another change is needed, call "
+    "run_powershell_action; the user will be asked to approve it."
 )
 
 _PATH_ARGUMENT_KEYS = (
@@ -125,6 +139,13 @@ def _short_path(value: Any) -> str:
     return name or text
 
 
+def _short_command(value: Any, limit: int = 140) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
 def _program_was_named_by_user(user_message: str, program: str) -> bool:
     """Whether the latest user message actually names the chosen program."""
     message = str(user_message or "").casefold()
@@ -169,6 +190,16 @@ def _program_was_named_by_user(user_message: str, program: str) -> bool:
 
 
 def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
+    if name == "run_powershell_query":
+        return (
+            "Running PowerShell query: "
+            f"{_short_command(arguments.get('command')) or '...'}"
+        )
+    if name == "run_powershell_action":
+        return (
+            "Running PowerShell action: "
+            f"{_short_command(arguments.get('command')) or '...'}"
+        )
     if name == "start_program":
         return f"Opening {arguments.get('program_name', 'an application')}..."
     if name == "open_file":
@@ -211,6 +242,12 @@ def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
 
 
 def _action_description(name: str, arguments: dict[str, Any]) -> str:
+    if name == "run_powershell_action":
+        explanation = str(arguments.get("description", "")).strip()
+        command = _short_command(arguments.get("command"), 500)
+        if explanation:
+            return f"PowerShell action: {explanation}\nCommand: {command}"
+        return f"PowerShell action:\nCommand: {command}"
     if name == "start_program":
         return f"Start program {arguments.get('program_name', 'an application')}"
     if name == "open_file":
@@ -362,15 +399,30 @@ class ChatService:
                 )
 
             try:
-                yield from self._run_segment(conversation_id)
+                failed_powershell_action = any(
+                    call["function"]["name"] == "run_powershell_action"
+                    and not result.get("ok")
+                    and not result.get("cancelled")
+                    for call, result in results
+                )
+                yield from self._run_segment(
+                    conversation_id,
+                    recover_failed_action=failed_powershell_action,
+                )
             except GeneratorExit:
                 raise
             except Exception as exc:  # noqa: BLE001
                 yield self._error_event(conversation_id, exc)
 
-    def _run_segment(self, conversation_id: str) -> Iterator[dict[str, Any]]:
+    def _run_segment(
+        self,
+        conversation_id: str,
+        *,
+        recover_failed_action: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         max_tool_rounds = self._settings.agent.max_iterations
         screen_forced = False
+        recovery_attempted = False
 
         for round_index in range(max_tool_rounds + 1):
             yield {
@@ -526,6 +578,55 @@ class ChatService:
                     except LLMError as exc:
                         logger.warning("Forced tool continuation failed: %s", exc)
                         break
+
+            if (
+                recover_failed_action
+                and not recovery_attempted
+                and not tool_calls
+                and not text_calls
+                and content.strip()
+            ):
+                recovery_attempted = True
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "thinking",
+                    "message": (
+                        "The action failed; verifying the system and trying "
+                        "another approach..."
+                    ),
+                }
+                try:
+                    recovered = self._create_completion(
+                        self._store.load(conversation_id),
+                        nudge=True,
+                        nudge_text=_ACTION_FAILURE_NUDGE,
+                        tool_choice="required",
+                    )
+                    recovered_choices = getattr(recovered, "choices", None)
+                    if recovered_choices:
+                        recovered_message = recovered_choices[0].message
+                        recovered_calls = (
+                            getattr(recovered_message, "tool_calls", None) or []
+                        )
+                        recovered_content = (
+                            getattr(recovered_message, "content", "") or ""
+                        )
+                        if recovered_calls:
+                            tool_calls = recovered_calls
+                            content = recovered_content
+                            text_calls = []
+                        else:
+                            recovered_text_calls = self._extract_text_tool_calls(
+                                recovered_content
+                            )
+                            if recovered_text_calls:
+                                text_calls = recovered_text_calls
+                                content = ""
+                            elif recovered_content.strip():
+                                content = recovered_content
+                except LLMError as exc:
+                    logger.warning("Failed-action recovery attempt failed: %s", exc)
 
             if not tool_calls and not text_calls:
                 if not content.strip():
@@ -1249,11 +1350,18 @@ class ChatService:
             requested_language,
         )
         fold_system = self._system_prompt_in_user_message()
-        messages: list[dict[str, Any]] = []
-        if not fold_system:
-            messages.append({"role": "system", "content": system_prompt})
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+        ]
 
-        for item in history:
+        window = self._context_window(history)
+        logger.debug(
+            "Sending %d of %d stored messages to the model (system excluded)",
+            len(window),
+            len(history),
+        )
+
+        for item in window:
             message: dict[str, Any] = {
                 "role": item["role"],
                 "content": item.get("content") or "",
@@ -1279,3 +1387,74 @@ class ChatService:
             self._fold_system_prompt(messages, system_prompt)
 
         return messages
+
+    @staticmethod
+    def _context_window(
+        history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return the latest messages that fit the sliding context window.
+
+        The window is capped at CONTEXT_WINDOW_MESSAGES. It is then advanced to
+        the next user message so the model never receives an orphaned tool
+        result or a tool call whose result was cut off. If a long tool loop
+        leaves no user message in the window, the current turn is kept intact.
+        """
+        if len(history) <= CONTEXT_WINDOW_MESSAGES:
+            window = list(history)
+        else:
+            window = list(history[-CONTEXT_WINDOW_MESSAGES:])
+            first_user = next(
+                (
+                    index
+                    for index, message in enumerate(window)
+                    if message.get("role") == "user"
+                ),
+                None,
+            )
+            if first_user is not None:
+                window = window[first_user:]
+            else:
+                last_user = next(
+                    (
+                        index
+                        for index in range(len(history) - 1, -1, -1)
+                        if history[index].get("role") == "user"
+                    ),
+                    None,
+                )
+                if last_user is not None:
+                    window = list(history[last_user:])
+
+        return ChatService._trim_incomplete_tool_prefix(window)
+
+    @staticmethod
+    def _trim_incomplete_tool_prefix(
+        window: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Drop leading tool messages and tool calls without all their results."""
+        while window:
+            first = window[0]
+            role = first.get("role")
+
+            if role == "tool":
+                window.pop(0)
+                continue
+
+            if role == "assistant" and first.get("tool_calls"):
+                call_ids = {
+                    call.get("id")
+                    for call in first["tool_calls"]
+                    if call.get("id")
+                }
+                result_ids = {
+                    message.get("tool_call_id")
+                    for message in window[1:]
+                    if message.get("role") == "tool"
+                }
+                if call_ids and not call_ids.issubset(result_ids):
+                    window.pop(0)
+                    continue
+
+            break
+
+        return window

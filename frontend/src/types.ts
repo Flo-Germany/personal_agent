@@ -2,18 +2,27 @@ export type ChatRole = "user" | "assistant" | "status" | "files";
 
 export type StatusPhase = "thinking" | "tool_started" | "approval";
 
-export type StatusKind =
+export type ToolStatusState =
   | "thinking"
-  | "tool"
-  | "result-ok"
-  | "result-error"
-  | "approval";
+  | "executing"
+  | "waiting"
+  | "success"
+  | "error"
+  | "cancelled";
+
+export type ToolStatusData = {
+  state: ToolStatusState;
+  label: string;
+  tool?: string;
+  detail?: string;
+  exitCode?: number;
+};
 
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
-  statusKind?: StatusKind;
+  status?: ToolStatusData;
   files?: string[];
 };
 

@@ -165,6 +165,32 @@ def test_history_roundtrip(client: TestClient) -> None:
     assert all(message["created_at"] for message in payload["messages"])
 
 
+def test_history_endpoint_keeps_full_history_beyond_context_window(
+    client: TestClient,
+    store: ConversationStore,
+) -> None:
+    conversation_id = store.new_conversation_id()
+    for index in range(12):
+        store.append_exchange(
+            conversation_id,
+            f"question {index}",
+            f"answer {index}",
+        )
+
+    response = client.get(f"/chat/history/{conversation_id}")
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert len(messages) == 24
+    assert messages[0] == {
+        "role": "user",
+        "content": "question 0",
+        "created_at": messages[0]["created_at"],
+    }
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["content"] == "answer 11"
+
+
 def test_history_hides_internal_tool_messages(
     client: TestClient,
     store: ConversationStore,
