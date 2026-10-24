@@ -99,6 +99,7 @@ const STATUS_PHASES: readonly StatusPhase[] = [
   "thinking",
   "tool_started",
   "approval",
+  "generating",
 ];
 
 function isStatusPhase(value: unknown): value is StatusPhase {
@@ -131,6 +132,16 @@ function isAgentEvent(value: unknown): value is AgentEvent {
       return typeof value.tool === "string" && typeof value.ok === "boolean";
     case "assistant":
       return typeof value.content === "string";
+    case "assistant_start":
+      return true;
+    case "assistant_delta":
+      return typeof value.content === "string";
+    case "assistant_end":
+      return value.content === undefined || typeof value.content === "string";
+    case "assistant_reset":
+      return true;
+    case "metrics":
+      return true;
     case "action_required":
       return (
         typeof value.approval_id === "string" &&
@@ -138,7 +149,10 @@ function isAgentEvent(value: unknown): value is AgentEvent {
         value.actions.every(isActionItem)
       );
     case "final":
-      return typeof value.reply === "string";
+      return (
+        typeof value.reply === "string" &&
+        (value.streamed === undefined || typeof value.streamed === "boolean")
+      );
     case "error":
       return typeof value.message === "string";
     default:
@@ -162,6 +176,21 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
     case "assistant":
       callbacks.onAssistant(event.content);
       return false;
+    case "assistant_start":
+      callbacks.onAssistantStart();
+      return false;
+    case "assistant_delta":
+      callbacks.onAssistantDelta(event.content);
+      return false;
+    case "assistant_end":
+      callbacks.onAssistantEnd(event.content);
+      return false;
+    case "assistant_reset":
+      callbacks.onAssistantReset();
+      return false;
+    case "metrics":
+      callbacks.onMetrics(event);
+      return false;
     case "action_required":
       callbacks.onActionRequired({
         approval_id: event.approval_id,
@@ -172,7 +201,7 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
       });
       return true;
     case "final":
-      callbacks.onFinal(event.reply, event.conversation_id);
+      callbacks.onFinal(event.reply, event.conversation_id, event.streamed);
       return true;
     case "error":
       callbacks.onError(event.message);

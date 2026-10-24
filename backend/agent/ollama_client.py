@@ -19,8 +19,9 @@ import json
 import threading
 import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -53,10 +54,45 @@ class NativeOllamaClient:
         )
 
     def _create(self, **kwargs: Any) -> Any:
+        body = json.dumps(
+            self._payload(kwargs, stream=False),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return _to_openai_shape(json.loads(self._post(body)))
+
+    def stream_chat(self, **kwargs: Any) -> Iterator[dict[str, Any]]:
+        """Yield native Ollama chunks from a streaming ``/api/chat`` request."""
+        body = json.dumps(
+            self._payload(kwargs, stream=True),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self._endpoint,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/x-ndjson",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            for raw in response:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                yield json.loads(line)
+
+    def _payload(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": kwargs["model"],
             "messages": _native_messages(kwargs["messages"]),
-            "stream": False,
+            "stream": stream,
             "keep_alive": self._keep_alive,
             "options": {
                 "num_ctx": self._num_ctx,
@@ -67,9 +103,7 @@ class NativeOllamaClient:
             payload["options"]["num_predict"] = kwargs["max_tokens"]
         if kwargs.get("tools"):
             payload["tools"] = kwargs["tools"]
-
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return _to_openai_shape(json.loads(self._post(body)))
+        return payload
 
     def _post(self, body: bytes) -> bytes:
         last_error: Exception | None = None

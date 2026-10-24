@@ -1,6 +1,19 @@
 export type ChatRole = "user" | "assistant" | "status" | "files";
 
-export type StatusPhase = "thinking" | "tool_started" | "approval";
+export type StatusPhase = "thinking" | "tool_started" | "approval" | "generating";
+
+export type TokenMetrics = {
+  live?: boolean;
+  model?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  tokens_per_second?: number;
+  prompt_tokens_per_second?: number;
+  prompt_eval_ms?: number;
+  eval_ms?: number;
+  load_ms?: number;
+  total_ms?: number;
+};
 
 export type ToolStatusState =
   | "thinking"
@@ -16,6 +29,8 @@ export type ToolStatusData = {
   tool?: string;
   detail?: string;
   exitCode?: number;
+  metrics?: string;
+  metricsDetail?: string;
 };
 
 export type ChatMessage = {
@@ -24,6 +39,8 @@ export type ChatMessage = {
   content: string;
   status?: ToolStatusData;
   files?: string[];
+  metrics?: TokenMetrics;
+  streaming?: boolean;
 };
 
 export type Identity = {
@@ -75,6 +92,33 @@ export type AgentAssistantEvent = {
   content: string;
 };
 
+export type AgentAssistantStartEvent = {
+  type: "assistant_start";
+  conversation_id?: string;
+};
+
+export type AgentAssistantDeltaEvent = {
+  type: "assistant_delta";
+  conversation_id?: string;
+  content: string;
+};
+
+export type AgentAssistantEndEvent = {
+  type: "assistant_end";
+  conversation_id?: string;
+  content?: string;
+};
+
+export type AgentAssistantResetEvent = {
+  type: "assistant_reset";
+  conversation_id?: string;
+};
+
+export type AgentMetricsEvent = TokenMetrics & {
+  type: "metrics";
+  conversation_id?: string;
+};
+
 export type AgentActionRequiredEvent = {
   type: "action_required";
   conversation_id?: string;
@@ -88,6 +132,7 @@ export type AgentFinalEvent = {
   type: "final";
   conversation_id?: string;
   reply: string;
+  streamed?: boolean;
 };
 
 export type AgentErrorEvent = {
@@ -101,6 +146,11 @@ export type AgentEvent =
   | AgentStatusEvent
   | AgentToolResultEvent
   | AgentAssistantEvent
+  | AgentAssistantStartEvent
+  | AgentAssistantDeltaEvent
+  | AgentAssistantEndEvent
+  | AgentAssistantResetEvent
+  | AgentMetricsEvent
   | AgentActionRequiredEvent
   | AgentFinalEvent
   | AgentErrorEvent;
@@ -113,8 +163,17 @@ export type StreamCallbacks = {
     tool?: string,
     result?: ToolResult,
   ) => void;
+  onAssistantStart: () => void;
+  onAssistantDelta: (content: string) => void;
+  onAssistantEnd: (content?: string) => void;
+  onAssistantReset: () => void;
+  onMetrics: (metrics: TokenMetrics) => void;
   onAssistant: (content: string) => void;
   onActionRequired: (action: PendingAction) => void;
-  onFinal: (reply: string, conversationId?: string) => void;
+  onFinal: (
+    reply: string,
+    conversationId?: string,
+    streamed?: boolean,
+  ) => void;
   onError: (message: string) => void;
 };

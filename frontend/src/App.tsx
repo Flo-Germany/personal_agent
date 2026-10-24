@@ -25,10 +25,14 @@ function App() {
   } = useAgentChat();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastContentLength = messages[messages.length - 1]?.content.length ?? 0;
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, isStreaming, pendingAction]);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: isStreaming ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [messages.length, lastContentLength, isStreaming, pendingAction]);
 
   const isEmpty = useMemo(() => messages.length === 0, [messages.length]);
 

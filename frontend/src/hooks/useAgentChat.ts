@@ -26,6 +26,7 @@ import type {
   Identity,
   PendingAction,
   StreamCallbacks,
+  TokenMetrics,
   ToolResult,
   ToolStatusData,
 } from "../types";
@@ -108,6 +109,9 @@ export function useAgentChat() {
   const mountedRef = useRef(true);
   const activeStatusIdRef = useRef<string | null>(null);
   const lastStatusStateRef = useRef<ToolStatusData["state"] | null>(null);
+  const streamingMessageIdRef = useRef<string | null>(null);
+  const lastStreamedIdRef = useRef<string | null>(null);
+  const lastStreamedContentRef = useRef("");
 
   const addMessage = useCallback(
     (role: ChatRole, content: string, files?: string[]) => {
@@ -160,10 +164,54 @@ export function useAgentChat() {
     });
   }, []);
 
+  const resetStreamingRefs = useCallback(() => {
+    streamingMessageIdRef.current = null;
+    lastStreamedIdRef.current = null;
+    lastStreamedContentRef.current = "";
+  }, []);
+
+  const applyMetrics = useCallback((metrics: TokenMetrics) => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    const id = streamingMessageIdRef.current ?? lastStreamedIdRef.current;
+    if (!id) {
+      return;
+    }
+
+    setMessages((current) => {
+      if (!current.some((message) => message.id === id)) {
+        return current;
+      }
+      return current.map((message) =>
+        message.id === id ? { ...message, metrics } : message,
+      );
+    });
+  }, []);
+
+  const finalizeStreaming = useCallback(() => {
+    const id = streamingMessageIdRef.current;
+    streamingMessageIdRef.current = null;
+    lastStreamedIdRef.current = null;
+    lastStreamedContentRef.current = "";
+
+    if (!id || !mountedRef.current) {
+      return;
+    }
+
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === id ? { ...message, streaming: false } : message,
+      ),
+    );
+  }, []);
+
   const beginStatus = useCallback(() => {
+    resetStreamingRefs();
     activeStatusIdRef.current = null;
     updateStatus({ state: "thinking", label: "Thinking..." });
-  }, [updateStatus]);
+  }, [resetStreamingRefs, updateStatus]);
 
   const addAttachments = useCallback(
     (files: string[]) => {
@@ -227,6 +275,7 @@ export function useAgentChat() {
         }
 
         if (mountedRef.current) {
+          finalizeStreaming();
           updateStatus({
             state: "error",
             label: "Agent error",
@@ -315,6 +364,75 @@ export function useAgentChat() {
             addAssistant(content);
           }
         },
+        onAssistantStart: () => {
+          if (!mountedRef.current) {
+            return;
+          }
+          const id = crypto.randomUUID();
+          streamingMessageIdRef.current = id;
+          lastStreamedIdRef.current = id;
+          lastStreamedContentRef.current = "";
+          setMessages((current) => [
+            ...current,
+            {
+              id,
+              role: "assistant",
+              content: "",
+              streaming: true,
+            },
+          ]);
+        },
+        onAssistantDelta: (content) => {
+          if (!mountedRef.current) {
+            return;
+          }
+          const id = streamingMessageIdRef.current;
+          if (!id) {
+            return;
+          }
+          lastStreamedContentRef.current += content;
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === id
+                ? { ...message, content: message.content + content }
+                : message,
+            ),
+          );
+        },
+        onAssistantEnd: (content) => {
+          if (!mountedRef.current) {
+            return;
+          }
+          const id = streamingMessageIdRef.current;
+          if (!id) {
+            return;
+          }
+          const finalContent = content ?? lastStreamedContentRef.current;
+          lastStreamedContentRef.current = finalContent;
+          streamingMessageIdRef.current = null;
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === id
+                ? { ...message, content: finalContent, streaming: false }
+                : message,
+            ),
+          );
+        },
+        onAssistantReset: () => {
+          const id = lastStreamedIdRef.current;
+          if (streamingMessageIdRef.current === id) {
+            streamingMessageIdRef.current = null;
+          }
+          lastStreamedIdRef.current = null;
+          lastStreamedContentRef.current = "";
+          if (!id || !mountedRef.current) {
+            return;
+          }
+          setMessages((current) =>
+            current.filter((message) => message.id !== id),
+          );
+        },
+        onMetrics: applyMetrics,
         onActionRequired: (action) => {
           if (!mountedRef.current) {
             return;
@@ -328,7 +446,7 @@ export function useAgentChat() {
             detail: action.actions.map((item) => item.description).join("\n"),
           });
         },
-        onFinal: (reply, id) => {
+        onFinal: (reply, id, streamed) => {
           if (!mountedRef.current) {
             return;
           }
@@ -342,8 +460,25 @@ export function useAgentChat() {
             (path) => !replyMentionsPath(text, path),
           );
 
+          const streamedId = lastStreamedIdRef.current;
+          const alreadyStreamed =
+            streamedId !== null &&
+            (streamed === true ||
+              lastStreamedContentRef.current.trim() === text.trim());
+
           if (text.trim()) {
-            addAssistant(text);
+            if (alreadyStreamed && streamedId) {
+              // Replace the raw stream with the normalized final text.
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === streamedId
+                    ? { ...message, content: text, streaming: false }
+                    : message,
+                ),
+              );
+            } else {
+              addAssistant(text);
+            }
           }
 
           if (missingFiles.length > 0) {
@@ -362,6 +497,7 @@ export function useAgentChat() {
           }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          resetStreamingRefs();
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
           rememberConversation(id);
@@ -371,6 +507,7 @@ export function useAgentChat() {
           if (!mountedRef.current) {
             return;
           }
+          finalizeStreaming();
           updateStatus({
             state: "error",
             label: "Agent error",
@@ -387,6 +524,7 @@ export function useAgentChat() {
 
       const terminal = await consumeEventStream(response, callbacks, signal);
       if (!terminal && mountedRef.current) {
+        finalizeStreaming();
         updateStatus({
           state: "error",
           label: "Connection closed",
@@ -397,7 +535,15 @@ export function useAgentChat() {
         addAssistant(STREAM_CLOSED_MESSAGE);
       }
     },
-    [addAssistant, addAttachments, rememberConversation, updateStatus],
+    [
+      addAssistant,
+      addAttachments,
+      applyMetrics,
+      finalizeStreaming,
+      rememberConversation,
+      resetStreamingRefs,
+      updateStatus,
+    ],
   );
 
   const sendMessage = useCallback(
@@ -431,6 +577,7 @@ export function useAgentChat() {
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
+          finalizeStreaming();
           updateStatus({
             state: "error",
             label: "Connection failed",
@@ -455,6 +602,7 @@ export function useAgentChat() {
       addMessage,
       beginStatus,
       conversationId,
+      finalizeStreaming,
       handleStreamResponse,
       isLoadingHistory,
       pendingAction,
@@ -470,6 +618,7 @@ export function useAgentChat() {
       }
 
       setPendingAction(null);
+      resetStreamingRefs();
       updateStatus({
         state: "executing",
         label: "Executing approved action...",
@@ -490,6 +639,7 @@ export function useAgentChat() {
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
+          finalizeStreaming();
           updateStatus({
             state: "error",
             label: "Connection failed",
@@ -509,7 +659,13 @@ export function useAgentChat() {
         }
       }
     },
-    [addAssistant, handleStreamResponse, pendingAction, updateStatus],
+    [
+      addAssistant,
+      handleStreamResponse,
+      pendingAction,
+      resetStreamingRefs,
+      updateStatus,
+    ],
   );
 
   const clearChat = useCallback(async () => {
@@ -524,6 +680,7 @@ export function useAgentChat() {
     setPendingAction(null);
     activeStatusIdRef.current = null;
     lastStatusStateRef.current = null;
+    resetStreamingRefs();
     pendingFilesRef.current.clear();
     usedSemanticSearchRef.current = false;
     storeConversationId(null);
@@ -533,7 +690,7 @@ export function useAgentChat() {
     }
 
     await deleteConversation(previousId);
-  }, [conversationId, isLoadingHistory]);
+  }, [conversationId, isLoadingHistory, resetStreamingRefs]);
 
   const refresh = useCallback(async () => {
     if (streamingRef.current) {
@@ -558,6 +715,7 @@ export function useAgentChat() {
       setPendingAction(snapshot.pending);
       activeStatusIdRef.current = null;
       lastStatusStateRef.current = null;
+      resetStreamingRefs();
     } finally {
       if (loadControllerRef.current === controller) {
         loadControllerRef.current = null;
@@ -566,7 +724,7 @@ export function useAgentChat() {
         }
       }
     }
-  }, []);
+  }, [resetStreamingRefs]);
 
   return useMemo(
     () => ({

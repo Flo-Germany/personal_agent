@@ -302,15 +302,25 @@ VRAM at a time. See `.env.example` for the tracked example.
 ### SSE event types
 
 ```text
-status          thinking, tool_started, approval
-tool_result     tool name, ok flag, human-readable summary, raw result
-action_required approval_id, conversation_id, action descriptions
-assistant       partial assistant text before a tool call (when present)
-final           final natural-language reply
-error           readable error and HTTP-like status
+status           thinking, generating, tool_started, approval
+tool_result      tool name, ok flag, human-readable summary, raw result
+action_required  approval_id, conversation_id, action descriptions
+assistant_start  a streamed assistant text block begins
+assistant_delta  incremental text; emitted as soon as tokens arrive
+assistant_end    the full text of the block that just streamed
+assistant_reset  discard the provisional block (raw tool-call JSON, retry)
+metrics          live and final tokens/sec, token counts, timing, model
+final            final natural-language reply (with a streamed flag)
+error            readable error and HTTP-like status
 ```
 
-The SSE stream ends after `final`, `error`, or `action_required`.
+The SSE stream ends after `final`, `error`, or `action_required`. The backend
+uses Ollama's native `/api/chat` with `stream: true`, so text is forwarded token
+by token rather than buffered into one message. `metrics` events are emitted
+about twice per second while text streams (`live: true`) and once at the end
+with Ollama's exact `eval_count`/`eval_duration`. The UI shows the live rate
+under the growing answer and keeps a final footer with tokens/sec, generated
+and prompt token counts, prompt evaluation, model load, and total time.
 
 ### Agent loop and HITL
 

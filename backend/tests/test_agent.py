@@ -39,6 +39,38 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class StreamingClient:
+    def __init__(self, chunks: list[dict[str, Any]]) -> None:
+        self.chunks = chunks
+        self.requests: list[dict[str, Any]] = []
+
+    def stream_chat(self, **kwargs: Any):
+        self.requests.append(kwargs)
+        yield from self.chunks
+
+
+class ScriptedStreamingClient:
+    def __init__(self, rounds: list[list[dict[str, Any]]]) -> None:
+        self.rounds = list(rounds)
+        self.requests: list[dict[str, Any]] = []
+
+    def stream_chat(self, **kwargs: Any):
+        self.requests.append(kwargs)
+        yield from self.rounds.pop(0)
+
+
+class StubTools:
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, Any]] = []
+
+    def requires_confirmation(self, name: str) -> bool:
+        return False
+
+    def execute(self, name: str, arguments: Any) -> dict[str, Any]:
+        self.executed.append((name, arguments))
+        return {"ok": True, "windows": []}
+
+
 class ScriptedCompletions:
     def __init__(self, replies: list[str]) -> None:
         self.replies = list(replies)
@@ -302,6 +334,111 @@ def test_system_prompt_includes_knowledge() -> None:
 
     assert "Long-term knowledge about the user" in prompt
     assert "Likes cycling" in prompt
+
+
+def test_streaming_completion_emits_deltas_and_metrics(tmp_path) -> None:
+    client = StreamingClient(
+        [
+            {"message": {"role": "assistant", "content": "Hel"}},
+            {"message": {"role": "assistant", "content": "lo"}},
+            {
+                "message": {"role": "assistant", "content": ""},
+                "done": True,
+                "prompt_eval_count": 10,
+                "eval_count": 2,
+                "eval_duration": 1_000_000_000,
+                "total_duration": 2_000_000_000,
+            },
+        ]
+    )
+    service, store, _ = make_service(tmp_path, client)
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Hi"))
+    types = [event["type"] for event in events]
+
+    assert "assistant_start" in types
+    assert types.count("assistant_delta") == 2
+    assert "assistant_end" in types
+    assert "metrics" in types
+    assert types[-1] == "final"
+    assert "".join(
+        event["content"]
+        for event in events
+        if event["type"] == "assistant_delta"
+    ) == "Hello"
+    metrics = next(event for event in events if event["type"] == "metrics")
+    assert metrics["live"] is False
+    assert metrics["model"] == "hermes3"
+    assert metrics["prompt_tokens"] == 10
+    assert metrics["completion_tokens"] == 2
+    assert metrics["tokens_per_second"] == 2.0
+    assert metrics["eval_ms"] == 1000.0
+    assert metrics["total_ms"] == 2000.0
+    assert events[-1]["reply"] == "Hello"
+    assert events[-1]["streamed"] is True
+    assert store.load(conversation_id)[-1]["content"] == "Hello"
+
+
+def test_non_streaming_client_still_emits_stream_events(tmp_path) -> None:
+    service, store, _ = make_service(tmp_path, FakeClient("Hello there"))
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Hi"))
+    deltas = [event for event in events if event["type"] == "assistant_delta"]
+
+    assert [event["content"] for event in deltas] == ["Hello there"]
+    assert any(event["type"] == "assistant_start" for event in events)
+    assert any(event["type"] == "assistant_end" for event in events)
+    assert events[-1]["reply"] == "Hello there"
+    assert events[-1]["streamed"] is True
+
+
+def test_text_tool_call_stream_is_reset_before_the_tool_runs(tmp_path) -> None:
+    raw_call = '{"name": "get_open_windows", "arguments": {}}'
+    client = ScriptedStreamingClient(
+        [
+            [
+                {"message": {"role": "assistant", "content": raw_call}},
+                {"message": {"role": "assistant", "content": ""}, "done": True},
+            ],
+            [
+                {"message": {"role": "assistant", "content": "Done."}},
+                {
+                    "message": {"role": "assistant", "content": ""},
+                    "done": True,
+                    "eval_count": 1,
+                    "eval_duration": 1_000_000_000,
+                },
+            ],
+        ]
+    )
+    settings = make_settings(tmp_path)
+    store = ConversationStore(max_conversations=10)
+    knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
+    tools = StubTools()
+    service = ChatService(settings, store, knowledge, tools=tools, client=client)
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Which windows are open?"))
+    types = [event["type"] for event in events]
+
+    assert types.count("assistant_reset") == 1
+    assert [event["content"] for event in events if event["type"] == "assistant_delta"] == [
+        raw_call,
+        "Done.",
+    ]
+    assert tools.executed == [("get_open_windows", "{}")]
+    assert events[-1]["reply"] == "Done."
+    assert events[-1]["streamed"] is True
+
+    assistant_contents = [
+        message["content"]
+        for message in store.load(conversation_id)
+        if message["role"] == "assistant"
+    ]
+    assert raw_call not in assistant_contents
+    assert assistant_contents[-1] == "Done."
 
 
 def test_generate_reply_sends_history_and_stores_exchange(tmp_path) -> None:

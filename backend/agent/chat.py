@@ -6,17 +6,18 @@ import json
 import logging
 import re
 import threading
+import time
 import urllib.error
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from types import SimpleNamespace
+from typing import Any, Iterator, NamedTuple
 
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
     NotFoundError,
-    OpenAIError,
 )
 
 from agent.approvals import (
@@ -279,6 +280,13 @@ def _action_description(name: str, arguments: dict[str, Any]) -> str:
     return f"{name}: {json.dumps(arguments, ensure_ascii=False)}"
 
 
+class StreamOutcome(NamedTuple):
+    """A completion plus the content already emitted to the UI as deltas."""
+
+    completion: Any
+    streamed_content: str | None
+
+
 class ChatService:
     """Compose prompts, call Ollama, run tools with HITL, and stream events."""
 
@@ -440,15 +448,19 @@ class ChatService:
             message = None
             tool_calls: list[Any] = []
             content = ""
+            streamed_content: str | None = None
 
             # Hermes occasionally emits an empty message on complex prompts.
             # Retrying once is safe because no tool has run yet.
             for attempt in range(2):
-                completion = self._create_completion(
+                outcome = yield from self._stream_completion(
+                    conversation_id,
                     self._store.load(conversation_id),
                     nudge=attempt > 0,
                     tool_choice="required" if attempt > 0 else "auto",
                 )
+                completion = outcome.completion
+                streamed_content = outcome.streamed_content
                 choices = getattr(completion, "choices", None)
                 if not choices:
                     raise LLMError("Ollama returned an empty response.")
@@ -480,6 +492,13 @@ class ChatService:
                 [] if tool_calls else self._extract_text_tool_calls(content)
             )
             if text_calls:
+                # The streamed text was raw tool-call JSON; remove the bubble.
+                if streamed_content is not None:
+                    yield {
+                        "type": "assistant_reset",
+                        "conversation_id": conversation_id,
+                    }
+                    streamed_content = None
                 content = ""
 
             if any(
@@ -501,6 +520,13 @@ class ChatService:
                 and self._last_user_requested_screen(conversation_id)
             ):
                 screen_forced = True
+                if streamed_content is not None:
+                    # The model answered without looking; replace that text.
+                    yield {
+                        "type": "assistant_reset",
+                        "conversation_id": conversation_id,
+                    }
+                    streamed_content = None
                 yield {
                     "type": "status",
                     "conversation_id": conversation_id,
@@ -508,22 +534,30 @@ class ChatService:
                     "message": "Looking at the screen...",
                 }
                 try:
-                    forced = self._create_completion(
+                    outcome = yield from self._stream_completion(
+                        conversation_id,
                         self._store.load(conversation_id),
                         nudge=True,
                         nudge_text=_SCREEN_NUDGE,
                         tool_choice="required",
                     )
+                    forced = outcome.completion
                     forced_choices = getattr(forced, "choices", None)
+                    forced_calls: list[Any] = []
                     if forced_choices:
                         forced_message = forced_choices[0].message
                         forced_calls = getattr(forced_message, "tool_calls", None) or []
-                        if forced_calls:
-                            tool_calls = forced_calls
-                            content = (
-                                getattr(forced_message, "content", "") or ""
-                            )
-                            text_calls = []
+                    if forced_calls:
+                        tool_calls = forced_calls
+                        content = getattr(forced_message, "content", "") or ""
+                        text_calls = []
+                        streamed_content = outcome.streamed_content
+                    elif outcome.streamed_content is not None:
+                        # A forced answer that did not use the screen is stale.
+                        yield {
+                            "type": "assistant_reset",
+                            "conversation_id": conversation_id,
+                        }
                 except LLMError as exc:
                     logger.warning("Forced screen analysis failed: %s", exc)
 
@@ -542,6 +576,13 @@ class ChatService:
                 and self._last_user_requested_action(conversation_id)
             ):
                 for _forced_attempt in range(2):
+                    if streamed_content is not None:
+                        # Drop the narration that the retry will replace.
+                        yield {
+                            "type": "assistant_reset",
+                            "conversation_id": conversation_id,
+                        }
+                        streamed_content = None
                     yield {
                         "type": "status",
                         "conversation_id": conversation_id,
@@ -552,13 +593,16 @@ class ChatService:
                         ),
                     }
                     try:
-                        forced = self._create_completion(
+                        outcome = yield from self._stream_completion(
+                            conversation_id,
                             self._store.load(conversation_id),
                             nudge=True,
                             tool_choice="required",
                         )
+                        forced = outcome.completion
                         forced_choices = getattr(forced, "choices", None)
                         if not forced_choices:
+                            streamed_content = outcome.streamed_content
                             break
                         forced_message = forced_choices[0].message
                         forced_calls = getattr(forced_message, "tool_calls", None) or []
@@ -567,16 +611,24 @@ class ChatService:
                             tool_calls = forced_calls
                             content = forced_content
                             text_calls = []
+                            streamed_content = outcome.streamed_content
                             break
                         forced_text_calls = self._extract_text_tool_calls(
                             forced_content
                         )
                         if forced_text_calls:
+                            if outcome.streamed_content is not None:
+                                yield {
+                                    "type": "assistant_reset",
+                                    "conversation_id": conversation_id,
+                                }
                             text_calls = forced_text_calls
                             content = ""
+                            streamed_content = None
                             break
                         if forced_content.strip():
                             content = forced_content
+                        streamed_content = outcome.streamed_content
                         if not self._looks_like_action_promise(content):
                             break
                     except LLMError as exc:
@@ -591,6 +643,13 @@ class ChatService:
                 and content.strip()
             ):
                 recovery_attempted = True
+                if streamed_content is not None:
+                    # The conclusion is being replaced by a recovery attempt.
+                    yield {
+                        "type": "assistant_reset",
+                        "conversation_id": conversation_id,
+                    }
+                    streamed_content = None
                 yield {
                     "type": "status",
                     "conversation_id": conversation_id,
@@ -601,12 +660,14 @@ class ChatService:
                     ),
                 }
                 try:
-                    recovered = self._create_completion(
+                    outcome = yield from self._stream_completion(
+                        conversation_id,
                         self._store.load(conversation_id),
                         nudge=True,
                         nudge_text=_ACTION_FAILURE_NUDGE,
                         tool_choice="required",
                     )
+                    recovered = outcome.completion
                     recovered_choices = getattr(recovered, "choices", None)
                     if recovered_choices:
                         recovered_message = recovered_choices[0].message
@@ -620,15 +681,23 @@ class ChatService:
                             tool_calls = recovered_calls
                             content = recovered_content
                             text_calls = []
+                            streamed_content = outcome.streamed_content
                         else:
                             recovered_text_calls = self._extract_text_tool_calls(
                                 recovered_content
                             )
                             if recovered_text_calls:
+                                if outcome.streamed_content is not None:
+                                    yield {
+                                        "type": "assistant_reset",
+                                        "conversation_id": conversation_id,
+                                    }
                                 text_calls = recovered_text_calls
                                 content = ""
+                                streamed_content = None
                             elif recovered_content.strip():
                                 content = recovered_content
+                                streamed_content = outcome.streamed_content
                 except LLMError as exc:
                     logger.warning("Failed-action recovery attempt failed: %s", exc)
 
@@ -638,6 +707,12 @@ class ChatService:
                 if self._looks_like_raw_tool_call(
                     content
                 ) or self._looks_like_malformed_tool_output(content):
+                    if streamed_content is not None:
+                        yield {
+                            "type": "assistant_reset",
+                            "conversation_id": conversation_id,
+                        }
+                        streamed_content = None
                     raise LLMError(
                         "The model returned a malformed response. Please try again."
                     )
@@ -647,6 +722,10 @@ class ChatService:
                     "type": "final",
                     "conversation_id": conversation_id,
                     "reply": reply,
+                    "streamed": (
+                        streamed_content is not None
+                        and self._normalize_reply(streamed_content).strip() == reply
+                    ),
                 }
                 return
 
@@ -671,13 +750,6 @@ class ChatService:
                 content,
                 tool_calls=serialized_calls,
             )
-
-            if content.strip():
-                yield {
-                    "type": "assistant",
-                    "conversation_id": conversation_id,
-                    "content": content.strip(),
-                }
 
             confirmation_calls = [
                 call
@@ -733,6 +805,7 @@ class ChatService:
                     "type": "final",
                     "conversation_id": conversation_id,
                     "reply": reply,
+                    "streamed": False,
                 }
                 return
 
@@ -846,14 +919,13 @@ class ChatService:
         return added
 
     # ------------------------------------------------------------------ LLM
-    def _create_completion(
+    def _completion_messages(
         self,
         history: list[dict[str, Any]],
         *,
-        nudge: bool = False,
-        nudge_text: str | None = None,
-        tool_choice: str = "auto",
-    ) -> Any:
+        nudge: bool,
+        nudge_text: str | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
         model = self._settings.ollama.model
         messages = self._build_messages(history)
 
@@ -874,6 +946,294 @@ class ChatService:
                 }
             )
 
+        return model, messages
+
+    def _request_error(self, exc: Exception, model: str) -> LLMError:
+        if isinstance(exc, urllib.error.HTTPError):
+            if exc.code == 404:
+                return LLMError(
+                    f"Ollama model '{model}' is not installed. "
+                    f"Run `ollama pull {model}`.",
+                    status_code=503,
+                )
+            return LLMError(
+                f"Ollama returned an error (HTTP {exc.code}).",
+                status_code=502,
+            )
+        if isinstance(exc, (TimeoutError, urllib.error.URLError)):
+            if isinstance(getattr(exc, "reason", None), TimeoutError) or isinstance(
+                exc, TimeoutError
+            ):
+                return LLMError(
+                    "Ollama took too long to respond. Try a shorter message.",
+                    status_code=504,
+                )
+            return LLMError(
+                "I can't reach Ollama at "
+                f"{self._settings.ollama.base_url}. Make sure Ollama is running "
+                "(`ollama serve`).",
+                status_code=503,
+            )
+        if isinstance(exc, APITimeoutError):
+            return LLMError(
+                "Ollama took too long to respond. Try a shorter message.",
+                status_code=504,
+            )
+        if isinstance(exc, APIConnectionError):
+            return LLMError(
+                "I can't reach Ollama at "
+                f"{self._settings.ollama.base_url}. Make sure Ollama is running "
+                "(`ollama serve`).",
+                status_code=503,
+            )
+        if isinstance(exc, NotFoundError):
+            return LLMError(
+                f"Ollama model '{model}' is not installed. "
+                f"Run `ollama pull {model}`.",
+                status_code=503,
+            )
+        if isinstance(exc, APIStatusError):
+            return LLMError(
+                f"Ollama returned an error (HTTP {exc.status_code}).",
+                status_code=502,
+            )
+        if isinstance(exc, json.JSONDecodeError):
+            return LLMError(
+                "The model returned malformed streaming data.",
+                status_code=502,
+            )
+        return LLMError("The LLM request failed.", status_code=502)
+
+    def _metrics_event(
+        self,
+        conversation_id: str,
+        data: dict[str, Any],
+        *,
+        live: bool,
+        completion_tokens: int | None = None,
+        tokens_per_second: float | None = None,
+    ) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "type": "metrics",
+            "conversation_id": conversation_id,
+            "live": live,
+            "model": self._settings.ollama.model,
+        }
+        if completion_tokens is not None:
+            event["completion_tokens"] = completion_tokens
+        if tokens_per_second is not None:
+            event["tokens_per_second"] = round(tokens_per_second, 1)
+
+        prompt_tokens = data.get("prompt_eval_count")
+        eval_count = data.get("eval_count")
+        prompt_ns = data.get("prompt_eval_duration")
+        eval_ns = data.get("eval_duration")
+        load_ns = data.get("load_duration")
+        total_ns = data.get("total_duration")
+
+        if isinstance(prompt_tokens, int):
+            event["prompt_tokens"] = prompt_tokens
+        if isinstance(eval_count, int) and not live:
+            event["completion_tokens"] = eval_count
+            if isinstance(eval_ns, (int, float)) and eval_ns > 0:
+                event["tokens_per_second"] = round(
+                    eval_count / (float(eval_ns) / 1_000_000_000),
+                    1,
+                )
+        if (
+            isinstance(prompt_tokens, int)
+            and isinstance(prompt_ns, (int, float))
+            and prompt_ns > 0
+        ):
+            event["prompt_tokens_per_second"] = round(
+                prompt_tokens / (float(prompt_ns) / 1_000_000_000),
+                1,
+            )
+        if isinstance(prompt_ns, (int, float)):
+            event["prompt_eval_ms"] = round(float(prompt_ns) / 1_000_000, 1)
+        if isinstance(eval_ns, (int, float)):
+            event["eval_ms"] = round(float(eval_ns) / 1_000_000, 1)
+        if isinstance(load_ns, (int, float)):
+            event["load_ms"] = round(float(load_ns) / 1_000_000, 1)
+        if isinstance(total_ns, (int, float)):
+            event["total_ms"] = round(float(total_ns) / 1_000_000, 1)
+        return event
+
+    def _stream_completion(
+        self,
+        conversation_id: str,
+        history: list[dict[str, Any]],
+        *,
+        nudge: bool = False,
+        nudge_text: str | None = None,
+        tool_choice: str = "auto",
+    ) -> Iterator[dict[str, Any]]:
+        """Stream content deltas/metrics, then return an OpenAI-shaped completion."""
+        model, messages = self._completion_messages(
+            history,
+            nudge=nudge,
+            nudge_text=nudge_text,
+        )
+
+        stream_chat = getattr(self._client, "stream_chat", None)
+        if stream_chat is None:
+            completion = self._create_completion(
+                history,
+                nudge=nudge,
+                nudge_text=nudge_text,
+                tool_choice=tool_choice,
+            )
+            choices = getattr(completion, "choices", None) or []
+            message = choices[0].message if choices else None
+            content = (getattr(message, "content", "") or "") if message else ""
+            if content.strip():
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "generating",
+                    "message": "Generating answer...",
+                }
+                yield {
+                    "type": "assistant_start",
+                    "conversation_id": conversation_id,
+                }
+                yield {
+                    "type": "assistant_delta",
+                    "conversation_id": conversation_id,
+                    "content": content,
+                }
+                yield {
+                    "type": "assistant_end",
+                    "conversation_id": conversation_id,
+                    "content": content,
+                }
+            return StreamOutcome(completion, content or None)
+
+        content_parts: list[str] = []
+        tool_calls: list[Any] = []
+        started = False
+        token_count = 0
+        first_token_at: float | None = None
+        last_live_at = time.monotonic()
+        metrics_data: dict[str, Any] = {}
+
+        try:
+            for chunk in stream_chat(
+                model=model,
+                messages=messages,
+                tools=TOOL_SCHEMAS,
+                tool_choice=tool_choice,
+                temperature=self._settings.ollama.temperature,
+            ):
+                message = chunk.get("message") or {}
+                delta = message.get("content") or ""
+
+                if delta:
+                    now = time.monotonic()
+                    if not started:
+                        started = True
+                        first_token_at = now
+                        last_live_at = now
+                        yield {
+                            "type": "status",
+                            "conversation_id": conversation_id,
+                            "phase": "generating",
+                            "message": "Generating answer...",
+                        }
+                        yield {
+                            "type": "assistant_start",
+                            "conversation_id": conversation_id,
+                        }
+
+                    content_parts.append(delta)
+                    token_count += 1
+                    yield {
+                        "type": "assistant_delta",
+                        "conversation_id": conversation_id,
+                        "content": delta,
+                    }
+
+                    elapsed = now - (first_token_at or now)
+                    if elapsed >= 0.5 and now - last_live_at >= 0.5:
+                        last_live_at = now
+                        yield self._metrics_event(
+                            conversation_id,
+                            metrics_data,
+                            live=True,
+                            completion_tokens=token_count,
+                            tokens_per_second=token_count / max(elapsed, 0.001),
+                        )
+
+                for raw_call in message.get("tool_calls") or []:
+                    function = raw_call.get("function") or {}
+                    arguments = function.get("arguments", {})
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments or "{}")
+                        except json.JSONDecodeError:
+                            arguments = {}
+                    tool_calls.append(
+                        SimpleNamespace(
+                            id=raw_call.get("id") or f"call_{uuid.uuid4().hex}",
+                            type="function",
+                            function=SimpleNamespace(
+                                name=function.get("name", ""),
+                                arguments=arguments,
+                            ),
+                        )
+                    )
+
+                if chunk.get("error"):
+                    raise LLMError(
+                        f"Ollama error: {chunk['error']}",
+                        status_code=502,
+                    )
+
+                if chunk.get("done"):
+                    metrics_data = chunk
+        except LLMError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - translated into an LLMError
+            raise self._request_error(exc, model) from exc
+
+        full_content = "".join(content_parts)
+        if started:
+            yield {
+                "type": "assistant_end",
+                "conversation_id": conversation_id,
+                "content": full_content,
+            }
+        if metrics_data:
+            yield self._metrics_event(conversation_id, metrics_data, live=False)
+
+        return StreamOutcome(
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=full_content,
+                            tool_calls=tool_calls or None,
+                        )
+                    )
+                ]
+            ),
+            full_content or None,
+        )
+
+    def _create_completion(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        nudge: bool = False,
+        nudge_text: str | None = None,
+        tool_choice: str = "auto",
+    ) -> Any:
+        model, messages = self._completion_messages(
+            history,
+            nudge=nudge,
+            nudge_text=nudge_text,
+        )
+
         try:
             return self._client.chat.completions.create(
                 model=model,
@@ -882,56 +1242,8 @@ class ChatService:
                 tool_choice=tool_choice,
                 temperature=self._settings.ollama.temperature,
             )
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise LLMError(
-                    f"Ollama model '{model}' is not installed. "
-                    f"Run `ollama pull {model}`.",
-                    status_code=503,
-                ) from exc
-            raise LLMError(
-                f"Ollama returned an error (HTTP {exc.code}).",
-                status_code=502,
-            ) from exc
-        except (TimeoutError, urllib.error.URLError) as exc:
-            if isinstance(getattr(exc, "reason", None), TimeoutError) or isinstance(
-                exc, TimeoutError
-            ):
-                raise LLMError(
-                    "Ollama took too long to respond. Try a shorter message.",
-                    status_code=504,
-                ) from exc
-            raise LLMError(
-                "I can't reach Ollama at "
-                f"{self._settings.ollama.base_url}. Make sure Ollama is running "
-                "(`ollama serve`).",
-                status_code=503,
-            ) from exc
-        except APITimeoutError as exc:
-            raise LLMError(
-                "Ollama took too long to respond. Try a shorter message.",
-                status_code=504,
-            ) from exc
-        except APIConnectionError as exc:
-            raise LLMError(
-                "I can't reach Ollama at "
-                f"{self._settings.ollama.base_url}. Make sure Ollama is running "
-                "(`ollama serve`).",
-                status_code=503,
-            ) from exc
-        except NotFoundError as exc:
-            raise LLMError(
-                f"Ollama model '{model}' is not installed. "
-                f"Run `ollama pull {model}`.",
-                status_code=503,
-            ) from exc
-        except APIStatusError as exc:
-            raise LLMError(
-                f"Ollama returned an error (HTTP {exc.status_code}).",
-                status_code=502,
-            ) from exc
-        except OpenAIError as exc:
-            raise LLMError("The LLM request failed.", status_code=502) from exc
+        except Exception as exc:  # noqa: BLE001 - translated for the API
+            raise self._request_error(exc, model) from exc
 
     @staticmethod
     def _normalize_reply(text: str) -> str:

@@ -186,6 +186,65 @@ def test_native_root_strips_the_openai_suffix() -> None:
     assert _native_root("http://127.0.0.1:11434") == "http://127.0.0.1:11434"
 
 
+def test_native_client_stream_chat_yields_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def __iter__(self):
+            return iter(
+                [
+                    b'{"message":{"content":"Hel"}}\n',
+                    b'{"message":{"content":"lo"}}\n',
+                    b'{"message":{"content":""},"done":true,"eval_count":2}\n',
+                ]
+            )
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "agent.ollama_client.urllib.request.urlopen",
+        fake_urlopen,
+    )
+    client = NativeOllamaClient(
+        "http://127.0.0.1:11434/v1",
+        timeout=42.0,
+        num_ctx=1234,
+        keep_alive=0,
+    )
+
+    chunks = list(
+        client.stream_chat(
+            model="hermes3",
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.3,
+            max_tokens=50,
+        )
+    )
+
+    request = captured["request"]
+    payload = json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+    assert captured["timeout"] == 42.0
+    assert payload["stream"] is True
+    assert payload["keep_alive"] == 0
+    assert payload["options"] == {
+        "num_ctx": 1234,
+        "temperature": 0.3,
+        "num_predict": 50,
+    }
+    assert [chunk["message"]["content"] for chunk in chunks] == ["Hel", "lo", ""]
+
+
 def test_connection_pool_reuses_a_keep_alive_connection() -> None:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
