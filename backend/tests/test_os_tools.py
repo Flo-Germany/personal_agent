@@ -202,6 +202,31 @@ def test_read_file_size_limit(workdir: Path) -> None:
         os_tools.read_file_content(str(target), max_bytes=3)
 
 
+def test_read_file_redacts_obvious_secrets(workdir: Path) -> None:
+    target = workdir / "config.txt"
+    token = "sk-" + "a" * 24
+    target.write_text(f"api_key = {token}\nname = Flo", encoding="utf-8")
+
+    result = os_tools.read_file_content(str(target))
+
+    assert result["ok"] is True
+    assert token not in result["content"]
+    assert "[REDACTED]" in result["content"]
+    assert result["redacted"] == 1
+    assert "Redacted 1 secret" in result["message"]
+
+
+def test_read_file_can_disable_secret_redaction(workdir: Path) -> None:
+    target = workdir / "config.txt"
+    token = "sk-" + "b" * 24
+    target.write_text(f"api_key = {token}", encoding="utf-8")
+
+    result = os_tools.read_file_content(str(target), redact_secrets=False)
+
+    assert token in result["content"]
+    assert "redacted" not in result
+
+
 def test_search_system_by_name_extension_and_metadata(workdir: Path) -> None:
     (workdir / "report.txt").write_text("x" * 10, encoding="utf-8")
     (workdir / "2026-report.pdf").write_text("x" * 100, encoding="utf-8")

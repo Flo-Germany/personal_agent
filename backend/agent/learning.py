@@ -50,6 +50,8 @@ Rules:
 - Daily routines and workspace setup belong to HABITS.
 - Formatting and social preferences belong to COMMUNICATION.
 - Never store a temporary language instruction for this conversation (for example "answer in Spanish" or "speak Chinese from now on") as a durable user fact. Language choices are handled separately.
+- Never store one-off requests or actions: opening, reading, searching, listing, finding, showing, creating, moving, copying, deleting, extracting, or starting something. This includes "wants the assistant to open/close X", "is interested in finding an image of X", and "prefers to use Notepad to open this file".
+- Store a preference only when the user describes a general, lasting preference. Choosing a tool or file for one action is not a preference.
 - Never store search/read/list requests or the folders the user asked to search as preferences, habits, or projects. Those are one-off actions, not durable facts.
 - Output one fact per line in the format `LABEL: fact`.
 - If there is nothing new and durable, output exactly: NONE
@@ -76,6 +78,28 @@ _ACTION_REQUEST = re.compile(
     r"\b(?:wants(?: the assistant)? to|would like to|asked the assistant to|"
     r"needs to)\s+"
     r"(?:create|use|delete|move|copy|extract|search|read|open|send|find|list|show)\b",
+    re.I,
+)
+_ASSISTANT_ACTION = re.compile(
+    r"\b(?:wants?|asked|requests?|told|needs?)\s+(?:the\s+)?assistant\s+to\b",
+    re.I,
+)
+_ONE_OFF_INTEREST = re.compile(
+    r"\b(?:interested in|looking for|searching for)\b.*"
+    r"\b(?:finding|searching|looking for|a picture|an image|a screenshot|"
+    r"a file|a folder)\b",
+    re.I,
+)
+_PREFERS_ACTION = re.compile(
+    r"\b(?:prefers?|likes?)\b.*"
+    r"\b(?:open|read|search|find|create|delete|move|copy|list|show)\b.*"
+    r"\b(?:file|folder|image|picture|photo|document|download)s?\b",
+    re.I,
+)
+_HABIT_ACTION = re.compile(
+    r"\b(?:habit|routine)\b.*"
+    r"\b(?:reading|opening|searching|asking|listing|finding|checking)\b.*"
+    r"\b(?:file|folder|download|document|image|picture|screenshot)s?\b",
     re.I,
 )
 _PATH_LIKE = re.compile(
@@ -201,9 +225,20 @@ def _is_concrete_fact(fact: str) -> bool:
         return False
     if _LANGUAGE_INSTRUCTION_FACT.search(fact):
         return False
+    if _ASSISTANT_ACTION.search(fact):
+        return False
+    if _ONE_OFF_INTEREST.search(fact):
+        return False
+    if _PREFERS_ACTION.search(fact):
+        return False
+    if _HABIT_ACTION.search(fact):
+        return False
 
     lowered = fact.lower().rstrip(".")
     if lowered in {"none", "(none)", "no facts", "no new facts"}:
+        return False
+    if re.match(r"^(?:no\s+longer|stopped|quit|used\s+to)\b", lowered):
+        # Deletion inference removes the outdated positive fact instead.
         return False
     if lowered.endswith(":"):
         return False
@@ -317,8 +352,9 @@ _NEGATION = re.compile(
     r"\s+(?P<topic>[^.;!?]+)",
     re.I,
 )
-_POSITIVE_VERB = re.compile(
-    r"\b(?:enjoys?|likes?|loves?|prefers?|uses?|wants?|lives?|works?|plays?|eats?|drinks?|reads?|watches?)\b",
+_NEGATIVE_FACT = re.compile(
+    r"\b(?:no\s+longer|not|never|stopped|quit|doesn'?t|don'?t|didn'?t|"
+    r"dislikes?|hates?)\b",
     re.I,
 )
 _BULLET_PATTERN = re.compile(r"^\s*[-*]\s+(.+?)\s*$", re.MULTILINE)
@@ -368,6 +404,70 @@ _TOPIC_STOPWORDS = {
 }
 
 
+_DELETION_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "has",
+    "have",
+    "had",
+    "and",
+    "or",
+    "of",
+    "to",
+    "in",
+    "on",
+    "for",
+    "with",
+    "about",
+    "their",
+    "they",
+    "he",
+    "she",
+    "it",
+    "this",
+    "that",
+    "user",
+    "users",
+    "likes",
+    "like",
+    "liked",
+    "loves",
+    "love",
+    "enjoys",
+    "enjoy",
+    "prefers",
+    "prefer",
+    "wants",
+    "want",
+    "uses",
+    "use",
+    "currently",
+}
+
+
+def _significant_words(text: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z0-9']+", text.lower())
+        if len(word) > 2 and word not in _DELETION_STOPWORDS
+    }
+
+
+def should_apply_deletion(fact: str, user_message: str) -> bool:
+    """Only apply a model-proposed DELETE when the message is about that fact.
+
+    Small models sometimes invent DELETE lines, which previously removed
+    unrelated facts such as the user's age. Requiring a shared significant word
+    keeps real corrections while blocking unrelated deletions.
+    """
+    return bool(_significant_words(fact) & _significant_words(user_message))
+
+
 def infer_deletions(knowledge: str, user_message: str) -> list[str]:
     """Find outdated positive facts for simple "I no longer ..." statements.
 
@@ -393,7 +493,7 @@ def infer_deletions(knowledge: str, user_message: str) -> list[str]:
     for match in _BULLET_PATTERN.finditer(knowledge):
         fact = match.group(1).strip()
         lowered = fact.lower()
-        if not _POSITIVE_VERB.search(lowered):
+        if _NEGATIVE_FACT.search(lowered):
             continue
         if any(re.search(rf"\b{re.escape(topic)}\b", lowered) for topic in topics):
             deletions.append(fact)

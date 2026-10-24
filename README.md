@@ -1,13 +1,14 @@
 # Personal Agent
 
 A local, private desktop AI assistant. A Tauri v2 desktop shell talks to a
-FastAPI backend, which chats with a local Ollama model (Hermes 3), remembers the
+FastAPI backend, which chats with a local Ollama model (`qwen3-vl:8b-instruct`
+by default), remembers the
 current chat, keeps a persistent knowledge base, and can work with the Windows
 file system and applications through a Human-in-the-Loop approval flow.
 
 ## Features
 
-- Local chat through Ollama (`hermes3`) — no cloud requests
+- Local chat through Ollama (`qwen3-vl:8b-instruct`) — no cloud requests
 - Full chat history in memory: the whole conversation is sent with every request
 - Persistent knowledge base across chats and restarts, stored as an editable
   Markdown file
@@ -20,7 +21,9 @@ file system and applications through a Human-in-the-Loop approval flow.
 - Real-time SSE status updates: thinking, tool started, tool result, approval
   needed, final answer
 - Protected Windows locations and Recycle Bin deletion for destructive actions
-- Configurable identity: name, personality, and base system prompt
+- Configurable identity: name in `settings.json`, personality in
+  `config/personality.md`, and a base system prompt; the agent knows its own
+  name, what it is, and which machine it runs on
 - Follows the language of the user's message and switches when asked; no
   language is hardcoded
 - Graceful error messages when Ollama is offline, slow, or missing the model
@@ -44,9 +47,10 @@ frontend/            Tauri v2 + React + TypeScript + Tailwind CSS
 backend/             FastAPI backend
   main.py            API entrypoint (SSE, approvals, history)
   settings.py        Typed settings loader
-  agent/chat.py      Ollama client, resumable agent loop, HITL pauses
+  agent/chat.py      Agent loop, prompt assembly, HITL pauses, native Ollama calls
+  agent/ollama_client.py Native /api/chat client that sets the context window
   agent/approvals.py Pending approval store with TTL and idempotency
-  agent/prompt.py    Identity + memory + tool/safety prompt
+  agent/prompt.py    Identity + personality + memory + tool/safety prompt
   agent/learning.py  Extracts durable user facts from each exchange
   agent/language.py  Detects an explicitly requested reply language
   memory/store.py    In-memory conversation history (including tool messages)
@@ -58,8 +62,9 @@ backend/             FastAPI backend
   tools/executor.py  Validated tool dispatch and confirmation flags
   tests/             pytest suite
   .venv/             Local virtual environment (gitignored)
-config/settings.json Backend, Ollama, identity, memory, vision, and tool settings
-memory/              Knowledge base, image index, and local data (gitignored)
+config/settings.json   Backend, Ollama, identity, memory, vision, and tool settings
+config/personality.md  Compa's editable personality and character sheet
+memory/                Knowledge base, image index, and local data (gitignored)
 ```
 
 ## Prerequisites
@@ -67,13 +72,17 @@ memory/              Knowledge base, image index, and local data (gitignored)
 - Node.js 20+ and npm
 - Python 3.11+
 - Rust toolchain and VS Build Tools with the C++ workload (required by Tauri)
-- [Ollama](https://ollama.com) with the Hermes 3 model:
+- [Ollama](https://ollama.com) with the recommended model:
 
 ```powershell
-ollama pull hermes3
 ollama pull qwen3-vl:8b-instruct
 ollama serve
 ```
+
+`qwen3-vl:8b-instruct` is already required for screen awareness, so using it for
+chat keeps just one model loaded. The backend also supports Hermes 3
+(`ollama pull hermes3`) by changing `ollama.model`; the Hermes template needs a
+different system-prompt delivery, which the backend handles automatically.
 
 The first semantic image search downloads the `clip-ViT-B-32` model (about
 600 MB) into the Hugging Face cache. After that, indexing and search run fully
@@ -94,15 +103,17 @@ startup, so restart uvicorn after changing it.
 
 ```json
 {
-  "agent_name": "Nova",
-  "personality": "Warm, calm, and practical.",
+  "agent_name": "Compa",
+  "personality_file": "config/personality.md",
   "system_prompt": "Be concise but thorough. Ask clarifying questions. Never invent facts.",
   "ollama": {
     "base_url": "http://127.0.0.1:11434/v1",
-    "model": "hermes3",
+    "model": "qwen3-vl:8b-instruct",
     "timeout_seconds": 120,
-    "temperature": 0.7,
-    "max_retries": 1
+    "temperature": 0.5,
+    "max_retries": 1,
+    "context_window": 16384,
+    "system_prompt_mode": "auto"
   },
   "agent": {
     "max_iterations": 5,
@@ -141,20 +152,61 @@ startup, so restart uvicorn after changing it.
 }
 ```
 
-The system message sent to Hermes 3 is composed from:
+The system message sent to the local model is composed from:
 
 - `agent_name` — who the assistant says it is
-- `personality` — tone and character
+- `config/personality.md` — tone, character, values, voice, and examples
 - `system_prompt` — base behavior rules and constraints
 - the knowledge base file — long-term facts about the user
 - the tool rules: read-only vs. approval-required actions, protected locations,
   and the instruction to verify with search/read before modifying
 
+Compa's personality is deliberately not stored in `settings.json`. Edit
+`config/personality.md` instead: it is plain Markdown and is read on every chat.
+It supports the placeholder `{{agent_name}}`, so renaming the agent only needs a
+change to `agent_name` in `config/settings.json`. The inline `personality` field
+still exists as a fallback for older configs and is used only when the file is
+missing or empty.
+
+`ollama.context_window` sets `num_ctx` for every request. The identity,
+personality, knowledge base, and tool schemas need far more than Ollama's small
+default context, so lowering this will truncate the prompt and the agent can
+lose its identity or instructions. Raise it for long conversations; lower it if
+the model no longer fits in VRAM. `ollama.system_prompt_mode` controls how the
+system prompt is delivered: `"auto"` (default) folds it into the latest user
+message for Hermes models, `"system"` always uses the system role, and `"user"`
+always folds it.
+
+The reply language is chosen only from the latest user message, or from an
+explicit request in the current conversation. Standing language-preference lines
+in the knowledge base are filtered out before the prompt is built, so a stored
+"always answer in German" fact cannot override an English message. Explicit
+requests such as "answer in German" or "auf Deutsch bitte" still work.
+
+### Why the backend does not use Ollama's OpenAI endpoint
+
+Two Ollama behaviors break a long identity prompt:
+
+1. The `hermes3` template renders the tool preamble when tools are supplied and
+   skips `.System` entirely (`{{- if .Tools }} ... {{- else if .System }}`). The
+   agent always supplies tools, so a system-role prompt would silently never
+   reach the model. With no system prompt, Hermes falls back to its trained
+   identity and introduces itself as "Hermes" instead of Compa. The backend
+   therefore folds the prompt into the latest user turn for Hermes models.
+2. Ollama's OpenAI-compatible `/v1/chat/completions` endpoint ignores `num_ctx`
+   (ollama/ollama#16814). It truncates long prompts to the model default, which
+   cuts off the beginning of the identity and knowledge base. The backend calls
+   the native `/api/chat` endpoint through `agent/ollama_client.py` so
+   `options.num_ctx` is honored.
+
 `memory.max_conversations` bounds how many chats are kept in RAM.
 `memory.learn_from_chats` enables automatic knowledge-base updates.
 `agent.max_iterations` bounds tool rounds per segment.
 `agent.approval_ttl_seconds` controls how long a pending approval remains valid.
-`tools.*` caps file reads, searches, and zip extraction.
+`tools.*` caps file reads, searches, and zip extraction. `tools.redact_secrets`
+(default `true`) removes high-confidence API keys, tokens, and private keys from
+`read_file_content` results before they reach the model or the chat. Set it to
+`false` only if you need the agent to read credentials verbatim.
 `vision.*` controls the global CLIP image index: `scan_roots` defaults to the
 current user profile (`~`); add more folders or a drive root such as `C:\` to
 widen it. `scan_interval_seconds` controls how often the crawler rescans for
@@ -210,7 +262,7 @@ The SSE stream ends after `final`, `error`, or `action_required`.
 ### Agent loop and HITL
 
 1. The user message is appended and the entire history plus tool schemas is sent
-   to Hermes 3.
+   to the local model.
 2. Read-only tools (`search_system`, `read_file_content`,
    `semantic_image_search`, `get_open_windows`, `read_window_content`,
    `analyze_screen`) run immediately and stream `tool_started` / `tool_result`
@@ -466,8 +518,12 @@ window hide/drag permissions. The asset protocol is enabled in
 
 ## Known limitation
 
-Hermes 3 (8B) can stall on a long, multi-file plan before issuing the first tool
-call. The pipeline itself is validated with exact single-action and multi-step
-tests; for complex chores, splitting the request into smaller steps (search,
-create, move a file) gives more reliable results. A larger tool-calling model can
-use the same loop without backend changes.
+`qwen3-vl:8b-instruct` is the default because it follows the full identity,
+knowledge-base, and tool instructions reliably in local testing. Hermes 3
+remains supported through `ollama.model`, but its 8B variant is less consistent
+at instruction following and can make unnecessary tool calls. With very long
+conversations, raise `ollama.context_window`; if the prompt exceeds the window,
+Ollama drops the oldest turns first. For complex chores, splitting the request
+into smaller steps (search, create, move a file) gives the most reliable
+results. A larger tool-calling model can use the same loop without backend
+changes.

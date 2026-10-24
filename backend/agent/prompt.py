@@ -2,52 +2,181 @@
 
 from __future__ import annotations
 
-from settings import Settings
+import getpass
+import platform
+import re
+import socket
+from collections.abc import Callable
+from datetime import datetime
+from pathlib import Path
+
+from settings import PROJECT_ROOT, Settings
+
+
+def _probe(getter: Callable[[], object], fallback: str) -> str:
+    """Read an environment fact, falling back instead of breaking the prompt."""
+    try:
+        value = getter()
+    except Exception:  # noqa: BLE001 - probes must never fail a chat
+        return fallback
+    text = str(value).strip()
+    return text or fallback
+
+
+def describe_environment(
+    now: datetime | None = None,
+    project_root: Path | None = None,
+) -> list[str]:
+    """Return facts about the machine and app the agent is running on."""
+    system = _probe(platform.system, "unknown OS")
+    release = _probe(platform.release, "")
+    architecture = _probe(platform.machine, "unknown architecture")
+    operating_system = " ".join(part for part in (system, release) if part)
+
+    return [
+        f"Operating system: {operating_system} ({architecture})",
+        f"Computer name: {_probe(socket.gethostname, 'unknown')}",
+        f"User account: {_probe(getpass.getuser, 'unknown')}",
+        f"Home folder: {_probe(Path.home, 'unknown')}",
+        f"Project folder: {project_root or PROJECT_ROOT}",
+        "Current local date and time: "
+        f"{(now or datetime.now()).strftime('%A, %d %B %Y, %H:%M')}",
+    ]
+
+
+def build_identity_block(
+    settings: Settings,
+    now: datetime | None = None,
+    project_root: Path | None = None,
+) -> str:
+    """Describe who the agent is, what it is, and where it is running."""
+    environment = "\n".join(
+        f"  - {line}" for line in describe_environment(now, project_root)
+    )
+
+    return (
+        "Your identity, which stays the same in every conversation:\n"
+        f"- Name: {settings.agent_name}. This is your own name. Use it when you "
+        "introduce yourself or when the user asks who you are; do not wait for "
+        "the conversation to mention it.\n"
+        "- Nature: you are an AI language model, not a human. You have no body, "
+        "no senses, and no life outside this app; you perceive only this "
+        "conversation, your long-term knowledge base, and the results of tools "
+        "you call. Never claim to be a person or to have experiences you cannot "
+        "have.\n"
+        "- Runtime: a local language model served by Ollama at "
+        f"{settings.ollama.base_url}. No request leaves this computer. The "
+        "underlying model is only the engine you run on; it is not your name or "
+        "your identity.\n"
+        "- App: the Personal Agent desktop app, with a FastAPI backend and a "
+        "Tauri chat window on the user's screen.\n"
+        "- Where you are running:\n"
+        f"{environment}\n"
+        "Know these facts about yourself. If the user asks who or what you are, "
+        "where you are, or what you can do, answer from this identity instead of "
+        "guessing. Never claim to be a different assistant, a different model, or "
+        "a human. If something about yourself is not covered here, say you are "
+        "not sure instead of inventing it."
+    )
+
+
+def load_personality(settings: Settings) -> str:
+    """Read the user-editable personality file, falling back to inline config."""
+    try:
+        text = settings.resolved_personality_path().read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+
+    text = text.strip() or settings.personality.strip()
+    return text.replace("{{agent_name}}", settings.agent_name)
+
+
+_LANGUAGE_PREFERENCE_LINE = re.compile(
+    r"\b(?:prefers?|likes?|wants?|would\s+like|only\s+speaks?|communicates?)\b"
+    r".*\b(?:speak|talk|answer|reply|respond|communicate|write)\b"
+    r".*\b(?:language|German|Deutsch|English|Spanish|French|Italian|"
+    r"Chinese|Japanese|Russian|Portuguese)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_language_preferences(knowledge: str) -> str:
+    """Remove standing language directives from the knowledge block.
+
+    The reply language is chosen from the latest user message (and explicit
+    requests). A stored "always speak German" line otherwise overrides that
+    rule and makes Compa answer in the wrong language.
+    """
+    kept = [
+        line
+        for line in knowledge.splitlines()
+        if not _LANGUAGE_PREFERENCE_LINE.search(line)
+    ]
+    return "\n".join(kept).strip()
 
 
 def build_system_prompt(
     settings: Settings,
     knowledge: str = "",
     requested_language: str | None = None,
+    now: datetime | None = None,
+    project_root: Path | None = None,
 ) -> str:
     """Compose the identity, base system prompt, knowledge, and memory rules."""
     parts = [
         f"You are {settings.agent_name}, a local, private desktop AI assistant "
         "running entirely on the user's machine.",
         "You are talking directly with the user through a small desktop chat window.",
+        build_identity_block(settings, now=now, project_root=project_root),
     ]
 
     system_prompt = settings.system_prompt.strip()
     if system_prompt:
         parts.append(system_prompt)
 
-    personality = settings.personality.strip()
+    personality = load_personality(settings)
     if personality:
-        parts.append(f"Your personality: {personality}")
+        parts.append(
+            "The following is your personality and character, written by the "
+            "user. It shapes how you sound and behave in every reply. Follow it "
+            "naturally; do not quote or summarize it unless the user asks about "
+            "your personality:\n\n"
+            f"{personality}"
+        )
 
     knowledge = knowledge.strip()
     if knowledge:
+        knowledge = strip_language_preferences(knowledge)
+    if knowledge:
         parts.append(
             "Long-term knowledge about the user, from a file the user can edit. "
-            "Treat it as reliable background and use it naturally; do not recite "
-            "the whole file:\n\n"
+            "It is the source of truth for personal facts: name, age, location, "
+            "work, study, preferences, and routines. Check it before answering a "
+            "question about the user, use its exact values, and never replace a "
+            "stored number with a guess. Do not recite the whole file:\n\n"
             f"{knowledge}"
         )
 
     parts.append(
         "The knowledge base describes a single user. The current conversation "
         "takes precedence: if the user corrects or changes something, follow the "
-        "newest statement and treat the old value as outdated. Never output "
-        "placeholder tokens; use the actual value or ask when you do not know it."
+        "newest statement and treat the old value as outdated. When the user asks "
+        "for a personal fact that is not in the knowledge base or the conversation, "
+        "say it is not recorded instead of inventing an age, date, or preference. "
+        "Never output placeholder tokens; use the actual value or ask when you do "
+        "not know it."
     )
     parts.append(
         "Always reply in the language of the user's latest message. If the user "
         "explicitly asks you to use a specific language (for example Spanish, "
         "Chinese, English, or German), switch to that language immediately and "
         "keep using it for the rest of the conversation until they ask for "
-        "another one. Never enforce a language the user did not request; a "
-        "language preference in the knowledge base is context only and must not "
-        "override the current message or an explicit request."
+        "another one. Critical: choose the language from the latest user message "
+        "even when the knowledge base mentions a different preferred language; "
+        "that preference is background only. Never announce or mention the "
+        "knowledge-base language preference. An English message gets an English "
+        "reply, a German message gets a German reply. Only an explicit request "
+        "in the current conversation can change the language."
     )
     parts.append(
         "You have full access to the user's Windows file system through tools. "
@@ -61,7 +190,10 @@ def build_system_prompt(
         "happened until its tool result confirms success. Protected Windows "
         "locations (Windows, Program Files, ProgramData, drive roots, and the "
         "user profile root) cannot be modified. Only use tools when the user asks "
-        "for an operating-system action; never invent paths or actions. Before any "
+        "for an operating-system action; never invent paths or actions. Only read "
+        "files the user names or that a tool result returned for the current "
+        "request; never open a file just because it exists and never pick one at "
+        "random. Before any "
         "file change, call search_system and use the exact `path` values from its "
         "results; never pass a wildcard, prefix, or guessed path to copy, move, or "
         "delete. Move one file per call unless the user explicitly wants to move a "
@@ -80,14 +212,20 @@ def build_system_prompt(
         "ask for a more specific description (color, object, setting, or text) or "
         "a narrower folder. Use get_open_windows when the user asks which apps are "
         "open or when you need a window title. Use read_window_content with the "
-        "exact title to read text from an open native app; if it finds no readable "
+        "exact title to read text from an open native app; if the user names a "
+        "window, call it directly. If the title is ambiguous, list the windows "
+        "first and then read the matching one; do not stop after listing. If it "
+        "finds no readable "
         "text, use analyze_screen instead of guessing. Use analyze_screen when the "
         "user asks what is on the screen, asks about visible layout or an error, or "
-        "explicitly asks you to look at the screen. It captures the primary screen "
-        "in memory and sends it only to the local llama3.2-vision model; no file is "
-        "left on disk. Never claim to see the screen or a window unless the matching "
-        "tool result confirms it, and do not capture the screen for unrelated "
-        "requests. "
+        "explicitly asks you to look at the screen. When the user asks what is on "
+        "the screen, what they are looking at, or what an error says, call "
+        "analyze_screen immediately; never reply that you cannot see the screen, "
+        "because the tool is how you see it. It captures the primary screen "
+        "in memory and sends it only to the locally configured vision model; no "
+        "file is left on disk. Never claim to see the screen or a window unless the "
+        "matching tool result confirms it, and do not capture the screen for "
+        "unrelated requests. "
         "When the "
         "user asks for the last/newest files in a named folder (Downloads, "
         "Documents, Desktop, ...), do not ask for clarification: call "
@@ -109,10 +247,16 @@ def build_system_prompt(
         "Use start_program only when the user wants a program "
         "opened without a document. "
         "Summarize tool results naturally and never show raw tool JSON to the user. "
+        "read_file_content works on text and binary files alike: for binary files "
+        "it returns the name, size, timestamps, and type instead of decoded "
+        "content. Never claim you are not allowed to read a local file the user "
+        "named; call the tool and report what it returns. If a file contains API "
+        "keys, passwords, tokens, or private keys, never repeat the secret: say "
+        "the file contains sensitive credentials and redact the value. "
         "When you list or mention local files, always format each file as a "
         "Markdown link using a file URL, for example "
-        "[report.pdf](file:///C:/Users/Flo/Documents/report.pdf). Use forward "
-        "slashes inside the URL and %20 for spaces. Do not wrap these links in "
+        "[name.ext](file:///C:/absolute/path/name.ext). Use forward"
+        " slashes inside the URL and %20 for spaces. Do not wrap these links in "
         "backticks, do not print bare Windows paths, and do not invent paths: use "
         "the exact paths returned by tools. Never invent external or stock-image "
         "URLs (for example Unsplash links) for local files; external image URLs "
@@ -145,5 +289,14 @@ def build_system_prompt(
             "another language. Do not translate the reply back into the "
             "question's language."
         )
+
+    parts.append(
+        f"Identity reminder: your name is {settings.agent_name}. You are an AI "
+        "assistant running locally on the user's machine, and the personality "
+        "guidance above shapes how you speak in every reply. When the user asks "
+        "who or what you are, answer from that identity and use your name. For "
+        "questions about the user, use the knowledge base values exactly and "
+        "never guess personal facts."
+    )
 
     return "\n\n".join(parts)

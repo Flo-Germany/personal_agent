@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import urllib.error
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +13,7 @@ from httpx2 import Request
 from openai import APIConnectionError, APITimeoutError
 
 from agent.chat import ChatService, LLMError
-from agent.learning import infer_deletions, parse_facts
+from agent.learning import infer_deletions, parse_facts, should_apply_deletion
 from agent.language import detect_language_request, detect_requested_language
 from agent.prompt import build_system_prompt
 from memory.knowledge import KnowledgeBase
@@ -97,10 +99,11 @@ def make_service(
     return ChatService(settings, store, knowledge, client=client), store, knowledge
 
 
-def test_system_prompt_contains_identity_and_guidance() -> None:
+def test_system_prompt_contains_identity_and_guidance(tmp_path) -> None:
     settings = Settings(
         agent_name="Nova",
         personality="Warm and practical.",
+        personality_file=tmp_path / "missing-personality.md",
         system_prompt="Ask clarifying questions.",
     )
 
@@ -115,6 +118,62 @@ def test_system_prompt_contains_identity_and_guidance() -> None:
     assert "placeholder tokens" in prompt
 
 
+def test_system_prompt_loads_personality_file(tmp_path) -> None:
+    personality_file = tmp_path / "personality.md"
+    personality_file.write_text(
+        "# Character\n- Dry humor and calm.\n- Your name is {{agent_name}}.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        agent_name="Compa",
+        personality="This inline text must be ignored.",
+        personality_file=personality_file,
+    )
+
+    prompt = build_system_prompt(settings)
+
+    assert "Dry humor and calm." in prompt
+    assert "Your name is Compa." in prompt
+    assert "This inline text must be ignored." not in prompt
+
+
+def test_system_prompt_falls_back_to_inline_personality(tmp_path) -> None:
+    settings = Settings(
+        agent_name="Compa",
+        personality="Warm and practical.",
+        personality_file=tmp_path / "missing-personality.md",
+    )
+
+    assert "Warm and practical." in build_system_prompt(settings)
+
+
+def test_system_prompt_includes_self_aware_identity() -> None:
+    settings = Settings(
+        agent_name="Compa",
+        ollama=OllamaSettings(model="hermes3"),
+    )
+
+    prompt = build_system_prompt(
+        settings,
+        now=datetime(2026, 10, 24, 9, 30),
+        project_root=Path(r"C:\agent"),
+    )
+
+    assert "Your identity, which stays the same in every conversation" in prompt
+    assert "Name: Compa" in prompt
+    assert "AI language model, not a human" in prompt
+    assert "served by Ollama" in prompt
+    assert "not your name or your identity" in prompt
+    assert "Personal Agent desktop app" in prompt
+    assert "Where you are running" in prompt
+    assert "Operating system:" in prompt
+    assert "Computer name:" in prompt
+    assert "User account:" in prompt
+    assert r"Project folder: C:\agent" in prompt
+    assert "Saturday, 24 October 2026, 09:30" in prompt
+    assert "say you are not sure instead of inventing it" in prompt
+
+
 def test_system_prompt_follows_the_users_language() -> None:
     prompt = build_system_prompt(
         Settings(agent_name="Nova"),
@@ -123,7 +182,8 @@ def test_system_prompt_follows_the_users_language() -> None:
 
     assert "language of the user's latest message" in prompt
     assert "switch to that language immediately" in prompt
-    assert "Never enforce a language" in prompt
+    assert "Critical: choose the language from the latest user message" in prompt
+    assert "Never announce or mention the knowledge-base language preference" in prompt
     assert "RESPONSE LANGUAGE" not in prompt
 
 
@@ -193,9 +253,25 @@ def test_generate_reply_uses_requested_language(tmp_path) -> None:
     service.generate_reply(conversation_id, "What is my name?")
 
     messages = client.completions.requests[0]["messages"]
-    assert "explicitly requested Spanish" in messages[0]["content"]
+    assert "explicitly requested Spanish" in messages[-1]["content"]
     assert messages[-1]["role"] == "user"
     assert "Reply entirely in Spanish" in messages[-1]["content"]
+
+
+def test_system_prompt_strips_standing_language_preferences() -> None:
+    knowledge = (
+        "## Preferences\n"
+        "- Likes cycling\n"
+        "- The user prefers to speak German in every conversation with the "
+        "assistant, no matter the topic or timing.\n"
+        "- Wants the assistant to always answer in Spanish.\n"
+    )
+
+    prompt = build_system_prompt(Settings(agent_name="Nova"), knowledge)
+
+    assert "Likes cycling" in prompt
+    assert "prefers to speak German" not in prompt
+    assert "always answer in Spanish" not in prompt
 
 
 def test_system_prompt_includes_knowledge() -> None:
@@ -219,18 +295,56 @@ def test_generate_reply_sends_history_and_stores_exchange(tmp_path) -> None:
     sent = request["messages"]
     assert request["model"] == "hermes3"
     assert request["temperature"] == 0.2
-    assert sent[0]["role"] == "system"
-    assert "TestBot" in sent[0]["content"]
-    assert sent[1:3] == [
-        {"role": "user", "content": "My name is Flo."},
-        {"role": "assistant", "content": "Nice to meet you, Flo."},
-    ]
-    assert sent[-1] == {"role": "user", "content": "What is my name?"}
+    # hermes3's Ollama template drops system messages while tools are sent, so
+    # the prompt is folded into the latest user turn instead.
+    assert sent[0] == {"role": "user", "content": "My name is Flo."}
+    assert sent[1] == {"role": "assistant", "content": "Nice to meet you, Flo."}
+    assert sent[-1]["role"] == "user"
+    assert sent[-1]["content"].startswith("SYSTEM PROMPT")
+    assert "TestBot" in sent[-1]["content"]
+    assert sent[-1]["content"].endswith("What is my name?")
     assert reply == "You are Flo."
 
     stored = store.load(conversation_id)
     assert stored[-2]["content"] == "What is my name?"
     assert stored[-1]["content"] == "You are Flo."
+
+
+def test_non_hermes_model_keeps_the_system_message(tmp_path) -> None:
+    client = FakeClient()
+    service, store, _ = make_service(
+        tmp_path,
+        client,
+        ollama=OllamaSettings(model="qwen3:8b", temperature=0.2),
+    )
+
+    service.generate_reply(store.new_conversation_id(), "Hello.")
+
+    sent = client.completions.requests[0]["messages"]
+    assert sent[0]["role"] == "system"
+    assert "TestBot" in sent[0]["content"]
+    assert sent[1] == {"role": "user", "content": "Hello."}
+
+
+def test_system_prompt_mode_can_force_user_folding(tmp_path) -> None:
+    client = FakeClient()
+    service, store, _ = make_service(
+        tmp_path,
+        client,
+        ollama=OllamaSettings(
+            model="qwen3:8b",
+            temperature=0.2,
+            system_prompt_mode="user",
+        ),
+    )
+
+    service.generate_reply(store.new_conversation_id(), "Hello.")
+
+    sent = client.completions.requests[0]["messages"]
+    assert all(message["role"] != "system" for message in sent)
+    assert sent[-1]["role"] == "user"
+    assert "SYSTEM PROMPT" in sent[-1]["content"]
+    assert sent[-1]["content"].endswith("Hello.")
 
 
 def test_generate_reply_sends_the_entire_chat_history(tmp_path) -> None:
@@ -244,15 +358,16 @@ def test_generate_reply_sends_the_entire_chat_history(tmp_path) -> None:
     service.generate_reply(conversation_id, "u4")
 
     sent = client.completions.requests[0]["messages"]
-    assert sent[1:] == [
+    assert sent[:-1] == [
         {"role": "user", "content": "u1"},
         {"role": "assistant", "content": "a1"},
         {"role": "user", "content": "u2"},
         {"role": "assistant", "content": "a2"},
         {"role": "user", "content": "u3"},
         {"role": "assistant", "content": "a3"},
-        {"role": "user", "content": "u4"},
     ]
+    assert sent[-1]["role"] == "user"
+    assert sent[-1]["content"].endswith("u4")
 
 
 def test_generate_reply_injects_knowledge_base(tmp_path) -> None:
@@ -264,7 +379,7 @@ def test_generate_reply_injects_knowledge_base(tmp_path) -> None:
 
     service.generate_reply(store.new_conversation_id(), "What do you know about me?")
 
-    system_prompt = client.completions.requests[0]["messages"][0]["content"]
+    system_prompt = client.completions.requests[0]["messages"][-1]["content"]
     assert "Name is Flo" in system_prompt
     assert "Favorite color is teal" in system_prompt
 
@@ -323,6 +438,58 @@ def test_infer_deletions_finds_negated_preference() -> None:
         knowledge,
         "Actually, I don't like jazz anymore.",
     ) == ["The user enjoys jazz music."]
+
+
+def test_infer_deletions_finds_facts_without_a_positive_verb() -> None:
+    knowledge = (
+        "## Preferences\n"
+        "- Favorite color is teal\n"
+        "- Likes cycling\n"
+    )
+
+    assert infer_deletions(knowledge, "I no longer like teal.") == [
+        "Favorite color is teal"
+    ]
+
+
+def test_parse_facts_rejects_negative_restatements() -> None:
+    result = parse_facts(
+        "PREFERENCES: no longer likes teal\n"
+        "PREFERENCES: Prefers short answers\n"
+    )
+
+    assert result.facts["preferences"] == ["Prefers short answers"]
+
+
+def test_parse_facts_rejects_one_off_action_requests() -> None:
+    result = parse_facts(
+        "INTERESTS: The user is interested in finding an image of a car.\n"
+        "PROJECTS: The user wants the assistant to open Steam for them.\n"
+        "PREFERENCES: The user prefers to use Notepad to open specific text files.\n"
+        "PREFERENCES: The user prefers using Microsoft Outlook.\n"
+        "HABITS: The user has the habit of reading the newest file in their "
+        "Downloads folder and asking for its size.\n"
+    )
+
+    assert result.facts["interests"] == []
+    assert result.facts["projects"] == []
+    assert result.facts["preferences"] == [
+        "The user prefers using Microsoft Outlook."
+    ]
+    assert result.facts["habits"] == []
+
+
+def test_should_apply_deletion_only_for_related_messages() -> None:
+    assert should_apply_deletion(
+        "The user is 20 years old and a student.",
+        "What do you know about me?",
+    ) is False
+    assert should_apply_deletion("Name is Flo", "My name is Alex") is True
+    assert should_apply_deletion("Favorite color is teal", "I no longer like teal") is True
+    assert should_apply_deletion(
+        "The user prefers to speak German.",
+        "Answer in English, please.",
+    ) is False
 
 
 def test_infer_deletions_ignores_generic_topics() -> None:
@@ -478,4 +645,61 @@ def test_timeout_maps_to_504(tmp_path) -> None:
         service.generate_reply(conversation_id, "Hello")
 
     assert error.value.status_code == 504
+    assert store.load(conversation_id) == []
+
+
+def test_reply_file_urls_get_the_drive_colon() -> None:
+    text = (
+        "[a](file:///C/Users/Flo/a.txt) "
+        "[b](file:///d/Users/Flo/b.txt) "
+        "[c](file:///D:/already/correct.txt)"
+    )
+
+    fixed = ChatService._normalize_reply(text)
+
+    assert "file:///C:/Users/Flo/a.txt" in fixed
+    assert "file:///D:/Users/Flo/b.txt" in fixed
+    assert "file:///D:/already/correct.txt" in fixed
+
+
+def test_generate_reply_repairs_file_urls(tmp_path) -> None:
+    client = FakeClient("See [notes.txt](file:///C/Users/Flo/notes.txt).")
+    service, store, _ = make_service(tmp_path, client)
+
+    reply = service.generate_reply(store.new_conversation_id(), "Where is it?")
+
+    assert reply == "See [notes.txt](file:///C:/Users/Flo/notes.txt)."
+
+
+def test_missing_native_model_maps_to_503(tmp_path) -> None:
+    error = urllib.error.HTTPError(
+        "http://127.0.0.1:11434/api/chat",
+        404,
+        "Not Found",
+        None,
+        None,
+    )
+    service, store, _ = make_service(tmp_path, make_failing_client(error))
+    conversation_id = store.new_conversation_id()
+
+    with pytest.raises(LLMError) as raised:
+        service.generate_reply(conversation_id, "Hello")
+
+    assert raised.value.status_code == 503
+    assert "not installed" in str(raised.value)
+    assert store.load(conversation_id) == []
+
+
+def test_unreachable_native_ollama_maps_to_503(tmp_path) -> None:
+    service, store, _ = make_service(
+        tmp_path,
+        make_failing_client(urllib.error.URLError("connection refused")),
+    )
+    conversation_id = store.new_conversation_id()
+
+    with pytest.raises(LLMError) as raised:
+        service.generate_reply(conversation_id, "Hello")
+
+    assert raised.value.status_code == 503
+    assert "can't reach Ollama" in str(raised.value)
     assert store.load(conversation_id) == []

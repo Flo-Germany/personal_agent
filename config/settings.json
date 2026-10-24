@@ -1,6 +1,6 @@
 {
-  "agent_name": "Nova",
-  "personality": "Warm, calm, and practical. Curious about the user's goals and direct without being blunt.",
+  "agent_name": "Compa",
+  "personality_file": "config/personality.md",
   "system_prompt": "Be concise but thorough. Prefer practical steps and concrete examples. Ask a clarifying question when a request is ambiguous. Never invent facts. Respect the user's privacy and keep all work on this machine. When the conversation history or knowledge base contains relevant details, use them and stay consistent with them.",
   "backend": {
     "host": "127.0.0.1",
@@ -8,10 +8,12 @@
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434/v1",
-    "model": "hermes3",
+    "model": "qwen3-vl:8b-instruct",
     "timeout_seconds": 120,
-    "temperature": 0.7,
-    "max_retries": 1
+    "temperature": 0.5,
+    "max_retries": 1,
+    "context_window": 16384,
+    "system_prompt_mode": "auto"
   },
   "agent": {
     "max_iterations": 5,
@@ -27,7 +29,8 @@
     "max_search_results": 50,
     "max_search_files": 20000,
     "max_search_seconds": 30,
-    "max_unzip_bytes": 209715200
+    "max_unzip_bytes": 209715200,
+    "redact_secrets": true
   },
   "vision": {
     "enabled": true,

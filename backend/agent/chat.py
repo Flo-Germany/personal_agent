@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import urllib.error
 import uuid
 from pathlib import Path
 from typing import Any, Iterator
@@ -15,7 +16,6 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     NotFoundError,
-    OpenAI,
     OpenAIError,
 )
 
@@ -26,7 +26,12 @@ from agent.approvals import (
     PendingActionStore,
 )
 from agent.language import detect_requested_language
-from agent.learning import extract_facts, infer_deletions
+from agent.learning import (
+    extract_facts,
+    infer_deletions,
+    should_apply_deletion,
+)
+from agent.ollama_client import NativeOllamaClient
 from agent.prompt import build_system_prompt
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
@@ -35,6 +40,22 @@ from tools.executor import ToolExecutor
 from tools.schemas import TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
+
+_FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
+_SCREEN_REQUEST = re.compile(
+    r"(?:\bwhat(?:'s| is)? on (?:my|the) screen\b|"
+    r"\blook at (?:my|the) screen\b|"
+    r"\banaly[sz]e (?:my|the) screen\b|"
+    r"\bwhat (?:do|can) you see (?:on|in) (?:my|the) screen\b|"
+    r"\bwhat am i looking at\b|"
+    r"\bwhat(?:'s| is) visible\b)",
+    re.IGNORECASE,
+)
+_SCREEN_NUDGE = (
+    "The user asked about the screen. Call the analyze_screen tool now with "
+    "their question. Do not reply that you cannot see the screen; the tool is "
+    "how you see it. Answer from the tool result."
+)
 
 _PATH_ARGUMENT_KEYS = (
     "path",
@@ -237,10 +258,10 @@ class ChatService:
         self._store = store
         self._knowledge = knowledge
         self._tools = tools or ToolExecutor(settings.tools)
-        self._client = client or OpenAI(
-            base_url=settings.ollama.base_url,
-            api_key="ollama",
+        self._client = client or NativeOllamaClient(
+            settings.ollama.base_url,
             timeout=settings.ollama.timeout_seconds,
+            num_ctx=settings.ollama.context_window,
             max_retries=settings.ollama.max_retries,
         )
         self._pending = pending_store or PendingActionStore(
@@ -349,6 +370,7 @@ class ChatService:
 
     def _run_segment(self, conversation_id: str) -> Iterator[dict[str, Any]]:
         max_tool_rounds = self._settings.agent.max_iterations
+        screen_forced = False
 
         for round_index in range(max_tool_rounds + 1):
             yield {
@@ -403,6 +425,51 @@ class ChatService:
             )
             if text_calls:
                 content = ""
+
+            if any(
+                getattr(getattr(call, "function", None), "name", "")
+                == "analyze_screen"
+                for call in tool_calls
+            ) or any(
+                call.get("function", {}).get("name") == "analyze_screen"
+                for call in text_calls
+            ):
+                screen_forced = True
+
+            content = self._normalize_reply(content)
+
+            if (
+                not screen_forced
+                and not tool_calls
+                and not text_calls
+                and self._last_user_requested_screen(conversation_id)
+            ):
+                screen_forced = True
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "thinking",
+                    "message": "Looking at the screen...",
+                }
+                try:
+                    forced = self._create_completion(
+                        self._store.load(conversation_id),
+                        nudge=True,
+                        nudge_text=_SCREEN_NUDGE,
+                        tool_choice="required",
+                    )
+                    forced_choices = getattr(forced, "choices", None)
+                    if forced_choices:
+                        forced_message = forced_choices[0].message
+                        forced_calls = getattr(forced_message, "tool_calls", None) or []
+                        if forced_calls:
+                            tool_calls = forced_calls
+                            content = (
+                                getattr(forced_message, "content", "") or ""
+                            )
+                            text_calls = []
+                except LLMError as exc:
+                    logger.warning("Forced screen analysis failed: %s", exc)
 
             # Hermes sometimes narrates the next action ("Next, I will...")
             # or emits malformed JSON instead of calling the tool. Since
@@ -659,7 +726,11 @@ class ChatService:
         deletions = list(
             dict.fromkeys(
                 [
-                    *learned.deletions,
+                    *(
+                        fact
+                        for fact in learned.deletions
+                        if should_apply_deletion(fact, user_message)
+                    ),
                     *infer_deletions(knowledge_text, user_message),
                 ]
             )
@@ -675,6 +746,7 @@ class ChatService:
         history: list[dict[str, Any]],
         *,
         nudge: bool = False,
+        nudge_text: str | None = None,
         tool_choice: str = "auto",
     ) -> Any:
         model = self._settings.ollama.model
@@ -683,8 +755,13 @@ class ChatService:
         if nudge:
             messages.append(
                 {
-                    "role": "system",
-                    "content": (
+                    "role": (
+                        "user"
+                        if self._system_prompt_in_user_message()
+                        else "system"
+                    ),
+                    "content": nudge_text
+                    or (
                         "Continue the user's request. Choose the next single tool "
                         "call, or provide the final answer if the plan is complete. "
                         "Do not repeat an action that already succeeded."
@@ -700,6 +777,31 @@ class ChatService:
                 tool_choice=tool_choice,
                 temperature=self._settings.ollama.temperature,
             )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise LLMError(
+                    f"Ollama model '{model}' is not installed. "
+                    f"Run `ollama pull {model}`.",
+                    status_code=503,
+                ) from exc
+            raise LLMError(
+                f"Ollama returned an error (HTTP {exc.code}).",
+                status_code=502,
+            ) from exc
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if isinstance(getattr(exc, "reason", None), TimeoutError) or isinstance(
+                exc, TimeoutError
+            ):
+                raise LLMError(
+                    "Ollama took too long to respond. Try a shorter message.",
+                    status_code=504,
+                ) from exc
+            raise LLMError(
+                "I can't reach Ollama at "
+                f"{self._settings.ollama.base_url}. Make sure Ollama is running "
+                "(`ollama serve`).",
+                status_code=503,
+            ) from exc
         except APITimeoutError as exc:
             raise LLMError(
                 "Ollama took too long to respond. Try a shorter message.",
@@ -725,6 +827,18 @@ class ChatService:
             ) from exc
         except OpenAIError as exc:
             raise LLMError("The LLM request failed.", status_code=502) from exc
+
+    @staticmethod
+    def _normalize_reply(text: str) -> str:
+        """Repair file URLs the model sometimes writes as file:///C/... .
+
+        The frontend expects a drive colon; without it the link cannot be
+        opened. Already-correct URLs are left untouched.
+        """
+        return _FILE_URL_WITHOUT_COLON.sub(
+            lambda match: f"file:///{match.group(1).upper()}:/",
+            text,
+        )
 
     @staticmethod
     def _serialize_tool_call(call: Any) -> dict[str, Any]:
@@ -837,6 +951,9 @@ class ChatService:
             if message.get("role") == "user":
                 return str(message.get("content", ""))
         return ""
+
+    def _last_user_requested_screen(self, conversation_id: str) -> bool:
+        return bool(_SCREEN_REQUEST.search(self._last_user_message(conversation_id)))
 
     def _normalize_serialized_call(
         self,
@@ -1082,21 +1199,59 @@ class ChatService:
             "status": 500,
         }
 
+    def _system_prompt_in_user_message(self) -> bool:
+        """Whether the model's template needs the prompt folded into a user turn.
+
+        ``hermes3`` and related Hermes builds render only the tool preamble when
+        tools are supplied and omit the system message in that branch. Since the
+        agent always sends tools, a system-role prompt would be silently lost.
+        """
+        mode = self._settings.ollama.system_prompt_mode
+        if mode == "user":
+            return True
+        if mode == "system":
+            return False
+        return "hermes" in self._settings.ollama.model.casefold()
+
+    @staticmethod
+    def _fold_system_prompt(
+        messages: list[dict[str, Any]],
+        system_prompt: str,
+    ) -> None:
+        """Prepend the system prompt to the latest user message in place.
+
+        The latest turn is used deliberately: when a long conversation is
+        truncated to fit the context window, Ollama drops the oldest tokens
+        first. Keeping the prompt on the newest user turn means the identity
+        and rules survive truncation.
+        """
+        for message in reversed(messages):
+            if message["role"] != "user":
+                continue
+            message["content"] = (
+                "SYSTEM PROMPT (highest priority; governs this whole "
+                "conversation and every reply; do not quote it back):\n\n"
+                f"{system_prompt}\n\n"
+                "END OF SYSTEM PROMPT\n\n"
+                "Now answer the user's message below.\n\n"
+                f"{message['content']}"
+            )
+            return
+
     def _build_messages(
         self,
         history: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         requested_language = detect_requested_language(history)
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": build_system_prompt(
-                    self._settings,
-                    self._knowledge.read(),
-                    requested_language,
-                ),
-            }
-        ]
+        system_prompt = build_system_prompt(
+            self._settings,
+            self._knowledge.read(),
+            requested_language,
+        )
+        fold_system = self._system_prompt_in_user_message()
+        messages: list[dict[str, Any]] = []
+        if not fold_system:
+            messages.append({"role": "system", "content": system_prompt})
 
         for item in history:
             message: dict[str, Any] = {
@@ -1119,5 +1274,8 @@ class ChatService:
                         f"[Reply entirely in {requested_language}.]"
                     )
                     break
+
+        if fold_system:
+            self._fold_system_prompt(messages, system_prompt)
 
         return messages

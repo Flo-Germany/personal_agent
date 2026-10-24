@@ -29,7 +29,7 @@ export function AppHeader({
 
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-[13.5px] font-medium tracking-tight text-white/95">
-          AI Agent
+          {identity?.name ?? "AI Agent"}
         </h1>
         <p className="truncate text-[10.5px] text-white/35">
           {identity ? `${identity.model} · Local` : "Local · Private"}

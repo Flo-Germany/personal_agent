@@ -70,16 +70,28 @@ def test_executor_rejects_invalid_json(tmp_path: Path) -> None:
     assert "Invalid JSON" in result["error"]
 
 
-def test_executor_rejects_unexpected_arguments(tmp_path: Path) -> None:
+def test_executor_ignores_unexpected_arguments(tmp_path: Path) -> None:
     executor = ToolExecutor(ToolSettings())
+    target = tmp_path / "ok"
 
     result = executor.execute(
         "create_folder",
-        {"path": str(tmp_path / "ok"), "sandbox": "C:\\Windows"},
+        {"path": str(target), "sandbox": "C:\\Windows"},
     )
 
+    # Models sometimes add an extra descriptive key; ignore it instead of
+    # failing the whole action.
+    assert result["ok"] is True
+    assert target.is_dir()
+
+
+def test_executor_rejects_missing_required_arguments() -> None:
+    executor = ToolExecutor(ToolSettings())
+
+    result = executor.execute("read_file_content", {})
+
     assert result["ok"] is False
-    assert "Invalid arguments" in result["error"]
+    assert "Missing required argument" in result["error"]
 
 
 def test_executor_runs_create_folder(tmp_path: Path) -> None:

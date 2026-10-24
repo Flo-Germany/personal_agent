@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from agent.approvals import ApprovalNotFound
 from agent.chat import ChatService, ConfirmationRequired, LLMError
+from agent.prompt import load_personality
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import Settings, load_settings
@@ -178,7 +179,7 @@ def create_app(
         """Expose the configured assistant identity to the UI."""
         return IdentityResponse(
             name=settings.agent_name,
-            personality=settings.personality,
+            personality=load_personality(settings),
             model=settings.ollama.model,
         )
 

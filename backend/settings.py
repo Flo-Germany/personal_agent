@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,10 +20,19 @@ class BackendSettings(BaseModel):
 
 class OllamaSettings(BaseModel):
     base_url: str = "http://127.0.0.1:11434/v1"
-    model: str = "hermes3"
+    model: str = "qwen3-vl:8b-instruct"
     timeout_seconds: float = Field(default=120.0, gt=0)
-    temperature: float = Field(default=0.7, ge=0, le=2)
+    temperature: float = Field(default=0.5, ge=0, le=2)
     max_retries: int = Field(default=1, ge=0, le=5)
+    # Ollama defaults to a small context window unless told otherwise. The
+    # identity, personality, knowledge base, and tool schemas together need
+    # considerably more than the default, so set it explicitly.
+    context_window: int = Field(default=16384, ge=2048, le=131072)
+    # Some model templates (for example hermes3) silently drop the system
+    # message when tool schemas are supplied. "auto" folds the system prompt
+    # into the latest user message for those models; "system" always uses the
+    # system role, and "user" always folds it into the latest user message.
+    system_prompt_mode: Literal["auto", "system", "user"] = "auto"
 
 
 class AgentSettings(BaseModel):
@@ -48,6 +58,7 @@ class ToolSettings(BaseModel):
     max_search_files: int = Field(default=20_000, ge=1, le=200_000)
     max_search_seconds: float = Field(default=30.0, gt=0, le=300)
     max_unzip_bytes: int = Field(default=200_000_000, ge=1)
+    redact_secrets: bool = True
 
 
 class VisionSettings(BaseModel):
@@ -98,7 +109,10 @@ class VisionSettings(BaseModel):
 
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
+    # Personality lives in a dedicated, user-editable Markdown file. The inline
+    # field remains as a fallback for older configs or when the file is missing.
     personality: str = ""
+    personality_file: Path = Path("config/personality.md")
     system_prompt: str = ""
 
     backend: BackendSettings = Field(default_factory=BackendSettings)
@@ -107,6 +121,11 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
+
+    def resolved_personality_path(self) -> Path:
+        if self.personality_file.is_absolute():
+            return self.personality_file
+        return PROJECT_ROOT / self.personality_file
 
 
 def load_settings(path: Path | None = None) -> Settings:

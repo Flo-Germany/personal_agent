@@ -57,6 +57,7 @@ def settings(tmp_path) -> Settings:
     return Settings(
         agent_name="TestBot",
         personality="Friendly and direct.",
+        personality_file=tmp_path / "missing-personality.md",
         system_prompt="Keep answers short.",
         memory=MemorySettings(
             knowledge_base_path=tmp_path / "knowledge.md",
@@ -110,7 +111,7 @@ def test_identity_is_exposed(client: TestClient) -> None:
     assert response.json() == {
         "name": "TestBot",
         "personality": "Friendly and direct.",
-        "model": "hermes3",
+        "model": "qwen3-vl:8b-instruct",
     }
 
 

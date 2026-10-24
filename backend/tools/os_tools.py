@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+import re
 import shutil
 import stat as stat_module
 import string
@@ -62,6 +63,29 @@ _SKIP_DIR_NAMES = {
     "System Volume Information",
     "WinSxS",
 }
+
+# High-confidence credential formats. Redacting these keeps an accidental read
+# of a config or secret file from pasting a usable key into the chat history.
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?"
+        r"-----END [A-Z ]*PRIVATE KEY-----",
+        re.DOTALL,
+    ),
+)
+
+
+def _redact_secrets(text: str) -> tuple[str, int]:
+    count = 0
+    for pattern in _SECRET_PATTERNS:
+        text, replacements = pattern.subn("[REDACTED]", text)
+        count += replacements
+    return text, count
 
 # Aliases used by the model and by localized Windows installs. The registry
 # values point at the real known folders, including OneDrive redirection.
@@ -667,6 +691,7 @@ def read_file_content(
     path: str,
     *,
     max_bytes: int = 1_000_000,
+    redact_secrets: bool = True,
 ) -> dict[str, Any]:
     """Read a text file, or describe a binary/image file without dumping bytes."""
     target = _absolute_path(path)
@@ -695,13 +720,21 @@ def read_file_content(
     is_binary = is_image or b"\x00" in raw
     content = None if is_binary else raw.decode("utf-8", errors="replace")
 
-    return {
+    redacted = 0
+    if content is not None and redact_secrets:
+        content, redacted = _redact_secrets(content)
+
+    message = (
+        f"Read {target.name}."
+        if not is_binary
+        else f"{target.name} is a binary/image file; content was not decoded."
+    )
+    if redacted:
+        message += f" Redacted {redacted} secret value(s)."
+
+    result = {
         "ok": True,
-        "message": (
-            f"Read {target.name}."
-            if not is_binary
-            else f"{target.name} is a binary/image file; content was not decoded."
-        ),
+        "message": message,
         "path": str(target),
         "size": stats.st_size,
         "modified": _now_iso(stats.st_mtime),
@@ -709,6 +742,9 @@ def read_file_content(
         "binary": is_binary,
         "content": content,
     }
+    if redacted:
+        result["redacted"] = redacted
+    return result
 
 
 def unzip_file(

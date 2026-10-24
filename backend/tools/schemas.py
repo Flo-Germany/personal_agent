@@ -490,9 +490,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Look at the user's current primary screen and answer a question "
                 "about what is visible. Read-only and local: captures one screenshot "
-                "in memory, sends it only to the local Ollama model "
-                "'llama3.2-vision', and returns its text answer. No file is left on "
-                "disk. Use this for questions such as 'What is on my screen?', "
+                "in memory, sends it only to the locally configured vision model "
+                "in Ollama, and returns its text answer. No file is left on disk. "
+                "Use this for questions such as 'What is on my screen?', "
                 "'Look at my screen', 'What does this error say?', or any question "
                 "about visual layout. Do not use it when the user asks about a "
                 "specific open document that read_window_content can read, and do "

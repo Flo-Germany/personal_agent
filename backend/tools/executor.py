@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from settings import ToolSettings
 from tools import os_tools, window_tools
+from tools.schemas import TOOL_SCHEMAS
 
 if TYPE_CHECKING:
     from tools.vision_tools import VisionService
@@ -26,6 +27,10 @@ class ToolExecutor:
     ) -> None:
         self.settings = settings
         self.vision = vision
+        self._parameters: dict[str, dict[str, Any]] = {
+            schema["function"]["name"]: schema["function"].get("parameters", {})
+            for schema in TOOL_SCHEMAS
+        }
 
         tool_settings = settings
 
@@ -132,6 +137,7 @@ class ToolExecutor:
             "read_file_content": lambda path: os_tools.read_file_content(
                 path,
                 max_bytes=tool_settings.max_read_bytes,
+                redact_secrets=tool_settings.redact_secrets,
             ),
             "unzip_file": lambda archive_path, extract_to: os_tools.unzip_file(
                 archive_path,
@@ -164,6 +170,19 @@ class ToolExecutor:
 
         if not isinstance(parsed, dict):
             return {"ok": False, "error": f"Arguments for {name} must be an object."}
+
+        schema = self._parameters.get(name)
+        if schema:
+            allowed = set(schema.get("properties", {}))
+            parsed = {key: value for key, value in parsed.items() if key in allowed}
+            required = schema.get("required", [])
+            missing = [key for key in required if key not in parsed]
+            if missing:
+                joined = ", ".join(missing)
+                return {
+                    "ok": False,
+                    "error": f"Missing required argument(s) for {name}: {joined}",
+                }
 
         try:
             return handler(**parsed)

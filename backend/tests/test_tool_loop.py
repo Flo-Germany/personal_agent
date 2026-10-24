@@ -261,6 +261,65 @@ def test_generate_reply_raises_confirmation_instead_of_executing(tmp_path: Path)
     assert service.get_pending_for_conversation(conversation_id) is not None
 
 
+def test_screen_question_does_not_force_a_second_analysis(tmp_path: Path) -> None:
+    service, store, client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "what is on my screen"},
+                )
+            ),
+            content_message("I see a test."),
+        ],
+    )
+
+    events = list(
+        service.start_turn(store.new_conversation_id(), "What is on my screen?")
+    )
+
+    assert len(client.completions.requests) == 2
+    assert (
+        sum(
+            1
+            for event in events
+            if event["type"] == "tool_result" and event["tool"] == "analyze_screen"
+        )
+        == 1
+    )
+    assert final_event(events)["reply"] == "I see a test."
+
+
+def test_screen_question_forces_analyze_screen(tmp_path: Path) -> None:
+    service, store, client = make_service(
+        tmp_path,
+        [
+            content_message("I can't see your screen."),
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "what is on my screen"},
+                )
+            ),
+            content_message("The screen shows a test."),
+        ],
+    )
+
+    events = list(
+        service.start_turn(store.new_conversation_id(), "What is on my screen?")
+    )
+
+    assert len(client.completions.requests) == 3
+    nudge = client.completions.requests[1]["messages"][-1]["content"]
+    assert "Call the analyze_screen tool now" in nudge
+    assert any(
+        event["type"] == "tool_result" and event["tool"] == "analyze_screen"
+        for event in events
+    )
+    assert final_event(events)["reply"] == "The screen shows a test."
+
+
 def test_empty_response_is_retried_with_a_nudge(tmp_path: Path) -> None:
     service, store, client = make_service(
         tmp_path,
@@ -276,7 +335,8 @@ def test_empty_response_is_retried_with_a_nudge(tmp_path: Path) -> None:
     assert final_event(events)["reply"] == "Recovered after the retry."
     assert len(client.completions.requests) == 2
     retry_messages = client.completions.requests[1]["messages"]
-    assert retry_messages[-1]["role"] == "system"
+    # hermes3 folds the system prompt into a user turn, so the nudge does too.
+    assert retry_messages[-1]["role"] == "user"
     assert "Continue the user's request" in retry_messages[-1]["content"]
 
 
