@@ -20,6 +20,7 @@ function App() {
     canSend,
     sendMessage,
     approve,
+    interrupt,
     clearChat,
     refresh,
   } = useAgentChat();
@@ -65,6 +66,10 @@ function App() {
   const handleDeny = useCallback(() => {
     void approve(false);
   }, [approve]);
+
+  const handleInterrupt = useCallback(() => {
+    void interrupt();
+  }, [interrupt]);
 
   return (
     <div className="app-frame flex h-dvh w-full min-w-0 flex-col overflow-hidden rounded-[26px] p-px">
@@ -128,6 +133,7 @@ function App() {
 
         <ChatComposer
           onSend={handleSend}
+          onInterrupt={handleInterrupt}
           canSend={canSend}
           isStreaming={isStreaming}
           isLoadingHistory={isLoadingHistory}

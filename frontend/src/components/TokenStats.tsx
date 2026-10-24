@@ -40,7 +40,7 @@ export const TokenStats = memo(function TokenStats({
         <span className="truncate font-mono tabular-nums">{summary}</span>
         {streaming && (
           <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-200/45">
-            live
+            · live
           </span>
         )}
         {details.length > 0 && (

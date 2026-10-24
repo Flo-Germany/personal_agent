@@ -309,6 +309,10 @@ class StreamOutcome(NamedTuple):
     streamed_content: str | None
 
 
+class TurnCancelled(Exception):
+    """The user interrupted the current agent turn."""
+
+
 class ChatService:
     """Compose prompts, call Ollama, run tools with HITL, and stream events."""
 
@@ -341,10 +345,94 @@ class ChatService:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._turn_plans: dict[str, list[str]] = {}
+        self._cancel_guard = threading.Lock()
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._interrupted: set[str] = set()
 
     def _lock_for(self, conversation_id: str) -> threading.Lock:
         with self._locks_guard:
             return self._locks.setdefault(conversation_id, threading.Lock())
+
+    # ------------------------------------------------------------- interrupt
+    def _cancel_event(self, conversation_id: str) -> threading.Event:
+        with self._cancel_guard:
+            return self._cancel_events.setdefault(
+                conversation_id,
+                threading.Event(),
+            )
+
+    def interrupt(self, conversation_id: str) -> bool:
+        """Ask the running turn for this conversation to stop."""
+        with self._cancel_guard:
+            event = self._cancel_events.get(conversation_id)
+            if event is None:
+                return False
+            event.set()
+            self._interrupted.add(conversation_id)
+        return True
+
+    def _raise_if_cancelled(self, conversation_id: str) -> None:
+        with self._cancel_guard:
+            event = self._cancel_events.get(conversation_id)
+            if event is not None and event.is_set():
+                raise TurnCancelled()
+
+    def _was_interrupted(self, conversation_id: str) -> bool:
+        with self._cancel_guard:
+            return conversation_id in self._interrupted
+
+    def _clear_interrupt(self, conversation_id: str) -> None:
+        with self._cancel_guard:
+            self._interrupted.discard(conversation_id)
+            event = self._cancel_events.get(conversation_id)
+            if event is not None:
+                event.clear()
+
+    def _store_partial_stream(
+        self,
+        conversation_id: str,
+        content: str,
+    ) -> None:
+        """Keep the text the user already saw when a turn is interrupted."""
+        text = content.strip()
+        if not text:
+            return
+        if self._looks_like_raw_tool_call(text):
+            return
+        if self._looks_like_malformed_tool_output(text):
+            return
+        self._store.append(conversation_id, "assistant", text)
+
+    def _finalize_cancelled_turn(self, conversation_id: str) -> None:
+        """Keep completed work, drop an incomplete tool group, add a marker."""
+        history = self._store.load(conversation_id)
+
+        for index in range(len(history) - 1, -1, -1):
+            message = history[index]
+            if message.get("role") == "user":
+                break
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                expected = len(message["tool_calls"])
+                results = sum(
+                    1
+                    for item in history[index + 1 :]
+                    if item.get("role") == "tool"
+                )
+                if results < expected:
+                    self._store.truncate(conversation_id, index)
+                break
+
+        history = self._store.load(conversation_id)
+        if (
+            history
+            and history[-1].get("role") == "assistant"
+            and history[-1].get("content") == "Interrupted by user."
+        ):
+            self._turn_plans.pop(conversation_id, None)
+            return
+
+        self._store.append(conversation_id, "assistant", "Interrupted by user.")
+        self._turn_plans.pop(conversation_id, None)
 
     # ------------------------------------------------------------------ HITL
     def get_pending(self, approval_id: str) -> PendingAction:
@@ -369,17 +457,29 @@ class ChatService:
             start_length = len(self._store.load(conversation_id))
             self._store.append(conversation_id, "user", message)
             self._turn_plans.pop(conversation_id, None)
+            self._clear_interrupt(conversation_id)
+            self._cancel_event(conversation_id)
 
             try:
                 yield from self._run_segment(conversation_id)
+            except TurnCancelled:
+                self._finalize_cancelled_turn(conversation_id)
+                yield {
+                    "type": "cancelled",
+                    "conversation_id": conversation_id,
+                }
             except GeneratorExit:
-                if self._pending.get_for_conversation(conversation_id) is None:
+                if self._was_interrupted(conversation_id):
+                    self._finalize_cancelled_turn(conversation_id)
+                elif self._pending.get_for_conversation(conversation_id) is None:
                     self._store.truncate(conversation_id, start_length)
                 raise
             except Exception as exc:  # noqa: BLE001 - converted into an SSE error
                 if self._pending.get_for_conversation(conversation_id) is None:
                     self._store.truncate(conversation_id, start_length)
                 yield self._error_event(conversation_id, exc)
+            finally:
+                self._clear_interrupt(conversation_id)
 
     def resume(
         self,
@@ -392,49 +492,53 @@ class ChatService:
         lock = self._lock_for(conversation_id)
 
         with lock:
-            results: list[tuple[dict[str, Any], dict[str, Any]]] = []
-
-            # Execute before yielding anything so an approved action is not lost
-            # if the client disconnects immediately after clicking Approve.
-            for call in pending.calls:
-                name = call["function"]["name"]
-                arguments = call["function"]["arguments"]
-                if approved:
-                    result = self._tools.execute(name, arguments)
-                else:
-                    result = {
-                        "ok": False,
-                        "cancelled": True,
-                        "error": "Action cancelled by user.",
-                    }
-                self._store.append(
-                    conversation_id,
-                    "tool",
-                    json.dumps(result, ensure_ascii=False, default=str),
-                    tool_call_id=call["id"],
-                    name=name,
-                )
-                results.append((call, result))
-
-            yield {
-                "type": "status",
-                "conversation_id": conversation_id,
-                "phase": "approval",
-                "message": (
-                    "Approved. Executing the action(s)..."
-                    if approved
-                    else "Action cancelled by user."
-                ),
-            }
-
-            for call, result in results:
-                yield self._tool_result_event(
-                    conversation_id,
-                    call["function"]["name"],
-                    result,
-                )
+            self._clear_interrupt(conversation_id)
+            self._cancel_event(conversation_id)
 
             try:
+                results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+                # Execute before yielding anything so an approved action is not
+                # lost if the client disconnects immediately after Approve.
+                for call in pending.calls:
+                    self._raise_if_cancelled(conversation_id)
+                    name = call["function"]["name"]
+                    arguments = call["function"]["arguments"]
+                    if approved:
+                        result = self._tools.execute(name, arguments)
+                    else:
+                        result = {
+                            "ok": False,
+                            "cancelled": True,
+                            "error": "Action cancelled by user.",
+                        }
+                    self._store.append(
+                        conversation_id,
+                        "tool",
+                        json.dumps(result, ensure_ascii=False, default=str),
+                        tool_call_id=call["id"],
+                        name=name,
+                    )
+                    results.append((call, result))
+
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "approval",
+                    "message": (
+                        "Approved. Executing the action(s)..."
+                        if approved
+                        else "Action cancelled by user."
+                    ),
+                }
+
+                for call, result in results:
+                    yield self._tool_result_event(
+                        conversation_id,
+                        call["function"]["name"],
+                        result,
+                    )
+
                 failed_powershell_action = any(
                     call["function"]["name"] == "run_powershell_action"
                     and not result.get("ok")
@@ -458,10 +562,20 @@ class ChatService:
                     auto_approve=approved,
                     executed_signatures=executed_signatures,
                 )
+            except TurnCancelled:
+                self._finalize_cancelled_turn(conversation_id)
+                yield {
+                    "type": "cancelled",
+                    "conversation_id": conversation_id,
+                }
             except GeneratorExit:
+                if self._was_interrupted(conversation_id):
+                    self._finalize_cancelled_turn(conversation_id)
                 raise
             except Exception as exc:  # noqa: BLE001
                 yield self._error_event(conversation_id, exc)
+            finally:
+                self._clear_interrupt(conversation_id)
 
     def _record_plan(
         self,
@@ -490,6 +604,7 @@ class ChatService:
         auto_approved_actions = 0
 
         for round_index in range(max_tool_rounds + 1):
+            self._raise_if_cancelled(conversation_id)
             yield {
                 "type": "status",
                 "conversation_id": conversation_id,
@@ -754,6 +869,7 @@ class ChatService:
                 except LLMError as exc:
                     logger.warning("Failed-action recovery attempt failed: %s", exc)
 
+            self._raise_if_cancelled(conversation_id)
             if not tool_calls and not text_calls:
                 if not content.strip():
                     raise LLMError("Ollama returned an empty response.")
@@ -869,6 +985,7 @@ class ChatService:
                 # the model's order, including mixed read-only and modifying
                 # calls, and keep going until the final answer.
                 for call in serialized_calls:
+                    self._raise_if_cancelled(conversation_id)
                     name = call["function"]["name"]
                     arguments = call["function"]["arguments"]
                     parsed = _parse_arguments(call)
@@ -939,6 +1056,7 @@ class ChatService:
                 continue
 
             for call in read_only_calls:
+                self._raise_if_cancelled(conversation_id)
                 name = call["function"]["name"]
                 arguments = call["function"]["arguments"]
                 parsed = _parse_arguments(call)
@@ -962,6 +1080,7 @@ class ChatService:
                 )
                 yield self._tool_result_event(conversation_id, name, result)
 
+            self._raise_if_cancelled(conversation_id)
             if confirmation_calls:
                 actions = [
                     {
@@ -1254,6 +1373,7 @@ class ChatService:
                 nudge_text=nudge_text,
                 tool_choice=tool_choice,
             )
+            self._raise_if_cancelled(conversation_id)
             choices = getattr(completion, "choices", None) or []
             message = choices[0].message if choices else None
             content = (getattr(message, "content", "") or "") if message else ""
@@ -1288,15 +1408,18 @@ class ChatService:
         last_live_at = time.monotonic()
         metrics_data: dict[str, Any] = {}
         request_started = time.monotonic()
+        self._raise_if_cancelled(conversation_id)
+        chunks = stream_chat(
+            model=model,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            tool_choice=tool_choice,
+            temperature=self._settings.ollama.temperature,
+        )
 
         try:
-            for chunk in stream_chat(
-                model=model,
-                messages=messages,
-                tools=TOOL_SCHEMAS,
-                tool_choice=tool_choice,
-                temperature=self._settings.ollama.temperature,
-            ):
+            for chunk in chunks:
+                self._raise_if_cancelled(conversation_id)
                 message = chunk.get("message") or {}
                 delta = message.get("content") or ""
 
@@ -1363,10 +1486,29 @@ class ChatService:
 
                 if chunk.get("done"):
                     metrics_data = chunk
+        except TurnCancelled:
+            self._store_partial_stream(
+                conversation_id,
+                "".join(content_parts),
+            )
+            raise
+        except GeneratorExit:
+            self._store_partial_stream(
+                conversation_id,
+                "".join(content_parts),
+            )
+            raise
         except LLMError:
             raise
         except Exception as exc:  # noqa: BLE001 - translated into an LLMError
             raise self._request_error(exc, model) from exc
+        finally:
+            close = getattr(chunks, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - never mask the real error
+                    logger.debug("Closing the Ollama stream failed", exc_info=True)
 
         full_content = "".join(content_parts)
         if started:

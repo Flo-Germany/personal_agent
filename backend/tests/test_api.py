@@ -20,6 +20,7 @@ class FakeChatService:
         self.store = store
         self.calls: list[tuple[str, str]] = []
         self.learned: list[tuple[str, str]] = []
+        self.interrupted: list[str] = []
         self.error: LLMError | None = None
 
     def generate_reply(self, conversation_id: str, message: str) -> str:
@@ -37,6 +38,10 @@ class FakeChatService:
 
     def discard_pending(self, conversation_id: str) -> bool:
         return False
+
+    def interrupt(self, conversation_id: str) -> bool:
+        self.interrupted.append(conversation_id)
+        return True
 
     def get_pending_for_conversation(self, conversation_id: str):
         return None
@@ -102,6 +107,21 @@ def test_vision_status_reports_the_disabled_index(client: TestClient) -> None:
     assert payload["indexed_images"] == 0
     assert payload["model"] == "clip-ViT-B-32"
     assert isinstance(payload["roots"], list)
+
+
+def test_interrupt_forwards_the_conversation_id(
+    client: TestClient,
+    fake_service: FakeChatService,
+) -> None:
+    conversation_id = uuid4()
+
+    response = client.post(
+        "/chat/interrupt",
+        json={"conversation_id": str(conversation_id)},
+    )
+
+    assert response.status_code == 204
+    assert fake_service.interrupted == [str(conversation_id)]
 
 
 def test_identity_is_exposed(client: TestClient) -> None:

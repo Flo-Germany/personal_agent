@@ -33,6 +33,17 @@ class ScriptedClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class InterruptingStreamingClient:
+    def __init__(self, on_first_chunk: Any) -> None:
+        self.on_first_chunk = on_first_chunk
+
+    def stream_chat(self, **kwargs: Any):
+        yield {"message": {"role": "assistant", "content": "Partial"}}
+        self.on_first_chunk()
+        yield {"message": {"role": "assistant", "content": " later"}}
+        yield {"message": {"role": "assistant", "content": ""}, "done": True}
+
+
 def tool_call(name: str, arguments: dict[str, Any], call_id: str = "call_1") -> Any:
     return SimpleNamespace(
         id=call_id,
@@ -68,6 +79,26 @@ def make_service(
     client = ScriptedClient(messages)
     service = ChatService(settings, store, knowledge, executor, client=client)
     return service, store, client
+
+
+def make_service_with_client(
+    tmp_path: Path,
+    client: Any,
+    max_iterations: int = 3,
+) -> tuple[ChatService, ConversationStore]:
+    settings = Settings(
+        ollama=OllamaSettings(model="hermes3", temperature=0.2, max_retries=0),
+        agent=AgentSettings(max_iterations=max_iterations),
+        memory=MemorySettings(
+            knowledge_base_path=tmp_path / "knowledge.md",
+            learn_from_chats=False,
+        ),
+    )
+    store = ConversationStore()
+    knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
+    executor = ToolExecutor(settings.tools)
+    service = ChatService(settings, store, knowledge, executor, client=client)
+    return service, store
 
 
 def final_event(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -164,6 +195,40 @@ def test_denial_cancels_action_and_continues(tmp_path: Path) -> None:
     tool_result = json.loads(history[2]["content"])
     assert tool_result["cancelled"] is True
     assert tool_result["ok"] is False
+
+
+def test_interrupt_stops_the_turn_and_keeps_a_marker(tmp_path: Path) -> None:
+    holder: dict[str, Any] = {}
+
+    def stop_after_first_chunk() -> None:
+        assert holder["service"].interrupt(holder["conversation_id"]) is True
+
+    client = InterruptingStreamingClient(stop_after_first_chunk)
+    service, store = make_service_with_client(tmp_path, client)
+    conversation_id = store.new_conversation_id()
+    holder["service"] = service
+    holder["conversation_id"] = conversation_id
+
+    events = list(service.start_turn(conversation_id, "Write a long answer."))
+
+    assert events[-1]["type"] == "cancelled"
+    assert not any(event["type"] == "final" for event in events)
+    assert any(event["type"] == "assistant_delta" for event in events)
+
+    history = store.load(conversation_id)
+    assert [message["content"] for message in history] == [
+        "Write a long answer.",
+        "Partial",
+        "Interrupted by user.",
+    ]
+
+
+def test_interrupt_without_an_active_turn_is_a_noop(tmp_path: Path) -> None:
+    client = ScriptedClient([content_message("ok")])
+    service, store = make_service_with_client(tmp_path, client)
+    conversation_id = store.new_conversation_id()
+
+    assert service.interrupt(conversation_id) is False
 
 
 def test_existing_pending_is_reemitted_without_new_user_message(tmp_path: Path) -> None:

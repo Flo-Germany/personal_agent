@@ -147,6 +147,11 @@ export type AgentMetricsEvent = TokenMetrics & {
   conversation_id?: string;
 };
 
+export type AgentCancelledEvent = {
+  type: "cancelled";
+  conversation_id?: string;
+};
+
 export type AgentActionRequiredEvent = {
   type: "action_required";
   conversation_id?: string;
@@ -182,6 +187,7 @@ export type AgentEvent =
   | AgentAssistantEndEvent
   | AgentAssistantResetEvent
   | AgentMetricsEvent
+  | AgentCancelledEvent
   | AgentActionRequiredEvent
   | AgentFinalEvent
   | AgentErrorEvent;
@@ -199,6 +205,7 @@ export type StreamCallbacks = {
   onAssistantEnd: (content?: string) => void;
   onAssistantReset: () => void;
   onMetrics: (metrics: TokenMetrics) => void;
+  onCancelled: () => void;
   onAssistant: (content: string) => void;
   onActionRequired: (action: PendingAction) => void;
   onFinal: (

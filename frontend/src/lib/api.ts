@@ -142,6 +142,8 @@ function isAgentEvent(value: unknown): value is AgentEvent {
       return true;
     case "metrics":
       return true;
+    case "cancelled":
+      return true;
     case "action_required":
       return (
         typeof value.approval_id === "string" &&
@@ -191,6 +193,9 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
     case "metrics":
       callbacks.onMetrics(event);
       return false;
+    case "cancelled":
+      callbacks.onCancelled();
+      return true;
     case "action_required":
       callbacks.onActionRequired({
         approval_id: event.approval_id,
@@ -417,6 +422,18 @@ export function postApproval(
       approval_id: approvalId,
       approved,
     }),
+    signal,
+  });
+}
+
+export async function postInterrupt(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await fetch(`${API_BASE_URL}/chat/interrupt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversation_id: conversationId }),
     signal,
   });
 }

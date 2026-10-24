@@ -65,6 +65,10 @@ class ApprovalRequest(BaseModel):
     approved: bool
 
 
+class InterruptRequest(BaseModel):
+    conversation_id: UUID
+
+
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -251,6 +255,15 @@ def create_app(
             pending.conversation_id,
             learn_message=pending.user_message,
         )
+
+    @app.post("/chat/interrupt", status_code=204)
+    async def chat_interrupt(payload: InterruptRequest) -> Response:
+        """Ask the active turn to stop after the current operation."""
+        await run_in_threadpool(
+            chat_service.interrupt,
+            str(payload.conversation_id),
+        )
+        return Response(status_code=204)
 
     @app.get("/chat/pending/{conversation_id}")
     async def get_pending(conversation_id: UUID) -> dict[str, Any]:

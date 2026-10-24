@@ -12,6 +12,7 @@ import {
   isAbortError,
   postApproval,
   postChatStream,
+  postInterrupt,
   readStoredConversationId,
   storeConversationId,
   waitForBackend,
@@ -112,6 +113,8 @@ export function useAgentChat() {
   const pendingFilesRef = useRef<Set<string>>(new Set());
   const usedSemanticSearchRef = useRef(false);
   const activeStreamRef = useRef<AbortController | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const interruptingRef = useRef(false);
   const loadControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -283,6 +286,52 @@ export function useAgentChat() {
     );
   }, []);
 
+  const handleInterrupted = useCallback(() => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    finalizeStreaming();
+    const finishedAt = Date.now();
+    const tasks = statusTasksRef.current;
+
+    if (tasks.length > 0) {
+      statusTasksRef.current = tasks.map((task) =>
+        task.state === "running" || task.state === "pending"
+          ? { ...task, state: "cancelled" as const, finishedAt }
+          : task,
+      );
+      statusFinishedAtRef.current = finishedAt;
+      syncTaskStatus({
+        state: "cancelled",
+        label: "Interrupted",
+        finishedAt,
+      });
+    } else {
+      updateStatus({
+        state: "cancelled",
+        label: "Interrupted",
+        tasks: [],
+        startedAt: statusStartedAtRef.current ?? undefined,
+        finishedAt,
+      });
+    }
+
+    activeStatusIdRef.current = null;
+    lastStatusStateRef.current = null;
+    lastStatusRef.current = null;
+    resetTaskRefs();
+    pendingFilesRef.current.clear();
+    usedSemanticSearchRef.current = false;
+    setPendingAction(null);
+    interruptingRef.current = false;
+  }, [
+    finalizeStreaming,
+    resetTaskRefs,
+    syncTaskStatus,
+    updateStatus,
+  ]);
+
   const beginStatus = useCallback(() => {
     resetStreamingRefs();
     resetTaskRefs();
@@ -330,6 +379,7 @@ export function useAgentChat() {
       setIdentity(snapshot.identity);
       setMessages(snapshot.messages);
       setPendingAction(snapshot.pending);
+      activeConversationIdRef.current = readStoredConversationId();
       setIsLoadingHistory(false);
     };
 
@@ -614,6 +664,7 @@ export function useAgentChat() {
           );
         },
         onMetrics: applyMetrics,
+        onCancelled: handleInterrupted,
         onActionRequired: (action) => {
           if (!mountedRef.current) {
             return;
@@ -792,6 +843,7 @@ export function useAgentChat() {
       applyMetrics,
       failRunningTasks,
       finalizeStreaming,
+      handleInterrupted,
       rememberConversation,
       resetStreamingRefs,
       resetTaskRefs,
@@ -828,9 +880,18 @@ export function useAgentChat() {
           conversationId,
           controller.signal,
         );
+        const streamConversationId = response.headers.get(
+          "X-Conversation-ID",
+        );
+        if (streamConversationId) {
+          activeConversationIdRef.current = streamConversationId;
+          rememberConversation(streamConversationId);
+        }
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
-        if (!isAbortError(error) && mountedRef.current) {
+        if (interruptingRef.current) {
+          handleInterrupted();
+        } else if (!isAbortError(error) && mountedRef.current) {
           finalizeStreaming();
           if (!failRunningTasks(NETWORK_ERROR_MESSAGE, "Connection failed")) {
             updateStatus({
@@ -852,6 +913,7 @@ export function useAgentChat() {
         if (activeStreamRef.current === controller) {
           activeStreamRef.current = null;
         }
+        interruptingRef.current = false;
         streamingRef.current = false;
         if (mountedRef.current) {
           setIsStreaming(false);
@@ -865,9 +927,11 @@ export function useAgentChat() {
       conversationId,
       failRunningTasks,
       finalizeStreaming,
+      handleInterrupted,
       handleStreamResponse,
       isLoadingHistory,
       pendingAction,
+      rememberConversation,
       resetTaskRefs,
       updateStatus,
     ],
@@ -898,9 +962,18 @@ export function useAgentChat() {
           approved,
           controller.signal,
         );
+        const streamConversationId = response.headers.get(
+          "X-Conversation-ID",
+        );
+        if (streamConversationId) {
+          activeConversationIdRef.current = streamConversationId;
+          rememberConversation(streamConversationId);
+        }
         await handleStreamResponse(response, controller.signal);
       } catch (error) {
-        if (!isAbortError(error) && mountedRef.current) {
+        if (interruptingRef.current) {
+          handleInterrupted();
+        } else if (!isAbortError(error) && mountedRef.current) {
           finalizeStreaming();
           if (!failRunningTasks(NETWORK_ERROR_MESSAGE, "Connection failed")) {
             updateStatus({
@@ -922,6 +995,7 @@ export function useAgentChat() {
         if (activeStreamRef.current === controller) {
           activeStreamRef.current = null;
         }
+        interruptingRef.current = false;
         streamingRef.current = false;
         if (mountedRef.current) {
           setIsStreaming(false);
@@ -931,14 +1005,45 @@ export function useAgentChat() {
     [
       addAssistant,
       failRunningTasks,
+      handleInterrupted,
       handleStreamResponse,
       pendingAction,
+      rememberConversation,
       resetStreamingRefs,
       resetTaskRefs,
       syncTaskStatus,
       updateStatus,
     ],
   );
+
+  const interrupt = useCallback(async () => {
+    if (!streamingRef.current || interruptingRef.current) {
+      return;
+    }
+
+    interruptingRef.current = true;
+    const id =
+      activeConversationIdRef.current ??
+      conversationId ??
+      pendingAction?.conversation_id ??
+      null;
+
+    try {
+      if (id) {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 2000);
+        try {
+          await postInterrupt(id, controller.signal);
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+    } catch {
+      // The local abort below still stops the stream.
+    }
+
+    activeStreamRef.current?.abort();
+  }, [conversationId, pendingAction]);
 
   const clearChat = useCallback(async () => {
     if (streamingRef.current || isLoadingHistory) {
@@ -955,6 +1060,8 @@ export function useAgentChat() {
     lastStatusRef.current = null;
     resetTaskRefs();
     resetStreamingRefs();
+    activeConversationIdRef.current = null;
+    interruptingRef.current = false;
     pendingFilesRef.current.clear();
     usedSemanticSearchRef.current = false;
     storeConversationId(null);
@@ -990,6 +1097,8 @@ export function useAgentChat() {
       activeStatusIdRef.current = null;
       lastStatusStateRef.current = null;
       lastStatusRef.current = null;
+      activeConversationIdRef.current = readStoredConversationId();
+      interruptingRef.current = false;
       resetTaskRefs();
       resetStreamingRefs();
     } finally {
@@ -1014,6 +1123,7 @@ export function useAgentChat() {
       canSend: !isStreaming && !isLoadingHistory && pendingAction === null,
       sendMessage,
       approve,
+      interrupt,
       clearChat,
       refresh,
     }),
@@ -1022,6 +1132,7 @@ export function useAgentChat() {
       clearChat,
       conversationId,
       identity,
+      interrupt,
       isLoadingHistory,
       isStreaming,
       messages,

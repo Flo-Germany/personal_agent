@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
+import { Square } from "lucide-react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { QUICK_PROMPTS } from "../lib/prompts";
@@ -32,6 +33,7 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
 
 type ChatComposerProps = {
   onSend: (text: string) => void;
+  onInterrupt: () => void;
   canSend: boolean;
   isStreaming: boolean;
   isLoadingHistory: boolean;
@@ -40,6 +42,7 @@ type ChatComposerProps = {
 
 export const ChatComposer = memo(function ChatComposer({
   onSend,
+  onInterrupt,
   canSend,
   isStreaming,
   isLoadingHistory,
@@ -262,15 +265,31 @@ export const ChatComposer = memo(function ChatComposer({
             className="max-h-36 min-h-8 min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[13px] leading-5 text-white/90 placeholder:text-white/25 focus:outline-none disabled:cursor-not-allowed"
           />
 
-          <button
-            type="submit"
-            disabled={!value.trim() || !canSend}
-            aria-label="Send message"
-            title="Send message"
-            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white text-[#141414] transition-all duration-200 ease-out hover:bg-white/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-white/[0.07] disabled:text-white/25"
-          >
-            <ArrowUpIcon className="size-4" strokeWidth={2} />
-          </button>
+          {isStreaming ? (
+            <button
+              type="button"
+              onClick={onInterrupt}
+              aria-label="Stop agent"
+              title="Stop agent"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-rose-300/90 text-[#1a0c0c] transition-all duration-200 ease-out hover:bg-rose-200 active:scale-95"
+            >
+              <Square
+                className="size-3.5"
+                fill="currentColor"
+                strokeWidth={0}
+              />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!value.trim() || !canSend}
+              aria-label="Send message"
+              title="Send message"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white text-[#141414] transition-all duration-200 ease-out hover:bg-white/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-white/[0.07] disabled:text-white/25"
+            >
+              <ArrowUpIcon className="size-4" strokeWidth={2} />
+            </button>
+          )}
         </div>
 
         <p className="mt-2 text-center text-[10px] text-white/20">

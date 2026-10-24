@@ -27,6 +27,8 @@ file system and applications through a Human-in-the-Loop approval flow.
   without a second approval card
 - Compact in-place tool status: one animated row per task, with expandable
   stderr/exit-code details when an action fails
+- Stop button while the agent is working; interrupted turns keep the partial
+  answer and task overview and become “Interrupted by user” in history
 - Real-time SSE status updates: thinking, tool started, tool result, approval
   needed, final answer
 - Protected Windows locations and Recycle Bin deletion for destructive actions
@@ -274,6 +276,8 @@ Endpoints:
 - `POST /chat/approve` — `{"approval_id": "...", "approved": true|false}`;
   resumes the paused agent and returns a stream. Approval also covers the
   remaining steps of that request, so the agent does not ask again between steps.
+- `POST /chat/interrupt` — `{"conversation_id": "..."}`; asks the active turn to
+  stop after the current operation and returns 204.
 - `GET /chat/pending/{conversation_id}` — restores a pending approval after a UI
   reload
 - `POST /chat` — non-streaming compatibility endpoint for simple chats
@@ -338,6 +342,7 @@ assistant_delta  incremental text; emitted as soon as tokens arrive
 assistant_end    the full text of the block that just streamed
 assistant_reset  discard the provisional block (raw tool-call JSON, retry)
 metrics          live and final tokens/sec, token counts, timing, model
+cancelled        the turn was interrupted by the user
 final            final natural-language reply (with a streamed flag)
 error            readable error and HTTP-like status
 ```
@@ -637,10 +642,17 @@ While a turn runs, a compact task card updates in place with every tool step:
 spinner for the current step, checkmarks for completed tasks, and expandable
 error details for failures. It collapses after completion to a summary such as
 **All tasks completed**, and can be expanded again to review the full list,
-tool names, and durations. Messages render GitHub-flavored Markdown with
-syntax-highlighted code blocks, tables, task lists, and copy buttons. The dark
-theme uses Inter and a subtle violet-to-emerald gradient frame. Set
-`VITE_API_URL` to override the default backend URL `http://127.0.0.1:8000`.
+tool names, and durations.
+
+The composer shows a rose **Stop** button while the agent is working. Stopping
+keeps the partial assistant text and marks running steps as interrupted; the
+backend records the text already shown plus **Interrupted by user.** so the
+conversation stays coherent after a reload. A long-running tool finishes its
+current operation before the turn actually stops. Messages render
+GitHub-flavored Markdown with syntax-highlighted code blocks, tables, task
+lists, and copy buttons. The dark theme uses Inter and a subtle
+violet-to-emerald gradient frame. Set `VITE_API_URL` to override the default
+backend URL `http://127.0.0.1:8000`.
 
 File references are intercepted in Markdown links, `file:///` URLs, raw
 `C:\...` paths, and bare paths in prose:
