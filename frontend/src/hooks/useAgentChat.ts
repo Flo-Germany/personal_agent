@@ -27,6 +27,7 @@ import type {
   Identity,
   PendingAction,
   StreamCallbacks,
+  TaskStep,
   TokenMetrics,
   ToolResult,
   ToolStatusData,
@@ -116,6 +117,11 @@ export function useAgentChat() {
   const mountedRef = useRef(true);
   const activeStatusIdRef = useRef<string | null>(null);
   const lastStatusStateRef = useRef<ToolStatusData["state"] | null>(null);
+  const lastStatusRef = useRef<ToolStatusData | null>(null);
+  const statusTasksRef = useRef<TaskStep[]>([]);
+  const statusStartedAtRef = useRef<number | null>(null);
+  const statusFinishedAtRef = useRef<number | null>(null);
+  const plannedTotalRef = useRef(0);
   const streamingMessageIdRef = useRef<string | null>(null);
   const lastStreamedIdRef = useRef<string | null>(null);
   const lastStreamedContentRef = useRef("");
@@ -146,6 +152,7 @@ export function useAgentChat() {
     }
     const statusId = activeStatusIdRef.current;
     lastStatusStateRef.current = status.state;
+    lastStatusRef.current = status;
 
     if (!mountedRef.current) {
       return;
@@ -170,6 +177,68 @@ export function useAgentChat() {
       );
     });
   }, []);
+
+  const resetTaskRefs = useCallback(() => {
+    statusTasksRef.current = [];
+    statusStartedAtRef.current = null;
+    statusFinishedAtRef.current = null;
+    plannedTotalRef.current = 0;
+  }, []);
+
+  const syncTaskStatus = useCallback(
+    (overrides: Partial<ToolStatusData> = {}) => {
+      const tasks = statusTasksRef.current;
+      const running = tasks.find((task) => task.state === "running");
+      const failed = tasks.filter((task) => task.state === "failed").length;
+      const completed = tasks.filter((task) => task.state === "done").length;
+      const base: ToolStatusData = lastStatusRef.current ?? {
+        state: "executing",
+        label: "Working...",
+      };
+      const state =
+        overrides.state ??
+        (failed > 0 ? "error" : running ? "executing" : "success");
+      const label =
+        overrides.label ??
+        (running
+          ? running.label
+          : failed > 0
+            ? `${completed} done · ${failed} failed`
+            : `${completed} task${completed === 1 ? "" : "s"} completed`);
+
+      updateStatus({
+        ...base,
+        ...overrides,
+        state,
+        label,
+        tasks,
+        plannedTotal: plannedTotalRef.current || undefined,
+        startedAt: statusStartedAtRef.current ?? undefined,
+        finishedAt: statusFinishedAtRef.current ?? undefined,
+      });
+    },
+    [updateStatus],
+  );
+
+  const failRunningTasks = useCallback(
+    (message: string, label = "Agent error"): boolean => {
+      const tasks = statusTasksRef.current;
+      if (tasks.length === 0) {
+        return false;
+      }
+
+      const finishedAt = Date.now();
+      statusTasksRef.current = tasks.map((task) =>
+        task.state === "running" || task.state === "pending"
+          ? { ...task, state: "failed", detail: message, finishedAt }
+          : task,
+      );
+      statusFinishedAtRef.current = finishedAt;
+      syncTaskStatus({ state: "error", label, finishedAt });
+      return true;
+    },
+    [syncTaskStatus],
+  );
 
   const resetStreamingRefs = useCallback(() => {
     streamingMessageIdRef.current = null;
@@ -216,9 +285,15 @@ export function useAgentChat() {
 
   const beginStatus = useCallback(() => {
     resetStreamingRefs();
+    resetTaskRefs();
+    statusStartedAtRef.current = Date.now();
     activeStatusIdRef.current = null;
-    updateStatus({ state: "thinking", label: "Thinking..." });
-  }, [resetStreamingRefs, updateStatus]);
+    updateStatus({
+      state: "thinking",
+      label: "Thinking...",
+      startedAt: statusStartedAtRef.current,
+    });
+  }, [resetStreamingRefs, resetTaskRefs, updateStatus]);
 
   const addAttachments = useCallback(
     (files: string[]) => {
@@ -283,50 +358,97 @@ export function useAgentChat() {
 
         if (mountedRef.current) {
           finalizeStreaming();
-          updateStatus({
-            state: "error",
-            label: "Agent error",
-            detail: describeHttpError(
-              response.status,
-              response.statusText,
-              body,
-            ),
-          });
+          const detail = describeHttpError(
+            response.status,
+            response.statusText,
+            body,
+          );
+          if (!failRunningTasks(detail, "Agent error")) {
+            updateStatus({
+              state: "error",
+              label: "Agent error",
+              detail,
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: Date.now(),
+            });
+          }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
         }
         return;
       }
 
       const callbacks: StreamCallbacks = {
-        onStatus: (message, phase) => {
+        onStatus: (message, phase, tool) => {
           if (!mountedRef.current) {
             return;
           }
+
           if (phase === "tool_started") {
-            updateStatus({ state: "executing", label: message });
-          } else if (phase === "approval") {
-            if (message.toLowerCase().includes("cancel")) {
-              updateStatus({ state: "cancelled", label: "Action cancelled" });
-            } else {
-              updateStatus({ state: "executing", label: message });
-            }
-          } else {
-            const previous = lastStatusStateRef.current;
-            if (
-              previous === "success" ||
-              previous === "error" ||
-              previous === "waiting" ||
-              previous === "cancelled"
-            ) {
-              // Keep the meaningful result visible while the model reads it.
+            if (tool === "propose_plan") {
               return;
             }
-            updateStatus({ state: "thinking", label: message });
+            const task: TaskStep = {
+              id: crypto.randomUUID(),
+              label: message,
+              tool,
+              state: "running",
+              startedAt: Date.now(),
+            };
+            statusTasksRef.current = [...statusTasksRef.current, task];
+            syncTaskStatus({ state: "executing", label: message });
+            return;
           }
+
+          if (phase === "approval") {
+            if (message.toLowerCase().includes("cancel")) {
+              const finishedAt = Date.now();
+              statusTasksRef.current = statusTasksRef.current.map((task) =>
+                task.state === "running"
+                  ? { ...task, state: "cancelled", finishedAt }
+                  : task,
+              );
+              syncTaskStatus({ state: "cancelled", label: "Action cancelled" });
+            } else {
+              syncTaskStatus({ state: "executing", label: message });
+            }
+            return;
+          }
+
+          if (statusTasksRef.current.length > 0) {
+            syncTaskStatus({
+              state: phase === "generating" ? "executing" : "thinking",
+              label: phase === "generating" ? "Writing answer..." : message,
+            });
+            return;
+          }
+
+          const previous = lastStatusStateRef.current;
+          if (
+            phase !== "generating" &&
+            (previous === "success" ||
+              previous === "error" ||
+              previous === "waiting" ||
+              previous === "cancelled")
+          ) {
+            // Keep the meaningful result visible while the model reads it.
+            return;
+          }
+          updateStatus({
+            state: "thinking",
+            label: message,
+            tasks: [],
+            startedAt: statusStartedAtRef.current ?? undefined,
+          });
         },
         onToolResult: (ok, summary, tool, result) => {
           if (!mountedRef.current) {
+            return;
+          }
+          if (tool === "propose_plan") {
             return;
           }
           const files = extractToolFiles(tool, result);
@@ -336,35 +458,87 @@ export function useAgentChat() {
             usedSemanticSearchRef.current = true;
           }
 
-          if (ok) {
-            updateStatus({
-              state: "success",
-              label: summary,
-              tool,
-            });
-          } else if (result?.cancelled) {
-            updateStatus({
-              state: "cancelled",
-              label: "Action cancelled",
-              tool,
-              detail: summary,
-            });
+          const cancelled = Boolean(result?.cancelled);
+          const taskState: TaskStep["state"] = cancelled
+            ? "cancelled"
+            : ok
+              ? "done"
+              : "failed";
+          const failure = toolFailureDetails(result);
+          const finishedAt = Date.now();
+          const tasks = [...statusTasksRef.current];
+          let index = -1;
+
+          for (let cursor = tasks.length - 1; cursor >= 0; cursor -= 1) {
+            const task = tasks[cursor];
+            if (
+              task.state === "running" &&
+              (tool === undefined || task.tool === tool)
+            ) {
+              index = cursor;
+              break;
+            }
+          }
+
+          const failureLabel =
+            tool === "run_powershell_action"
+              ? "Action failed"
+              : tool === "run_powershell_query"
+                ? "Query failed"
+                : "Tool failed";
+
+          if (index >= 0) {
+            const task = tasks[index];
+            tasks[index] = {
+              ...task,
+              state: taskState,
+              label: ok ? summary || task.label : task.label,
+              tool: task.tool ?? tool,
+              detail:
+                taskState === "failed"
+                  ? (failure.detail ?? summary)
+                  : taskState === "cancelled"
+                    ? summary
+                    : undefined,
+              exitCode: taskState === "failed" ? failure.exitCode : undefined,
+              finishedAt,
+            };
           } else {
-            const { detail, exitCode } = toolFailureDetails(result);
-            const label =
-              tool === "run_powershell_action"
-                ? "Action failed"
-                : tool === "run_powershell_query"
-                  ? "Query failed"
-                  : "Tool failed";
-            updateStatus({
-              state: "error",
-              label,
+            tasks.push({
+              id: crypto.randomUUID(),
+              label:
+                taskState === "failed"
+                  ? failureLabel
+                  : summary || (tool ? `Completed ${tool}` : "Task completed"),
               tool,
-              detail: detail ?? summary,
-              exitCode,
+              state: taskState,
+              detail:
+                taskState === "failed"
+                  ? (failure.detail ?? summary)
+                  : taskState === "cancelled"
+                    ? summary
+                    : undefined,
+              exitCode: taskState === "failed" ? failure.exitCode : undefined,
+              startedAt: finishedAt,
+              finishedAt,
             });
           }
+
+          statusTasksRef.current = tasks;
+          syncTaskStatus({
+            state:
+              taskState === "failed"
+                ? "error"
+                : taskState === "cancelled"
+                  ? "cancelled"
+                  : "executing",
+            label:
+              taskState === "failed"
+                ? failureLabel
+                : taskState === "cancelled"
+                  ? "Action cancelled"
+                  : summary || "Task completed",
+          });
         },
         onAssistant: (content) => {
           if (mountedRef.current) {
@@ -446,12 +620,26 @@ export function useAgentChat() {
           }
           setPendingAction(action);
           rememberConversation(action.conversation_id);
-          updateStatus({
-            state: "waiting",
-            label: "Waiting for approval",
-            tool: action.actions[0]?.tool,
-            detail: action.actions.map((item) => item.description).join("\n"),
-          });
+          plannedTotalRef.current = Math.max(
+            action.plan?.length ?? 0,
+            action.actions.length,
+          );
+
+          if (statusTasksRef.current.length > 0) {
+            syncTaskStatus({
+              state: "waiting",
+              label: "Waiting for approval",
+            });
+          } else {
+            updateStatus({
+              state: "waiting",
+              label: "Waiting for approval",
+              tool: action.actions[0]?.tool,
+              tasks: [],
+              plannedTotal: plannedTotalRef.current || undefined,
+              startedAt: statusStartedAtRef.current ?? undefined,
+            });
+          }
         },
         onFinal: (reply, id, streamed) => {
           if (!mountedRef.current) {
@@ -492,18 +680,60 @@ export function useAgentChat() {
             addAttachments(missingFiles);
           }
 
+          statusFinishedAtRef.current = Date.now();
+          const tasks = statusTasksRef.current;
           const statusId = activeStatusIdRef.current;
           const statusState = lastStatusStateRef.current;
-          if (statusState === "thinking" && statusId) {
+          const completed = tasks.filter((task) => task.state === "done").length;
+          const failedCount = tasks.filter(
+            (task) => task.state === "failed",
+          ).length;
+          const cancelledCount = tasks.filter(
+            (task) => task.state === "cancelled",
+          ).length;
+          const summaryParts: string[] = [];
+          if (completed > 0) {
+            summaryParts.push(`${completed} completed`);
+          }
+          if (failedCount > 0) {
+            summaryParts.push(`${failedCount} failed`);
+          }
+          if (cancelledCount > 0) {
+            summaryParts.push(`${cancelledCount} cancelled`);
+          }
+
+          if (tasks.length > 0) {
+            syncTaskStatus({
+              state:
+                failedCount > 0
+                  ? "error"
+                  : cancelledCount > 0
+                    ? "cancelled"
+                    : "success",
+              label:
+                failedCount > 0 || cancelledCount > 0
+                  ? summaryParts.join(" · ")
+                  : "All tasks completed",
+              finishedAt: statusFinishedAtRef.current ?? undefined,
+            });
+          } else if (statusState === "thinking" && statusId) {
             // A simple text answer does not need a permanent "Completed" row.
             setMessages((current) =>
               current.filter((message) => message.id !== statusId),
             );
           } else if (statusState === "executing" && statusId) {
-            updateStatus({ state: "success", label: "Completed" });
+            updateStatus({
+              state: "success",
+              label: "Completed",
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: statusFinishedAtRef.current,
+            });
           }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
           resetStreamingRefs();
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
@@ -515,13 +745,20 @@ export function useAgentChat() {
             return;
           }
           finalizeStreaming();
-          updateStatus({
-            state: "error",
-            label: "Agent error",
-            detail: message,
-          });
+          if (!failRunningTasks(message, "Agent error")) {
+            updateStatus({
+              state: "error",
+              label: "Agent error",
+              detail: message,
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: Date.now(),
+            });
+          }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
           addAssistant(message);
@@ -532,13 +769,20 @@ export function useAgentChat() {
       const terminal = await consumeEventStream(response, callbacks, signal);
       if (!terminal && mountedRef.current) {
         finalizeStreaming();
-        updateStatus({
-          state: "error",
-          label: "Connection closed",
-          detail: STREAM_CLOSED_MESSAGE,
-        });
+        if (!failRunningTasks(STREAM_CLOSED_MESSAGE, "Connection closed")) {
+          updateStatus({
+            state: "error",
+            label: "Connection closed",
+            detail: STREAM_CLOSED_MESSAGE,
+            tasks: [],
+            startedAt: statusStartedAtRef.current ?? undefined,
+            finishedAt: Date.now(),
+          });
+        }
         activeStatusIdRef.current = null;
         lastStatusStateRef.current = null;
+        lastStatusRef.current = null;
+        resetTaskRefs();
         addAssistant(STREAM_CLOSED_MESSAGE);
       }
     },
@@ -546,9 +790,12 @@ export function useAgentChat() {
       addAssistant,
       addAttachments,
       applyMetrics,
+      failRunningTasks,
       finalizeStreaming,
       rememberConversation,
       resetStreamingRefs,
+      resetTaskRefs,
+      syncTaskStatus,
       updateStatus,
     ],
   );
@@ -585,13 +832,20 @@ export function useAgentChat() {
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
           finalizeStreaming();
-          updateStatus({
-            state: "error",
-            label: "Connection failed",
-            detail: NETWORK_ERROR_MESSAGE,
-          });
+          if (!failRunningTasks(NETWORK_ERROR_MESSAGE, "Connection failed")) {
+            updateStatus({
+              state: "error",
+              label: "Connection failed",
+              detail: NETWORK_ERROR_MESSAGE,
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: Date.now(),
+            });
+          }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
           addAssistant(NETWORK_ERROR_MESSAGE);
         }
       } finally {
@@ -609,10 +863,12 @@ export function useAgentChat() {
       addMessage,
       beginStatus,
       conversationId,
+      failRunningTasks,
       finalizeStreaming,
       handleStreamResponse,
       isLoadingHistory,
       pendingAction,
+      resetTaskRefs,
       updateStatus,
     ],
   );
@@ -626,10 +882,9 @@ export function useAgentChat() {
 
       setPendingAction(null);
       resetStreamingRefs();
-      updateStatus({
-        state: "executing",
-        label: "Executing approved action...",
-        tool: action.actions[0]?.tool,
+      syncTaskStatus({
+        state: approved ? "executing" : "cancelled",
+        label: approved ? "Executing approved action..." : "Action cancelled",
       });
       streamingRef.current = true;
       setIsStreaming(true);
@@ -647,13 +902,20 @@ export function useAgentChat() {
       } catch (error) {
         if (!isAbortError(error) && mountedRef.current) {
           finalizeStreaming();
-          updateStatus({
-            state: "error",
-            label: "Connection failed",
-            detail: NETWORK_ERROR_MESSAGE,
-          });
+          if (!failRunningTasks(NETWORK_ERROR_MESSAGE, "Connection failed")) {
+            updateStatus({
+              state: "error",
+              label: "Connection failed",
+              detail: NETWORK_ERROR_MESSAGE,
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: Date.now(),
+            });
+          }
           activeStatusIdRef.current = null;
           lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
           addAssistant(NETWORK_ERROR_MESSAGE);
         }
       } finally {
@@ -668,9 +930,12 @@ export function useAgentChat() {
     },
     [
       addAssistant,
+      failRunningTasks,
       handleStreamResponse,
       pendingAction,
       resetStreamingRefs,
+      resetTaskRefs,
+      syncTaskStatus,
       updateStatus,
     ],
   );
@@ -687,6 +952,8 @@ export function useAgentChat() {
     setPendingAction(null);
     activeStatusIdRef.current = null;
     lastStatusStateRef.current = null;
+    lastStatusRef.current = null;
+    resetTaskRefs();
     resetStreamingRefs();
     pendingFilesRef.current.clear();
     usedSemanticSearchRef.current = false;
@@ -697,7 +964,7 @@ export function useAgentChat() {
     }
 
     await deleteConversation(previousId);
-  }, [conversationId, isLoadingHistory, resetStreamingRefs]);
+  }, [conversationId, isLoadingHistory, resetStreamingRefs, resetTaskRefs]);
 
   const refresh = useCallback(async () => {
     if (streamingRef.current) {
@@ -722,6 +989,8 @@ export function useAgentChat() {
       setPendingAction(snapshot.pending);
       activeStatusIdRef.current = null;
       lastStatusStateRef.current = null;
+      lastStatusRef.current = null;
+      resetTaskRefs();
       resetStreamingRefs();
     } finally {
       if (loadControllerRef.current === controller) {
@@ -731,7 +1000,7 @@ export function useAgentChat() {
         }
       }
     }
-  }, [resetStreamingRefs]);
+  }, [resetStreamingRefs, resetTaskRefs]);
 
   return useMemo(
     () => ({

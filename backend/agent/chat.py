@@ -48,6 +48,18 @@ CONTEXT_WINDOW_MESSAGES = 10
 # This cap stops a runaway model from executing an unbounded action chain.
 MAX_AUTO_APPROVED_ACTIONS = 25
 
+_PLAN_STEP = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+_SEQUENCE_SPLIT = re.compile(
+    r"(?:\n+|;|\bthen\b|\bafter\s+that\b|\bafterwards\b|\bfinally\b|"
+    r"\band\s+then\b)",
+    re.IGNORECASE,
+)
+_META_STEP = re.compile(
+    r"^(?:perform|do both|do all|without asking|do not ask|please|"
+    r"make sure|let me know)\b",
+    re.IGNORECASE,
+)
+
 _FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
 _SCREEN_REQUEST = re.compile(
     r"(?:\bwhat(?:'s| is)? on (?:my|the) screen\b|"
@@ -195,6 +207,12 @@ def _program_was_named_by_user(user_message: str, program: str) -> bool:
 
 
 def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
+    if name == "propose_plan":
+        steps = arguments.get("steps")
+        count = len(steps) if isinstance(steps, list) else 0
+        if count:
+            return f"Planning {count} step{'s' if count != 1 else ''}..."
+        return "Planning the steps..."
     if name == "run_powershell_query":
         return (
             "Running PowerShell query: "
@@ -322,6 +340,7 @@ class ChatService:
         )
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        self._turn_plans: dict[str, list[str]] = {}
 
     def _lock_for(self, conversation_id: str) -> threading.Lock:
         with self._locks_guard:
@@ -349,6 +368,7 @@ class ChatService:
 
             start_length = len(self._store.load(conversation_id))
             self._store.append(conversation_id, "user", message)
+            self._turn_plans.pop(conversation_id, None)
 
             try:
                 yield from self._run_segment(conversation_id)
@@ -442,6 +462,18 @@ class ChatService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 yield self._error_event(conversation_id, exc)
+
+    def _record_plan(
+        self,
+        conversation_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        steps = result.get("steps")
+        if not isinstance(steps, list):
+            return
+        cleaned = [" ".join(str(step).split()) for step in steps if str(step).strip()]
+        if cleaned:
+            self._turn_plans[conversation_id] = cleaned[:8]
 
     def _run_segment(
         self,
@@ -739,6 +771,7 @@ class ChatService:
                     )
                 reply = content.strip()
                 self._store.append(conversation_id, "assistant", reply)
+                self._turn_plans.pop(conversation_id, None)
                 yield {
                     "type": "final",
                     "conversation_id": conversation_id,
@@ -822,6 +855,7 @@ class ChatService:
                     f"Which editor or program should I use to open {file_name}?"
                 )
                 self._store.append(conversation_id, "assistant", reply)
+                self._turn_plans.pop(conversation_id, None)
                 yield {
                     "type": "final",
                     "conversation_id": conversation_id,
@@ -881,6 +915,9 @@ class ChatService:
                         }
                         result = self._tools.execute(name, arguments)
 
+                    if name == "propose_plan":
+                        self._record_plan(conversation_id, result)
+
                     self._store.append(
                         conversation_id,
                         "tool",
@@ -914,6 +951,8 @@ class ChatService:
                     "message": _tool_status_message(name, parsed),
                 }
                 result = self._tools.execute(name, arguments)
+                if name == "propose_plan":
+                    self._record_plan(conversation_id, result)
                 self._store.append(
                     conversation_id,
                     "tool",
@@ -937,10 +976,15 @@ class ChatService:
                 ]
                 pending = self._pending.create(
                     conversation_id,
-                    self._last_user_message(conversation_id),
+                    user_message,
                     confirmation_calls,
                     actions,
                     assistant_message=content.strip(),
+                    plan=(
+                        self._turn_plans.get(conversation_id)
+                        or self._extract_plan_steps(content)
+                        or self._plan_from_request(user_message)
+                    ),
                 )
                 yield pending.to_public()
                 return
@@ -1393,6 +1437,55 @@ class ChatService:
             lambda match: f"file:///{match.group(1).upper()}:/",
             text,
         )
+
+    @staticmethod
+    def _extract_plan_steps(text: str) -> list[str]:
+        """Extract a short numbered/bulleted plan from the model's narration."""
+        steps: list[str] = []
+        for line in text.splitlines():
+            match = _PLAN_STEP.match(line)
+            if not match:
+                continue
+            step = " ".join(match.group(1).split())
+            if step and len(step) <= 240:
+                steps.append(step)
+            if len(steps) >= 8:
+                break
+        return steps
+
+    @classmethod
+    def _plan_from_request(cls, message: str) -> list[str]:
+        """Turn an explicit 'first X, then Y' request into a short plan.
+
+        This is a display fallback for models that call a modifying tool
+        without first calling ``propose_plan``. It only activates for clear
+        sequence markers, so a single-action request stays unchanged.
+        """
+        text = " ".join(message.split())
+        if not text:
+            return []
+
+        numbered = cls._extract_plan_steps(message)
+        if len(numbered) > 1:
+            return numbered
+
+        steps: list[str] = []
+        for part in _SEQUENCE_SPLIT.split(text):
+            sentence = re.split(r"(?<=[.!?])\s+", part.strip())[0]
+            cleaned = sentence.strip(" \t\r\n.,;:-")
+            cleaned = re.sub(
+                r"^(?:first|then|next|finally|after\s+that)\b[:,]?\s*",
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+            if len(cleaned) < 3 or _META_STEP.match(cleaned):
+                continue
+            steps.append(cleaned[:240])
+            if len(steps) >= 8:
+                break
+
+        return steps if len(steps) > 1 else []
 
     @staticmethod
     def _call_signature(name: str, arguments: Any) -> tuple[str, str]:

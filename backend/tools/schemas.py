@@ -24,6 +24,38 @@ TOOL_SCHEMAS: list[ToolSchema] = [
     {
         "type": "function",
         "function": {
+            "name": "propose_plan",
+            "description": (
+                "Record the ordered plan for a multi-step or sequential user "
+                "request before executing any modification. Call this once with "
+                "short, concrete steps, then immediately call the first real "
+                "tool. The plan is shown to the user on the approval card; the "
+                "user approves the whole request once and the remaining steps "
+                "run automatically. Do not use it for a single action and do "
+                "not ask for approval in a text reply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "description": (
+                            "Short, concrete actions in execution order, for "
+                            "example 'Create the reports folder'."
+                        ),
+                    }
+                },
+                "required": ["steps"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_powershell_query",
             "description": (
                 "Run a READ-ONLY PowerShell command to inspect this Windows "

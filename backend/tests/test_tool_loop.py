@@ -215,6 +215,124 @@ def test_multiple_modifications_share_one_approval(tmp_path: Path) -> None:
     assert len(tool_messages) == 2
 
 
+def test_approval_event_includes_the_request_and_following_plan(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "planned-folder"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(target)}),
+                content=(
+                    "1. Create the folder.\n"
+                    "2. Verify that it exists.\n"
+                    "3. Report the result.\n"
+                ),
+            ),
+            content_message("Created and verified."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            "First create the folder, then verify it.",
+        )
+    )
+    action = action_event(paused)
+
+    assert action["request"] == "First create the folder, then verify it."
+    assert action["plan"] == [
+        "Create the folder.",
+        "Verify that it exists.",
+        "Report the result.",
+    ]
+
+
+def test_plan_extraction_accepts_numbered_and_bulleted_steps() -> None:
+    assert ChatService._extract_plan_steps(
+        "Here is the plan:\n1. Create a folder.\n2) Write the file.\n- Verify it.\nDone."
+    ) == ["Create a folder.", "Write the file.", "Verify it."]
+
+
+def test_plan_from_request_parses_first_then_sequences() -> None:
+    assert ChatService._plan_from_request(
+        'First create the folder C:\\temp, then create the file note.txt '
+        'with "hello". Perform both tasks in order.'
+    ) == [
+        "create the folder C:\\temp",
+        'create the file note.txt with "hello"',
+    ]
+    assert ChatService._plan_from_request("Create the folder.") == []
+
+
+def test_approval_falls_back_to_the_user_sequence(tmp_path: Path) -> None:
+    folder = tmp_path / "fallback-folder"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            content_message("Done."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            "First create the folder, then create the note.",
+        )
+    )
+    action = action_event(paused)
+
+    assert action["plan"] == ["create the folder", "create the note"]
+
+
+def test_propose_plan_tool_feeds_the_approval_card(tmp_path: Path) -> None:
+    folder = tmp_path / "planned-tool-folder"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "propose_plan",
+                    {"steps": ["Create the folder", "Create the note"]},
+                    "call_plan",
+                )
+            ),
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            content_message("Created."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            "First create the folder, then create the note.",
+        )
+    )
+    action = action_event(paused)
+
+    assert action["plan"] == ["Create the folder", "Create the note"]
+    assert not folder.exists()
+
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert folder.is_dir()
+    assert final_event(resumed)["reply"] == "Created."
+    tool_messages = [
+        message for message in store.load(conversation_id) if message["role"] == "tool"
+    ]
+    assert any(message.get("name") == "propose_plan" for message in tool_messages)
+
+
 def test_approval_covers_remaining_steps_in_the_same_turn(tmp_path: Path) -> None:
     folder = tmp_path / "sequence-folder"
     note = folder / "note.txt"

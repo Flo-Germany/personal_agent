@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Tools that change the system and therefore require explicit approval.
 TOOL_REQUIRES_CONFIRMATION: dict[str, bool] = {
+    "propose_plan": False,
     "run_powershell_query": False,
     "run_powershell_action": True,
     "start_program": True,

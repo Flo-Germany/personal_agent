@@ -36,6 +36,7 @@ def test_requires_confirmation_flags() -> None:
     assert os_tools.requires_confirmation("get_open_windows") is False
     assert os_tools.requires_confirmation("read_window_content") is False
     assert os_tools.requires_confirmation("analyze_screen") is False
+    assert os_tools.requires_confirmation("propose_plan") is False
     # Unknown tools fail closed.
     assert os_tools.requires_confirmation("unknown_tool") is True
 

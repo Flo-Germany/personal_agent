@@ -232,13 +232,15 @@ def build_system_prompt(
     )
     parts.append(
         "When the user describes several tasks or a sequence, for example "
-        "'first do this, then do that', carry out every task in the correct "
-        "order. Do not stop between steps and do not ask the user to confirm "
-        "each next step. The runtime shows one approval for the whole request; "
-        "once the user approves, continue calling the required tools until all "
-        "tasks are complete, verify the results, and then send one final "
-        "summary. If a step fails, recover or try a safe alternative before "
-        "reporting the outcome."
+        "'first do this, then do that', call propose_plan with the ordered "
+        "steps, then immediately call the first tool. The approval card shows "
+        "the full plan. Do not stop between steps and do not ask the user to "
+        "confirm each next step. The runtime shows one approval for the whole "
+        "request; once the user approves, continue calling the required tools "
+        "until all tasks are complete, verify the results, and then send one "
+        "final summary. If a step fails, recover or try a safe alternative "
+        "before reporting the outcome. Use propose_plan only for multi-step "
+        "requests; for a single action, call the tool directly."
     )
     parts.append(
         "You have full access to the user's Windows file system through tools. "

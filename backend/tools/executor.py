@@ -106,7 +106,26 @@ class ToolExecutor:
                 }
             return vision.analyze_screen(user_question)
 
+        def propose_plan(
+            steps: list[str] | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            cleaned: list[str] = []
+            for step in steps or []:
+                text = " ".join(str(step).split())
+                if text:
+                    cleaned.append(text[:240])
+                if len(cleaned) >= 8:
+                    break
+            if not cleaned:
+                return {
+                    "ok": False,
+                    "error": "The plan must contain at least one step.",
+                }
+            return {"ok": True, "steps": cleaned, "message": "Plan recorded."}
+
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
+            "propose_plan": propose_plan,
             "run_powershell_query": (
                 lambda command: system_tools.run_powershell_query(
                     command,

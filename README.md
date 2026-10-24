@@ -331,8 +331,8 @@ fact-learning still uses the same warm model and does not evict the chat prefix.
 ```text
 status           thinking, generating, tool_started, approval
 tool_result      tool name, ok flag, human-readable summary, raw result
-action_required  approval_id, conversation_id, action descriptions,
-                 auto_approve_remaining
+action_required  approval_id, conversation_id, action descriptions, plan,
+                 request, auto_approve_remaining
 assistant_start  a streamed assistant text block begins
 assistant_delta  incremental text; emitted as soon as tokens arrive
 assistant_end    the full text of the block that just streamed
@@ -361,7 +361,9 @@ and prompt token counts, prompt evaluation, model load, and total time.
 3. The first modifying tool of a request pauses the loop. The assistant tool-call
    message is stored, a pending approval is created, and an `action_required`
    event is streamed. The HTTP stream then closes; no thread waits for a click.
-   The card is marked `auto_approve_remaining`.
+   The card lists the exact actions that will run now and the planned sequence
+   (from `propose_plan`, the model's numbered plan, or an explicit
+   "first … then …" request), and is marked `auto_approve_remaining`.
 4. `POST /chat/approve` either executes the pending actions and appends
    `role: "tool"` results, or appends an “Action cancelled by user” result.
    After an approval, every remaining modifying step of the same request runs
@@ -380,10 +382,11 @@ If Ollama is not running, streams emit a readable error event; the legacy
 
 ## Tools and security
 
-The agent can use sixteen tools:
+The agent can use seventeen tools:
 
 | Tool | Confirmation | Purpose |
 |---|---|---|
+| `propose_plan` | No | Record the ordered steps of a multi-step request so the approval card can show the full sequence before anything runs |
 | `run_powershell_query` | No | Read-only PowerShell inspection: processes/RAM/CPU, services, registry, disks, network, event logs, files. Rejects state-changing commands |
 | `run_powershell_action` | Yes | State-changing PowerShell after approval: kill/stop processes, change services or settings, registry writes, file changes, installs |
 | `search_system` | No | Recursive or direct-child search by name/glob, extension, size, modified time, hidden flag, or all drives; newest/oldest sorting; known-folder aliases |
@@ -626,12 +629,18 @@ transparent. Use the tray icon to bring the window back.
 
 The chat UI consumes `POST /chat/stream`, renders intermediate statuses, shows an
 **Approval required** card with **Approve all / Deny** for the first modifying
-step of a request, and restores a pending approval after a reload. Approving
-runs the remaining steps of that request without another card. Messages render
-GitHub-flavored Markdown with syntax-highlighted code blocks, tables, task lists,
-and copy buttons. The dark theme uses Inter and a subtle violet-to-emerald
-gradient frame. Set `VITE_API_URL` to override the default backend URL
-`http://127.0.0.1:8000`.
+step of a request, and restores a pending approval after a reload. The card lists
+the exact starting actions and the planned sequence. Approving runs the remaining
+steps of that request without another card.
+
+While a turn runs, a compact task card updates in place with every tool step:
+spinner for the current step, checkmarks for completed tasks, and expandable
+error details for failures. It collapses after completion to a summary such as
+**All tasks completed**, and can be expanded again to review the full list,
+tool names, and durations. Messages render GitHub-flavored Markdown with
+syntax-highlighted code blocks, tables, task lists, and copy buttons. The dark
+theme uses Inter and a subtle violet-to-emerald gradient frame. Set
+`VITE_API_URL` to override the default backend URL `http://127.0.0.1:8000`.
 
 File references are intercepted in Markdown links, `file:///` URLs, raw
 `C:\...` paths, and bare paths in prose:

@@ -24,6 +24,24 @@ export type ToolStatusState =
   | "error"
   | "cancelled";
 
+export type TaskState =
+  | "pending"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type TaskStep = {
+  id: string;
+  label: string;
+  tool?: string;
+  state: TaskState;
+  detail?: string;
+  exitCode?: number;
+  startedAt?: number;
+  finishedAt?: number;
+};
+
 export type ToolStatusData = {
   state: ToolStatusState;
   label: string;
@@ -32,6 +50,10 @@ export type ToolStatusData = {
   exitCode?: number;
   metrics?: string;
   metricsDetail?: string;
+  tasks?: TaskStep[];
+  plannedTotal?: number;
+  startedAt?: number;
+  finishedAt?: number;
 };
 
 export type ChatMessage = {
@@ -66,6 +88,8 @@ export type PendingAction = {
   conversation_id: string;
   actions: ActionItem[];
   message?: string;
+  request?: string;
+  plan?: string[];
   expires_in_seconds?: number;
   auto_approve_remaining?: boolean;
 };
@@ -77,6 +101,8 @@ export type AgentStatusEvent = {
   conversation_id?: string;
   phase?: StatusPhase;
   message: string;
+  tool?: string;
+  arguments?: Record<string, unknown>;
 };
 
 export type AgentToolResultEvent = {
@@ -127,6 +153,8 @@ export type AgentActionRequiredEvent = {
   approval_id: string;
   actions: ActionItem[];
   message?: string;
+  request?: string;
+  plan?: string[];
   expires_in_seconds?: number;
   auto_approve_remaining?: boolean;
 };
@@ -159,7 +187,7 @@ export type AgentEvent =
   | AgentErrorEvent;
 
 export type StreamCallbacks = {
-  onStatus: (message: string, phase?: StatusPhase) => void;
+  onStatus: (message: string, phase?: StatusPhase, tool?: string) => void;
   onToolResult: (
     ok: boolean,
     summary: string,

@@ -163,7 +163,7 @@ function isAgentEvent(value: unknown): value is AgentEvent {
 function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
   switch (event.type) {
     case "status":
-      callbacks.onStatus(event.message, event.phase);
+      callbacks.onStatus(event.message, event.phase, event.tool);
       return false;
     case "tool_result":
       callbacks.onToolResult(
@@ -197,6 +197,8 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
         conversation_id: event.conversation_id ?? "",
         actions: event.actions,
         message: event.message,
+        request: event.request,
+        plan: event.plan,
         expires_in_seconds: event.expires_in_seconds,
         auto_approve_remaining: event.auto_approve_remaining,
       });

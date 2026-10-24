@@ -26,6 +26,7 @@ def test_schemas_use_the_openai_function_format() -> None:
         names.add(function["name"])
 
     assert names == {
+        "propose_plan",
         "run_powershell_query",
         "run_powershell_action",
         "start_program",
@@ -78,6 +79,18 @@ def test_executor_rejects_unknown_tool(tmp_path: Path) -> None:
 
     assert result["ok"] is False
     assert "Unknown tool" in result["error"]
+
+
+def test_propose_plan_records_clean_steps(tmp_path: Path) -> None:
+    executor = ToolExecutor(ToolSettings())
+
+    result = executor.execute(
+        "propose_plan",
+        {"steps": ["  Create  the folder ", "Write the file", ""]},
+    )
+
+    assert result["ok"] is True
+    assert result["steps"] == ["Create the folder", "Write the file"]
 
 
 def test_executor_rejects_invalid_json(tmp_path: Path) -> None:
