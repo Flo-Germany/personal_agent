@@ -62,9 +62,15 @@ class OllamaSettings(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0)
     temperature: float = Field(default=0.5, ge=0, le=2)
     max_retries: int = Field(default=1, ge=0, le=5)
-    # 0 unloads the model immediately after every request, keeping VRAM free
-    # for the vision/text model switch. Set a positive value to keep it warm.
-    keep_alive_seconds: int = Field(default=0, ge=0, le=86_400)
+    # Ollama unloads an idle model after this many seconds. Keeping it warm
+    # avoids an 8+ second cold load and preserves the prompt cache, which is
+    # by far the largest latency win. Chat and screen analysis use the same
+    # model, so there is no second model competing for VRAM. Set 0 to restore
+    # immediate unloading after every request.
+    keep_alive_seconds: int = Field(default=1800, ge=0, le=86_400)
+    # Preload the model and the stable prompt prefix when the backend starts.
+    # The first real message then only evaluates its new user text.
+    warmup_on_startup: bool = False
     # Recommended model quantization; avoid Q8/FP16 variants on limited VRAM.
     model_quantization: str = Field(default="q4_K_M", min_length=1, max_length=40)
     # Ollama defaults to a small context window unless told otherwise. The

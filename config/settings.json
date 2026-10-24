@@ -12,7 +12,8 @@
     "timeout_seconds": 120,
     "temperature": 0.5,
     "max_retries": 1,
-    "keep_alive_seconds": 0,
+    "keep_alive_seconds": 1800,
+    "warmup_on_startup": true,
     "model_quantization": "q4_K_M",
     "context_window": 16384,
     "system_prompt_mode": "auto"

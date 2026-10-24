@@ -39,9 +39,24 @@ def describe_environment(
         f"User account: {_probe(getpass.getuser, 'unknown')}",
         f"Home folder: {_probe(Path.home, 'unknown')}",
         f"Project folder: {project_root or PROJECT_ROOT}",
-        "Current local date and time: "
-        f"{(now or datetime.now()).strftime('%A, %d %B %Y, %H:%M')}",
+        "Current local date: "
+        f"{(now or datetime.now()).strftime('%A, %d %B %Y')}",
     ]
+
+
+def format_clock_line(now: datetime | None = None) -> str:
+    """Return the volatile clock line for the newest user turn.
+
+    Keeping the clock out of the system prompt is deliberate. Ollama caches
+    the longest identical token prefix; a minute-precision timestamp near the
+    top of the system message invalidated the whole cache every minute and
+    forced a full re-evaluation of roughly 8,000 prompt tokens.
+    """
+    moment = now or datetime.now()
+    return (
+        "[Current local time: "
+        f"{moment.strftime('%H:%M, %A, %d %B %Y')}]"
+    )
 
 
 def build_identity_block(

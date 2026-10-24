@@ -202,8 +202,17 @@ def test_system_prompt_includes_self_aware_identity() -> None:
     assert "Computer name:" in prompt
     assert "User account:" in prompt
     assert r"Project folder: C:\agent" in prompt
-    assert "Saturday, 24 October 2026, 09:30" in prompt
+    assert "Current local date: Saturday, 24 October 2026" in prompt
     assert "say you are not sure instead of inventing it" in prompt
+
+
+def test_system_prompt_is_stable_across_minutes() -> None:
+    settings = Settings(agent_name="Compa", ollama=OllamaSettings(model="hermes3"))
+
+    first = build_system_prompt(settings, now=datetime(2026, 10, 24, 9, 30))
+    second = build_system_prompt(settings, now=datetime(2026, 10, 24, 9, 31))
+
+    assert first == second
 
 
 def test_quantization_warning_flags_large_models() -> None:
@@ -211,7 +220,8 @@ def test_quantization_warning_flags_large_models() -> None:
     warning = OllamaSettings(model="some-model:q8_0").quantization_warning()
     assert warning is not None
     assert "q4_K_M" in warning
-    assert OllamaSettings().keep_alive_seconds == 0
+    assert OllamaSettings().keep_alive_seconds == 1800
+    assert OllamaSettings().warmup_on_startup is False
 
 
 def test_system_prompt_instructs_powershell_administration() -> None:
@@ -370,6 +380,7 @@ def test_streaming_completion_emits_deltas_and_metrics(tmp_path) -> None:
     metrics = next(event for event in events if event["type"] == "metrics")
     assert metrics["live"] is False
     assert metrics["model"] == "hermes3"
+    assert "first_token_ms" in metrics
     assert metrics["prompt_tokens"] == 10
     assert metrics["completion_tokens"] == 2
     assert metrics["tokens_per_second"] == 2.0
@@ -484,7 +495,64 @@ def test_non_hermes_model_keeps_the_system_message(tmp_path) -> None:
     sent = client.completions.requests[0]["messages"]
     assert sent[0]["role"] == "system"
     assert "TestBot" in sent[0]["content"]
-    assert sent[1] == {"role": "user", "content": "Hello."}
+    assert sent[1]["role"] == "user"
+    assert sent[1]["content"].startswith("[Current local time:")
+    assert "SYSTEM PROMPT" not in sent[1]["content"]
+    assert sent[1]["content"].endswith("Hello.")
+
+
+def test_clock_is_added_to_the_newest_user_turn_only(tmp_path) -> None:
+    client = FakeClient()
+    service, _, _ = make_service(
+        tmp_path,
+        client,
+        ollama=OllamaSettings(model="qwen3:8b", temperature=0.2),
+    )
+    history = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "new"},
+    ]
+
+    first = service._build_messages(history, now=datetime(2026, 10, 24, 9, 30))
+    second = service._build_messages(history, now=datetime(2026, 10, 24, 9, 31))
+
+    # The cacheable system prompt must not contain the minute-precision clock.
+    assert first[0]["content"] == second[0]["content"]
+    assert first[1]["content"] == "old"
+    assert first[-1]["content"].startswith(
+        "[Current local time: 09:30, Saturday, 24 October 2026]"
+    )
+    assert first[-1]["content"].endswith("new")
+    assert second[-1]["content"].startswith(
+        "[Current local time: 09:31, Saturday, 24 October 2026]"
+    )
+
+
+def test_warm_up_sends_a_minimal_prefill_request(tmp_path) -> None:
+    client = FakeClient()
+    service, _, _ = make_service(tmp_path, client)
+
+    assert service.warm_up() is True
+
+    request = client.completions.requests[0]
+    assert request["max_tokens"] == 1
+    assert request["tool_choice"] == "auto"
+    assert request["messages"][0]["role"] == "system"
+    assert request["messages"][-1]["role"] == "user"
+    assert request["messages"][-1]["content"].endswith("Reply with OK.")
+
+
+def test_warm_up_is_skipped_when_keep_alive_is_zero(tmp_path) -> None:
+    client = FakeClient()
+    service, _, _ = make_service(
+        tmp_path,
+        client,
+        ollama=OllamaSettings(model="hermes3", keep_alive_seconds=0),
+    )
+
+    assert service.warm_up() is False
+    assert client.completions.requests == []
 
 
 def test_system_prompt_mode_can_force_user_folding(tmp_path) -> None:

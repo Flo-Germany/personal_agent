@@ -43,6 +43,12 @@ export function metricsDetails(metrics: TokenMetrics): MetricDetail[] {
   if (metrics.model) {
     details.push({ label: "Model", value: metrics.model });
   }
+  if (metrics.first_token_ms !== undefined) {
+    details.push({
+      label: "First token",
+      value: formatDuration(metrics.first_token_ms),
+    });
+  }
   if (metrics.completion_tokens !== undefined) {
     details.push({
       label: "Generated",
@@ -56,13 +62,12 @@ export function metricsDetails(metrics: TokenMetrics): MetricDetail[] {
     });
   }
   if (metrics.prompt_eval_ms !== undefined) {
-    const speed =
-      metrics.prompt_tokens_per_second !== undefined
-        ? ` (${formatCount(metrics.prompt_tokens_per_second)} tok/s)`
-        : "";
+    // Ollama reports the full prompt token count but only the *uncached*
+    // evaluation time. Deriving a rate from the two would show absurd values
+    // such as 100k tok/s once the prompt cache is warm, so show time only.
     details.push({
       label: "Prompt eval",
-      value: `${formatDuration(metrics.prompt_eval_ms)}${speed}`,
+      value: formatDuration(metrics.prompt_eval_ms),
     });
   }
   if (metrics.eval_ms !== undefined) {

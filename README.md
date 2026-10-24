@@ -119,7 +119,8 @@ startup, so restart uvicorn after changing it.
     "timeout_seconds": 120,
     "temperature": 0.5,
     "max_retries": 1,
-    "keep_alive_seconds": 0,
+    "keep_alive_seconds": 1800,
+    "warmup_on_startup": true,
     "model_quantization": "q4_K_M",
     "context_window": 16384,
     "system_prompt_mode": "auto"
@@ -190,11 +191,19 @@ message for Hermes models, `"system"` always uses the system role, and `"user"`
 always folds it.
 
 `ollama.keep_alive_seconds` is sent as Ollama's `keep_alive` on every chat and
-vision request. The default `0` unloads the model immediately, guaranteeing that
-the text and vision models never compete for VRAM. This also means the next
-request cold-loads the model; if that is slower than your workflow needs, set a
-positive value (for example `300`) to keep it warm. For strict exclusivity, keep
-it at `0`. `ollama.model_quantization` documents the preferred variant
+vision request. The default is `1800` (30 minutes): the model stays in VRAM
+while the app is in use, avoiding an 8+ second cold load on every message. Chat
+and screen analysis use the same `qwen3-vl` model, so keeping it loaded does not
+make two different models compete for VRAM. Set `0` if you want strict
+immediate unloading (every request then pays the load and prefill cost again).
+
+`ollama.warmup_on_startup` (enabled in `config/settings.json`) preloads the model
+and the stable system-prompt/tool-schema prefix in a background thread when the
+backend starts. The first real message then only evaluates its own user text.
+The volatile clock is deliberately placed in the newest user turn rather than
+the system prompt: Ollama caches the longest identical token prefix, and a
+minute-precision timestamp in the system prompt used to invalidate the whole
+cache every minute. `ollama.model_quantization` documents the preferred variant
 (`q4_K_M` by default). The backend logs a warning when the model tag advertises
 `q5`/`q6`/`q8`/`fp16`, which can consume much more VRAM than necessary.
 
@@ -295,9 +304,24 @@ Windows:
 # Restart the Ollama tray app or run: $env:OLLAMA_FLASH_ATTENTION=1; ollama serve
 ```
 
-The server log should show `OLLAMA_FLASH_ATTENTION:true`. The backend also sends
-`keep_alive: 0` on every chat and vision request, so only one model stays in
-VRAM at a time. See `.env.example` for the tracked example.
+The server log should show `OLLAMA_FLASH_ATTENTION:true`. The backend keeps the
+model warm for `keep_alive_seconds` and warms the prompt prefix at startup. See
+`.env.example` for the tracked example.
+
+Measured on this machine (RX 9070 XT, `qwen3-vl:8b-instruct`, 16k context), the
+same request after the change:
+
+| Scenario | Time to first token |
+| --- | --- |
+| Old: cold load + clock-in-system prompt | ~11.7 s |
+| Warm model, identical prompt prefix | ~0.6–0.9 s |
+| Prompt cache broken by the clock | ~3.3 s extra |
+| Model cold load | ~8.5 s extra |
+
+The prompt is about 8,250 tokens (system prompt plus 16 tool schemas). With a
+stable prefix Ollama reuses the cached tokens and only evaluates the new user
+turn; prompt evaluation dropped from about 3.5 s to about 0.08 s. Background
+fact-learning still uses the same warm model and does not evict the chat prefix.
 
 ### SSE event types
 

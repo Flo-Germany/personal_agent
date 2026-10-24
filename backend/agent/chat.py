@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.error
 import uuid
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator, NamedTuple
@@ -33,7 +34,7 @@ from agent.learning import (
     should_apply_deletion,
 )
 from agent.ollama_client import NativeOllamaClient
-from agent.prompt import build_system_prompt
+from agent.prompt import build_system_prompt, format_clock_line
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import Settings
@@ -919,6 +920,38 @@ class ChatService:
         return added
 
     # ------------------------------------------------------------------ LLM
+    def warm_up(self) -> bool:
+        """Load the model and cache the stable prompt/tool prefix.
+
+        This runs in a background thread at startup. The dummy user message is
+        intentionally short: Ollama stores the common system+tools prefix even
+        though the final user tokens differ from the first real message.
+        """
+        if self._settings.ollama.keep_alive_seconds <= 0:
+            return False
+
+        started = time.monotonic()
+        try:
+            messages = self._build_messages(
+                [{"role": "user", "content": "Reply with OK."}]
+            )
+            self._client.chat.completions.create(
+                model=self._settings.ollama.model,
+                messages=messages,
+                tools=TOOL_SCHEMAS,
+                tool_choice="auto",
+                temperature=0.0,
+                max_tokens=1,
+            )
+        except Exception as exc:  # noqa: BLE001 - startup must not fail
+            logger.warning("Model warm-up failed: %s", exc)
+            return False
+
+        logger.info(
+            "Model warm-up finished in %.2f seconds", time.monotonic() - started
+        )
+        return True
+
     def _completion_messages(
         self,
         history: list[dict[str, Any]],
@@ -1012,6 +1045,7 @@ class ChatService:
         live: bool,
         completion_tokens: int | None = None,
         tokens_per_second: float | None = None,
+        first_token_ms: float | None = None,
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "type": "metrics",
@@ -1019,6 +1053,8 @@ class ChatService:
             "live": live,
             "model": self._settings.ollama.model,
         }
+        if first_token_ms is not None:
+            event["first_token_ms"] = round(first_token_ms, 1)
         if completion_tokens is not None:
             event["completion_tokens"] = completion_tokens
         if tokens_per_second is not None:
@@ -1116,6 +1152,7 @@ class ChatService:
         first_token_at: float | None = None
         last_live_at = time.monotonic()
         metrics_data: dict[str, Any] = {}
+        request_started = time.monotonic()
 
         try:
             for chunk in stream_chat(
@@ -1204,7 +1241,16 @@ class ChatService:
                 "content": full_content,
             }
         if metrics_data:
-            yield self._metrics_event(conversation_id, metrics_data, live=False)
+            yield self._metrics_event(
+                conversation_id,
+                metrics_data,
+                live=False,
+                first_token_ms=(
+                    (first_token_at - request_started) * 1000
+                    if first_token_at is not None
+                    else None
+                ),
+            )
 
         return StreamOutcome(
             SimpleNamespace(
@@ -1658,12 +1704,15 @@ class ChatService:
     def _build_messages(
         self,
         history: list[dict[str, Any]],
+        *,
+        now: datetime | None = None,
     ) -> list[dict[str, Any]]:
         requested_language = detect_requested_language(history)
         system_prompt = build_system_prompt(
             self._settings,
             self._knowledge.read(),
             requested_language,
+            now=now,
         )
         fold_system = self._system_prompt_in_user_message()
         messages: list[dict[str, Any]] = [
@@ -1698,6 +1747,15 @@ class ChatService:
                         f"[Reply entirely in {requested_language}.]"
                     )
                     break
+
+        # The clock is volatile, so it belongs in the newest user turn, not in
+        # the system prompt. This keeps the system prompt and tool schemas
+        # byte-identical across requests so Ollama can reuse its prompt cache.
+        clock = format_clock_line(now)
+        for message in reversed(messages):
+            if message["role"] == "user":
+                message["content"] = f"{clock}\n\n{message['content']}"
+                break
 
         if fold_system:
             self._fold_system_prompt(messages, system_prompt)

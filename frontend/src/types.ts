@@ -5,6 +5,7 @@ export type StatusPhase = "thinking" | "tool_started" | "approval" | "generating
 export type TokenMetrics = {
   live?: boolean;
   model?: string;
+  first_token_ms?: number;
   prompt_tokens?: number;
   completion_tokens?: number;
   tokens_per_second?: number;

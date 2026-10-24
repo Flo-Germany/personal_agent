@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -26,6 +27,11 @@ from tools.executor import ToolExecutor
 from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 ALLOWED_ORIGINS = [
     "http://localhost:1420",
@@ -93,6 +99,7 @@ def create_app(
         keep_alive_seconds=settings.ollama.keep_alive_seconds,
     )
 
+    owned_chat_service = chat_service is None
     if chat_service is None:
         chat_service = ChatService(
             settings,
@@ -105,6 +112,15 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if settings.vision.enabled:
             vision.start()
+        if owned_chat_service and settings.ollama.warmup_on_startup:
+            # Load the model and prefill the stable system/tool prefix in the
+            # background so the first real message does not pay an 8-12 second
+            # cold-start penalty.
+            threading.Thread(
+                target=chat_service.warm_up,
+                name="model-warmup",
+                daemon=True,
+            ).start()
         try:
             yield
         finally:
