@@ -333,6 +333,50 @@ def test_plan_from_request_parses_first_then_sequences() -> None:
     assert ChatService._plan_from_request("Create the folder.") == []
 
 
+def test_plan_from_request_parses_and_und_sequences() -> None:
+    assert ChatService._plan_from_request(
+        'erstelle einen order und erstelle dort eine text datei mit '
+        '"hello world" als text drin'
+    ) == [
+        "erstelle einen order",
+        'erstelle dort eine text datei mit "hello world" als text drin',
+    ]
+    assert ChatService._plan_from_request(
+        "Create a folder and write a note."
+    ) == ["Create a folder", "write a note"]
+    assert ChatService._plan_from_request(
+        "Create a folder and its contents."
+    ) == []
+
+
+def test_approval_falls_back_to_german_und_sequence(tmp_path: Path) -> None:
+    target = tmp_path / "Order"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(target)})
+            ),
+            content_message("Done."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            'erstelle einen order und erstelle dort eine text datei mit '
+            '"hello world" als text drin',
+        )
+    )
+    action = action_event(paused)
+
+    assert action["plan"] == [
+        "erstelle einen order",
+        'erstelle dort eine text datei mit "hello world" als text drin',
+    ]
+
+
 def test_approval_falls_back_to_the_user_sequence(tmp_path: Path) -> None:
     folder = tmp_path / "fallback-folder"
     service, store, _client = make_service(

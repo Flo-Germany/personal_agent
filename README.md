@@ -367,8 +367,9 @@ and prompt token counts, prompt evaluation, model load, and total time.
    message is stored, a pending approval is created, and an `action_required`
    event is streamed. The HTTP stream then closes; no thread waits for a click.
    The card lists the exact actions that will run now and the planned sequence
-   (from `propose_plan`, the model's numbered plan, or an explicit
-   "first … then …" request), and is marked `auto_approve_remaining`.
+   (from `propose_plan`, the model's numbered plan, or an explicit sequence such
+   as "first … then …", "X and Y", or "X und Y"), and is marked
+   `auto_approve_remaining`.
 4. `POST /chat/approve` either executes the pending actions and appends
    `role: "tool"` results, or appends an “Action cancelled by user” result.
    After an approval, every remaining modifying step of the same request runs
@@ -634,9 +635,9 @@ transparent. Use the tray icon to bring the window back.
 
 The chat UI consumes `POST /chat/stream`, renders intermediate statuses, shows an
 **Approval required** card with **Approve all / Deny** for the first modifying
-step of a request, and restores a pending approval after a reload. The card lists
-the exact starting actions and the planned sequence. Approving runs the remaining
-steps of that request without another card.
+step of a request, and restores a pending approval after a reload. The card uses
+a compact **Now → Then** timeline: the exact current action(s), followed by every
+planned step. Approving runs the remaining steps without another card.
 
 While a turn runs, a compact task card updates in place with every tool step:
 spinner for the current step, checkmarks for completed tasks, and expandable

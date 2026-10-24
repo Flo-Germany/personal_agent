@@ -51,12 +51,36 @@ MAX_AUTO_APPROVED_ACTIONS = 25
 _PLAN_STEP = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 _SEQUENCE_SPLIT = re.compile(
     r"(?:\n+|;|\bthen\b|\bafter\s+that\b|\bafterwards\b|\bfinally\b|"
-    r"\band\s+then\b)",
+    r"\band\s+then\b|\bdann\b|\bdanach\b|\banschließend\b|"
+    r"\bschließlich\b)",
+    re.IGNORECASE,
+)
+_LEADING_CONNECTOR = re.compile(
+    r"^(?:(?:first|then|next|finally|after\s+that|also|please|"
+    r"zuerst|dann|danach|anschließend|schließlich|außerdem|bitte|und|and)"
+    r"\b[:,]?\s*)+",
+    re.IGNORECASE,
+)
+_ACTION_START = re.compile(
+    r"^(?:create|make|write|add|delete|remove|move|copy|rename|open|start|"
+    r"launch|run|execute|search|find|read|show|list|zip|unzip|extract|"
+    r"download|upload|edit|update|set|change|install|stop|kill|save|put|"
+    r"place|close|empty|organize|sort|backup|restore|send|print|"
+    r"erstelle|erstellen|erzeuge|erzeugen|mache|machen|schreibe|schreiben|"
+    r"speichere|speichern|lege|legen|füge|fügen|lösche|löschen|entferne|"
+    r"entfernen|verschiebe|verschieben|kopiere|kopieren|benenne|benennen|"
+    r"öffne|öffnen|starte|starten|führe|führen|suche|suchen|finde|finden|"
+    r"lese|lesen|zeige|zeigen|liste|listen|entpacke|entpacken|extrahiere|"
+    r"extrahieren|lade|laden|aktualisiere|aktualisieren|ändere|ändern|"
+    r"setze|setzen|installiere|installieren|beende|beenden|stoppe|stoppen|"
+    r"töte|töten|schließe|schließen|leere|leeren|räume|räumen|sortiere|"
+    r"sortieren|sichere|sichern|sende|senden|drucke|drucken)\b",
     re.IGNORECASE,
 )
 _META_STEP = re.compile(
     r"^(?:perform|do both|do all|without asking|do not ask|please|"
-    r"make sure|let me know)\b",
+    r"make sure|let me know|mache beides|ohne zu fragen|frage nicht|"
+    r"bitte)\b",
     re.IGNORECASE,
 )
 
@@ -1595,13 +1619,21 @@ class ChatService:
                 break
         return steps
 
+    @staticmethod
+    def _clean_plan_clause(part: str) -> str:
+        sentence = re.split(r"(?<=[.!?])\s+", part.strip())[0]
+        cleaned = _LEADING_CONNECTOR.sub("", sentence.strip(" \t\r\n.,;:-"))
+        return cleaned.strip(" \t\r\n.,;:-")
+
     @classmethod
     def _plan_from_request(cls, message: str) -> list[str]:
-        """Turn an explicit 'first X, then Y' request into a short plan.
+        """Turn an explicit multi-step request into a short display plan.
 
-        This is a display fallback for models that call a modifying tool
-        without first calling ``propose_plan``. It only activates for clear
-        sequence markers, so a single-action request stays unchanged.
+        Handles "first X, then Y", German "X, dann Y", and plain
+        conjunctions such as "create X and write Y" / "erstelle X und
+        erstelle Y". A conjunction is only treated as a sequence when every
+        clause starts with an action verb, so "create a folder and its
+        contents" remains a single action.
         """
         text = " ".join(message.split())
         if not text:
@@ -1613,21 +1645,34 @@ class ChatService:
 
         steps: list[str] = []
         for part in _SEQUENCE_SPLIT.split(text):
-            sentence = re.split(r"(?<=[.!?])\s+", part.strip())[0]
-            cleaned = sentence.strip(" \t\r\n.,;:-")
-            cleaned = re.sub(
-                r"^(?:first|then|next|finally|after\s+that)\b[:,]?\s*",
-                "",
-                cleaned,
-                flags=re.IGNORECASE,
-            )
+            cleaned = cls._clean_plan_clause(part)
             if len(cleaned) < 3 or _META_STEP.match(cleaned):
                 continue
             steps.append(cleaned[:240])
             if len(steps) >= 8:
                 break
 
-        return steps if len(steps) > 1 else []
+        if len(steps) > 1:
+            return steps
+
+        parts = re.split(r"\s+(?:and|und)\s+", text, flags=re.IGNORECASE)
+        if len(parts) < 2:
+            return []
+
+        action_steps: list[str] = []
+        for part in parts:
+            cleaned = cls._clean_plan_clause(part)
+            if (
+                len(cleaned) < 3
+                or _META_STEP.match(cleaned)
+                or not _ACTION_START.match(cleaned)
+            ):
+                return []
+            action_steps.append(cleaned[:240])
+            if len(action_steps) >= 8:
+                break
+
+        return action_steps if len(action_steps) > 1 else []
 
     @staticmethod
     def _call_signature(name: str, arguments: Any) -> tuple[str, str]:
