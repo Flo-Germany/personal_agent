@@ -15,6 +15,7 @@ from openai import (
 )
 
 from agent.learning import extract_facts, infer_deletions
+from agent.language import detect_requested_language
 from agent.prompt import build_system_prompt
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
@@ -141,18 +142,33 @@ class ChatService:
         self,
         history: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
+        requested_language = detect_requested_language(history)
         messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": build_system_prompt(
                     self._settings,
                     self._knowledge.read(),
+                    requested_language,
                 ),
             }
         ]
         messages.extend(
             {"role": item["role"], "content": item["content"]} for item in history
         )
+
+        # Reinforce a requested language at the newest user turn. This keeps the
+        # instruction close to the message that would otherwise dominate.
+        if requested_language and messages:
+            last = messages[-1]
+            messages[-1] = {
+                "role": last["role"],
+                "content": (
+                    f"{last['content']}\n\n"
+                    f"[Reply entirely in {requested_language}.]"
+                ),
+            }
+
         return messages
 
     @staticmethod

@@ -14,6 +14,9 @@ current chat, and keeps a persistent, user-editable knowledge base about you.
 - The agent learns durable facts about you after each exchange (name, interests,
   projects, preferences, habits, behavior)
 - Configurable identity: name, personality, and base system prompt
+- Follows the language of the user's message and switches immediately when asked
+  (for example Spanish, Chinese, English, or German), remembering the request
+  for the rest of the conversation
 - Graceful error messages when Ollama is offline, slow, or missing the model
 - System tray with show/hide, quit, and close-to-tray behavior
 
@@ -144,6 +147,14 @@ the outdated fact before the new one is added. You can open and edit the file
 at any time; edits apply to the next message without a restart. Deleting a chat
 does not delete knowledge already learned from it, so remove facts from the
 file if you want them forgotten.
+
+If the knowledge base contains a language note under `## Communication style`,
+it is context only. The assistant is not locked to a language: it replies in the
+language of the current message and switches immediately when the user asks for
+another language (for example Spanish, Chinese, English, or German). An explicit
+request is remembered for the rest of the conversation until the user asks for
+another language. No language is hardcoded or enforced. Temporary language
+choices are not stored as durable knowledge-base facts.
 
 The file starts with sections for identity/name, interests, projects,
 preferences, habits and routines, communication style, and uncategorized notes.

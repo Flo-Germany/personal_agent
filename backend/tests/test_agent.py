@@ -12,6 +12,7 @@ from openai import APIConnectionError, APITimeoutError
 
 from agent.chat import ChatService, LLMError
 from agent.learning import infer_deletions, parse_facts
+from agent.language import detect_language_request, detect_requested_language
 from agent.prompt import build_system_prompt
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
@@ -111,6 +112,87 @@ def test_system_prompt_contains_identity_and_guidance() -> None:
     assert "plain text" in prompt
     assert "takes precedence" in prompt
     assert "placeholder tokens" in prompt
+
+
+def test_system_prompt_follows_the_users_language() -> None:
+    prompt = build_system_prompt(
+        Settings(agent_name="Nova"),
+        "## Communication style\n- The user prefers to speak German.",
+    )
+
+    assert "language of the user's latest message" in prompt
+    assert "switch to that language immediately" in prompt
+    assert "Never enforce a language" in prompt
+    assert "RESPONSE LANGUAGE" not in prompt
+
+
+def test_detect_language_request() -> None:
+    assert detect_language_request("Let's speak Spanish from now on.") == "Spanish"
+    assert detect_language_request("Now answer in Chinese.") == "Chinese"
+    assert detect_language_request("Switch back to English.") == "English"
+    assert detect_language_request("Speak German, please.") == "German"
+    assert detect_language_request(
+        "Jetzt bitte auf Deutsch: Wie heisse ich?"
+    ) == "Deutsch"
+    assert detect_language_request("What is my name?") is None
+    assert detect_language_request("Answer in detail.") is None
+    assert detect_language_request("Answer briefly.") is None
+    assert detect_language_request("Please tell me about my trip in Spain.") is None
+    assert detect_language_request("In Spanish, please.") == "Spanish"
+    assert detect_language_request("Please in German.") == "German"
+
+
+def test_parse_facts_rejects_temporary_language_instructions() -> None:
+    result = parse_facts(
+        "COMMUNICATION: The user prefers to speak Chinese in every conversation "
+        "with the assistant.\n"
+        "COMMUNICATION: The user wants to speak Spanish during this chat.\n"
+        "COMMUNICATION: Prefers short answers.\n"
+    )
+
+    assert result.facts["communication"] == ["Prefers short answers."]
+
+
+def test_detect_requested_language_prefers_most_recent_request() -> None:
+    messages = [
+        {"role": "user", "content": "Let's speak Spanish from now on."},
+        {"role": "assistant", "content": "Claro."},
+        {"role": "user", "content": "What is my name?"},
+    ]
+
+    assert detect_requested_language(messages) == "Spanish"
+
+    messages.append({"role": "user", "content": "Switch back to English."})
+    assert detect_requested_language(messages) == "English"
+
+
+def test_system_prompt_includes_requested_language() -> None:
+    prompt = build_system_prompt(
+        Settings(agent_name="Nova"),
+        "## Communication style\n- The user prefers to speak German.",
+        "Spanish",
+    )
+
+    assert "explicitly requested Spanish" in prompt
+    assert "Write the entire reply in Spanish" in prompt
+
+
+def test_generate_reply_uses_requested_language(tmp_path) -> None:
+    client = FakeClient("Claro.")
+    service, store, _ = make_service(tmp_path, client)
+    conversation_id = store.new_conversation_id()
+    store.append_exchange(
+        conversation_id,
+        "Let's speak Spanish from now on.",
+        "Claro.",
+    )
+
+    service.generate_reply(conversation_id, "What is my name?")
+
+    messages = client.completions.requests[0]["messages"]
+    assert "explicitly requested Spanish" in messages[0]["content"]
+    assert messages[-1]["role"] == "user"
+    assert "Reply entirely in Spanish" in messages[-1]["content"]
 
 
 def test_system_prompt_includes_knowledge() -> None:

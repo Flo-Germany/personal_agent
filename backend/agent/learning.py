@@ -49,6 +49,7 @@ Rules:
 - Project details (deadlines, collaborators, materials) belong to PROJECTS.
 - Daily routines and workspace setup belong to HABITS.
 - Formatting and social preferences belong to COMMUNICATION.
+- Never store a temporary language instruction for this conversation (for example "answer in Spanish" or "speak Chinese from now on") as a durable user fact. Language choices are handled separately.
 - Output one fact per line in the format `LABEL: fact`.
 - If there is nothing new and durable, output exactly: NONE
 
@@ -70,6 +71,12 @@ _GENERIC_ENDINGS = (
     "has an interest in",
 )
 _REJECTED_MARKERS = ("unknown", "not provided", "n/a", "no information")
+_LANGUAGE_INSTRUCTION_FACT = re.compile(
+    r"\b(?:prefers?|wants?|likes?|asked?|requested?|should)\s+"
+    r"(?:to\s+)?(?:speak|talk|answer|reply|respond|communicate|write)\b"
+    r".*\b(?:assistant|conversation|chat|language)\b",
+    re.I,
+)
 _BULLET = re.compile(r"^[-*]\s+(.+)$")
 _LABEL_LINE = re.compile(r"^(?P<label>[A-Za-z][A-Za-z &/_-]{1,30})\s*:\s*(?P<fact>.+)$")
 _CONTROL_LINE = re.compile(r"^(?P<verb>DELETE|ADD|REPLACE)\s*:\s*(?P<rest>.+)$", re.I)
@@ -151,6 +158,8 @@ def _is_concrete_fact(fact: str) -> bool:
     if len(fact) < 3:
         return False
     if _PLACEHOLDER.search(fact) or _CONTROL_LINE.match(fact):
+        return False
+    if _LANGUAGE_INSTRUCTION_FACT.search(fact):
         return False
 
     lowered = fact.lower().rstrip(".")
