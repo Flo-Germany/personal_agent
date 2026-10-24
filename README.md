@@ -593,14 +593,19 @@ npm install
 npm run tauri dev
 ```
 
-For a terminal-free standalone window, build the release binary. It bundles the
-frontend, so Vite does not need to run:
+For a terminal-free standalone window, build with the Tauri CLI. It runs the
+frontend build and embeds `dist` into the binary, so Vite does not need to run:
 
 ```powershell
-cd frontend/src-tauri
-cargo build --release
-.\target\release\personal-agent.exe
+cd frontend
+npm run tauri build -- --no-bundle
+.\src-tauri\target\release\personal-agent.exe
 ```
+
+Use `npm run tauri build` without `--no-bundle` to also create an installer.
+Do not use a plain `cargo build --release` for the distributable app: that can
+leave the development URL in the binary and show `ERR_CONNECTION_REFUSED` when
+Vite is not running.
 
 The app reuses a healthy backend if one is already listening on port 8000.
 Otherwise it starts `backend\.venv\Scripts\python.exe -m uvicorn` with
