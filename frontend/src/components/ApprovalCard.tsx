@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { PendingAction } from "../types";
 import { CloseIcon, ShieldIcon } from "./icons";
 
@@ -8,7 +10,7 @@ type ApprovalCardProps = {
   onDeny: () => void;
 };
 
-export function ApprovalCard({
+export const ApprovalCard = memo(function ApprovalCard({
   pending,
   busy,
   onApprove,
@@ -67,4 +69,4 @@ export function ApprovalCard({
       </div>
     </div>
   );
-}
+});

@@ -6,9 +6,21 @@ out full-filesystem access, the approval boundary, and the safety rules.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, TypedDict
 
-TOOL_SCHEMAS: list[dict[str, Any]] = [
+
+class FunctionSchema(TypedDict):
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class ToolSchema(TypedDict):
+    type: Literal["function"]
+    function: FunctionSchema
+
+
+TOOL_SCHEMAS: list[ToolSchema] = [
     {
         "type": "function",
         "function": {

@@ -13,15 +13,18 @@ agent loop already consumes: ``choices[0].message.content`` and
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
+import threading
 import urllib.error
-import urllib.request
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
-DEFAULT_CONTEXT_WINDOW = 8192
+DEFAULT_CONTEXT_WINDOW = 16384
 
 PostJson = Callable[[str, bytes, float], bytes]
 
@@ -42,7 +45,7 @@ class NativeOllamaClient:
         self._timeout = timeout
         self._num_ctx = num_ctx
         self._max_retries = max_retries
-        self._post_json = post_json or _post_json
+        self._post_json = post_json or _CONNECTION_POOL.post
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create),
         )
@@ -81,15 +84,89 @@ class NativeOllamaClient:
         raise RuntimeError("Ollama request was not attempted.")
 
 
-def _post_json(url: str, body: bytes, timeout: float) -> bytes:
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+class _ConnectionPool:
+    """Reuse one keep-alive Ollama connection per worker thread.
+
+    The agent runs blocking chat calls in Starlette's threadpool. A thread-local
+    connection avoids a TCP/TLS handshake for every model or tool round without
+    sharing a socket between threads.
+    """
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def post(self, url: str, body: bytes, timeout: float) -> bytes:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError(f"Unsupported Ollama URL: {url}")
+
+        key = (parsed.scheme, parsed.hostname, parsed.port)
+        connection = getattr(self._local, "connection", None)
+        connection_key = getattr(self._local, "key", None)
+
+        if connection is None or connection_key != key:
+            if connection is not None:
+                connection.close()
+            factory = (
+                http.client.HTTPSConnection
+                if parsed.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection = factory(parsed.hostname, parsed.port, timeout=timeout)
+            self._local.connection = connection
+            self._local.key = key
+
+        connection.timeout = timeout
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout)
+
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            payload = response.read()
+        except http.client.HTTPException as exc:
+            self._reset()
+            raise ConnectionError(str(exc)) from exc
+        except OSError:
+            self._reset()
+            raise
+
+        if response.status >= 400:
+            raise urllib.error.HTTPError(
+                url,
+                response.status,
+                response.reason,
+                response.headers,
+                io.BytesIO(payload),
+            )
+
+        return payload
+
+    def _reset(self) -> None:
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        self._local.connection = None
+        self._local.key = None
+
+    def close(self) -> None:
+        """Close the current thread's pooled connection."""
+        self._reset()
+
+
+_CONNECTION_POOL = _ConnectionPool()
 
 
 def _native_root(base_url: str) -> str:

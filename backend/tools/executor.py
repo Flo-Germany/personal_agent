@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -152,7 +153,30 @@ class ToolExecutor:
         return os_tools.requires_confirmation(name)
 
     def execute(self, name: str, arguments: str | dict[str, Any]) -> dict[str, Any]:
-        """Run one tool call and return a JSON-serializable result."""
+        """Run one tool call, log it, and return a JSON-serializable result."""
+        started = time.perf_counter()
+        result = self._dispatch(name, arguments)
+        duration_ms = (time.perf_counter() - started) * 1000
+        ok = bool(result.get("ok"))
+        log = logger.info if ok else logger.warning
+        log(
+            "tool_execution name=%s ok=%s duration_ms=%.1f",
+            name,
+            ok,
+            duration_ms,
+            extra={
+                "tool": name,
+                "ok": ok,
+                "duration_ms": round(duration_ms, 1),
+            },
+        )
+        return result
+
+    def _dispatch(
+        self,
+        name: str,
+        arguments: str | dict[str, Any],
+    ) -> dict[str, Any]:
         handler = self._handlers.get(name)
         if handler is None:
             return {"ok": False, "error": f"Unknown tool: {name}"}

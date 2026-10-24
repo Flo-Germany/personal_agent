@@ -1,7 +1,9 @@
 import {
   Children,
   isValidElement,
+  memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -89,6 +91,8 @@ function resolveLanguage(raw: string | undefined): string | null {
 
 const CODE_FONT =
   "'JetBrains Mono', 'SFMono-Regular', ui-monospace, Menlo, monospace";
+
+const REMARK_PLUGINS = [remarkGfm, remarkLocalFilePaths];
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -524,19 +528,25 @@ type MarkdownContentProps = {
   className?: string;
 };
 
-export function MarkdownContent({
+export const MarkdownContent = memo(function MarkdownContent({
   content,
   className = "",
 }: MarkdownContentProps) {
+  const repaired = useMemo(() => repairLocalLinkDestinations(content), [content]);
+  const wrapperClass = useMemo(
+    () => `markdown-body ${className}`.trim(),
+    [className],
+  );
+
   return (
-    <div className={`markdown-body ${className}`.trim()}>
+    <div className={wrapperClass}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkLocalFilePaths]}
+        remarkPlugins={REMARK_PLUGINS}
         components={components}
         urlTransform={preserveLocalFileUrls}
       >
-        {repairLocalLinkDestinations(content)}
+        {repaired}
       </ReactMarkdown>
     </div>
   );
-}
+});

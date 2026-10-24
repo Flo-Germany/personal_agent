@@ -25,7 +25,6 @@ import io
 import json
 import urllib.error
 import urllib.request
-from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Protocol, Sequence
@@ -286,12 +285,48 @@ class ImageVectorStore:
         self.dedupe_threshold = dedupe_threshold
         self._ready = False
         self._init_lock = threading.Lock()
+        # One SQLite connection per worker thread, reused across calls. This
+        # avoids opening a new file handle for every status check and search.
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._connections_lock = threading.Lock()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.db_path), timeout=30)
+        connection = sqlite3.connect(
+            str(self.db_path),
+            timeout=30,
+            check_same_thread=False,
+        )
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=NORMAL")
         return connection
+
+    def _connection(self) -> sqlite3.Connection:
+        connection = getattr(self._local, "connection", None)
+        if connection is None:
+            connection = self._connect()
+            self._local.connection = connection
+            with self._connections_lock:
+                self._connections.append(connection)
+        return connection
+
+    def close(self) -> None:
+        """Close cached per-thread connections."""
+        with self._connections_lock:
+            connections = list(self._connections)
+            self._connections.clear()
+
+        for connection in connections:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                logger.debug(
+                    "Could not close a vision index connection",
+                    exc_info=True,
+                )
+
+        self._local = threading.local()
+        self._ready = False
 
     def initialize(self) -> None:
         if self._ready:
@@ -303,59 +338,57 @@ class ImageVectorStore:
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with closing(self._connect()) as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS images (
-                        path TEXT PRIMARY KEY,
-                        mtime_ns INTEGER NOT NULL,
-                        size INTEGER NOT NULL,
-                        embedding BLOB NOT NULL,
-                        model TEXT NOT NULL,
-                        indexed_at REAL NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS images_model_idx
-                        ON images(model);
-                    CREATE TABLE IF NOT EXISTS meta (
-                        key TEXT PRIMARY KEY,
-                        value TEXT NOT NULL
-                    );
-                    """
+            connection = self._connection()
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS images (
+                    path TEXT PRIMARY KEY,
+                    mtime_ns INTEGER NOT NULL,
+                    size INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    model TEXT NOT NULL,
+                    indexed_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS images_model_idx
+                    ON images(model);
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+
+            row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'model'"
+            ).fetchone()
+
+            if row is not None and row[0] != self.model_name:
+                logger.info(
+                    "Vision model changed from %s to %s; resetting index",
+                    row[0],
+                    self.model_name,
                 )
+                connection.execute("DELETE FROM images")
 
-                row = connection.execute(
-                    "SELECT value FROM meta WHERE key = 'model'"
-                ).fetchone()
-
-                if row is not None and row[0] != self.model_name:
-                    logger.info(
-                        "Vision model changed from %s to %s; resetting index",
-                        row[0],
-                        self.model_name,
-                    )
-                    connection.execute("DELETE FROM images")
-
-                connection.execute(
-                    "INSERT INTO meta (key, value) VALUES ('model', ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (self.model_name,),
-                )
-                connection.commit()
+            connection.execute(
+                "INSERT INTO meta (key, value) VALUES ('model', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (self.model_name,),
+            )
+            connection.commit()
 
             self._ready = True
 
     def count(self) -> int:
         self.initialize()
-        with closing(self._connect()) as connection:
-            row = connection.execute("SELECT COUNT(*) FROM images").fetchone()
+        row = self._connection().execute("SELECT COUNT(*) FROM images").fetchone()
         return int(row[0]) if row else 0
 
     def known_entries(self) -> dict[str, tuple[int, int]]:
         self.initialize()
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT path, mtime_ns, size FROM images"
-            ).fetchall()
+        rows = self._connection().execute(
+            "SELECT path, mtime_ns, size FROM images"
+        ).fetchall()
         return {
             str(path): (int(mtime_ns), int(size))
             for path, mtime_ns, size in rows
@@ -367,43 +400,41 @@ class ImageVectorStore:
 
         self.initialize()
         now = time.time()
-
-        with closing(self._connect()) as connection:
-            connection.executemany(
-                """
-                INSERT INTO images
-                    (path, mtime_ns, size, embedding, model, indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    mtime_ns = excluded.mtime_ns,
-                    size = excluded.size,
-                    embedding = excluded.embedding,
-                    model = excluded.model,
-                    indexed_at = excluded.indexed_at
-                """,
-                [
-                    (path, mtime_ns, size, embedding, self.model_name, now)
-                    for path, mtime_ns, size, embedding in rows
-                ],
-            )
-            connection.commit()
+        connection = self._connection()
+        connection.executemany(
+            """
+            INSERT INTO images
+                (path, mtime_ns, size, embedding, model, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                mtime_ns = excluded.mtime_ns,
+                size = excluded.size,
+                embedding = excluded.embedding,
+                model = excluded.model,
+                indexed_at = excluded.indexed_at
+            """,
+            [
+                (path, mtime_ns, size, embedding, self.model_name, now)
+                for path, mtime_ns, size, embedding in rows
+            ],
+        )
+        connection.commit()
 
     def prune_missing(self, seen_paths: set[str]) -> int:
         self.initialize()
+        connection = self._connection()
+        stored = [
+            str(row[0])
+            for row in connection.execute("SELECT path FROM images")
+        ]
+        stale = [path for path in stored if path not in seen_paths]
 
-        with closing(self._connect()) as connection:
-            stored = [
-                str(row[0])
-                for row in connection.execute("SELECT path FROM images")
-            ]
-            stale = [path for path in stored if path not in seen_paths]
-
-            if stale:
-                connection.executemany(
-                    "DELETE FROM images WHERE path = ?",
-                    [(path,) for path in stale],
-                )
-                connection.commit()
+        if stale:
+            connection.executemany(
+                "DELETE FROM images WHERE path = ?",
+                [(path,) for path in stale],
+            )
+            connection.commit()
 
         return len(stale)
 
@@ -424,45 +455,44 @@ class ImageVectorStore:
         score_square_sum = 0.0
         score_count = 0
 
-        with closing(self._connect()) as connection:
-            cursor = connection.execute("SELECT path, embedding FROM images")
+        cursor = self._connection().execute("SELECT path, embedding FROM images")
 
-            while True:
-                rows = cursor.fetchmany(1024)
-                if not rows:
-                    break
+        while True:
+            rows = cursor.fetchmany(1024)
+            if not rows:
+                break
 
-                valid = [
-                    (str(path), blob)
-                    for path, blob in rows
-                    if blob is not None and len(blob) == query.size * 4
+            valid = [
+                (str(path), blob)
+                for path, blob in rows
+                if blob is not None and len(blob) == query.size * 4
+            ]
+            if not valid:
+                continue
+
+            matrix = np.vstack(
+                [
+                    np.frombuffer(blob, dtype=np.float32)
+                    for _, blob in valid
                 ]
-                if not valid:
-                    continue
+            )
+            scores = matrix @ query
+            score_sum += float(scores.sum())
+            score_square_sum += float(np.square(scores).sum())
+            score_count += len(scores)
+            take = min(candidate_limit, len(valid))
 
-                matrix = np.vstack(
-                    [
-                        np.frombuffer(blob, dtype=np.float32)
-                        for _, blob in valid
-                    ]
+            for index in np.argpartition(scores, -take)[-take:]:
+                heapq.heappush(
+                    candidates,
+                    (
+                        float(scores[index]),
+                        valid[index][0],
+                        valid[index][1],
+                    ),
                 )
-                scores = matrix @ query
-                score_sum += float(scores.sum())
-                score_square_sum += float(np.square(scores).sum())
-                score_count += len(scores)
-                take = min(candidate_limit, len(valid))
-
-                for index in np.argpartition(scores, -take)[-take:]:
-                    heapq.heappush(
-                        candidates,
-                        (
-                            float(scores[index]),
-                            valid[index][0],
-                            valid[index][1],
-                        ),
-                    )
-                    if len(candidates) > candidate_limit:
-                        heapq.heappop(candidates)
+                if len(candidates) > candidate_limit:
+                    heapq.heappop(candidates)
 
         if score_count == 0:
             return [], 0.0, 0.0, 0.0
@@ -573,6 +603,15 @@ class VisionService:
 
         if thread is not None and thread.is_alive():
             thread.join(timeout=5)
+
+        if thread is None or not thread.is_alive():
+            self.store.close()
+            self._thread = None
+        else:
+            logger.warning(
+                "Vision indexer did not stop within 5 seconds; "
+                "leaving its SQLite connections open until process exit"
+            )
 
         self._set_state(phase="stopped")
 

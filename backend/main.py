@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from agent.approvals import ApprovalNotFound
 from agent.chat import ChatService, ConfirmationRequired, LLMError
@@ -50,7 +52,7 @@ class ApprovalRequest(BaseModel):
 
 
 class HistoryMessage(BaseModel):
-    role: str
+    role: Literal["user", "assistant"]
     content: str
     created_at: str | None = None
 
@@ -105,7 +107,7 @@ def create_app(
         try:
             yield
         finally:
-            vision.stop()
+            await run_in_threadpool(vision.stop)
 
     app = FastAPI(
         title="Personal Agent API",
@@ -130,15 +132,19 @@ def create_app(
         conversation_id: str,
         learn_message: str | None = None,
     ) -> StreamingResponse:
-        def generate() -> Iterator[str]:
-            final_seen = False
+        state = {"final_seen": False}
+
+        async def generate() -> AsyncIterator[str]:
             try:
-                for event in events:
+                async for event in iterate_in_threadpool(events):
                     if event.get("type") == "final":
-                        final_seen = True
+                        state["final_seen"] = True
                     yield _sse(event)
             except Exception:  # noqa: BLE001 - headers are already sent
-                logger.exception("Agent stream failed")
+                logger.exception(
+                    "Agent stream failed",
+                    extra={"conversation_id": conversation_id},
+                )
                 yield _sse(
                     {
                         "type": "error",
@@ -147,13 +153,18 @@ def create_app(
                         "status": 500,
                     }
                 )
+            finally:
+                # Close the sync generator even when the client disconnects so
+                # its conversation lock is released and the partial turn rolls
+                # back instead of leaking a held lock.
+                close = getattr(events, "close", None)
+                if close is not None:
+                    await run_in_threadpool(close)
 
-            if final_seen and learn_message:
-                threading.Thread(
-                    target=chat_service.learn_from_exchange,
-                    args=(learn_message,),
-                    daemon=True,
-                ).start()
+        def learn_if_completed() -> None:
+            # Runs after the response finishes, in Starlette's threadpool.
+            if state["final_seen"] and learn_message:
+                chat_service.learn_from_exchange(learn_message)
 
         return StreamingResponse(
             generate(),
@@ -163,10 +174,11 @@ def create_app(
                 "X-Accel-Buffering": "no",
                 "X-Conversation-ID": conversation_id,
             },
+            background=BackgroundTask(learn_if_completed),
         )
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    async def health() -> dict[str, str]:
         """Report that the backend is running."""
         return {
             "status": "ok",
@@ -175,21 +187,22 @@ def create_app(
         }
 
     @app.get("/identity", response_model=IdentityResponse)
-    def identity() -> IdentityResponse:
+    async def identity() -> IdentityResponse:
         """Expose the configured assistant identity to the UI."""
+        personality = await run_in_threadpool(load_personality, settings)
         return IdentityResponse(
             name=settings.agent_name,
-            personality=load_personality(settings),
+            personality=personality,
             model=settings.ollama.model,
         )
 
     @app.get("/vision/status")
-    def vision_status() -> dict[str, Any]:
+    async def vision_status() -> dict[str, Any]:
         """Report global image-index progress and crawl statistics."""
-        return vision.status()
+        return await run_in_threadpool(vision.status)
 
     @app.post("/chat/stream")
-    def chat_stream(payload: ChatRequest) -> StreamingResponse:
+    async def chat_stream(payload: ChatRequest) -> StreamingResponse:
         """Stream a user turn, pausing when approval is required."""
         conversation_id = str(payload.conversation_id or uuid4())
         events = chat_service.start_turn(conversation_id, payload.message)
@@ -200,7 +213,7 @@ def create_app(
         )
 
     @app.post("/chat/approve")
-    def chat_approve(payload: ApprovalRequest) -> StreamingResponse:
+    async def chat_approve(payload: ApprovalRequest) -> StreamingResponse:
         """Approve or deny a pending action and stream the continuation."""
         try:
             pending = chat_service.get_pending(payload.approval_id)
@@ -215,18 +228,25 @@ def create_app(
         )
 
     @app.get("/chat/pending/{conversation_id}")
-    def get_pending(conversation_id: UUID) -> dict[str, Any]:
+    async def get_pending(conversation_id: UUID) -> dict[str, Any]:
         """Return a pending approval for a conversation, if any."""
         pending = chat_service.get_pending_for_conversation(str(conversation_id))
         return {"pending": pending.to_public() if pending is not None else None}
 
     @app.post("/chat", response_model=ChatResponse)
-    def chat(payload: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
+    async def chat(
+        payload: ChatRequest,
+        background_tasks: BackgroundTasks,
+    ) -> ChatResponse:
         """Non-streaming compatibility endpoint for simple chats."""
         conversation_id = str(payload.conversation_id or uuid4())
 
         try:
-            reply = chat_service.generate_reply(conversation_id, payload.message)
+            reply = await run_in_threadpool(
+                chat_service.generate_reply,
+                conversation_id,
+                payload.message,
+            )
         except ConfirmationRequired as exc:
             return JSONResponse(
                 status_code=409,
@@ -245,23 +265,24 @@ def create_app(
         return ChatResponse(reply=reply, conversation_id=conversation_id)
 
     @app.get("/chat/history/{conversation_id}", response_model=HistoryResponse)
-    def get_history(conversation_id: UUID) -> HistoryResponse:
+    async def get_history(conversation_id: UUID) -> HistoryResponse:
         """Return the user-visible chat history for a conversation."""
         normalized = str(conversation_id)
+        stored = await run_in_threadpool(store.load, normalized)
         messages = [
             message
-            for message in store.load(normalized)
+            for message in stored
             if message.get("role") in {"user", "assistant"}
             and str(message.get("content", "")).strip()
         ]
         return HistoryResponse(conversation_id=normalized, messages=messages)
 
     @app.delete("/chat/history/{conversation_id}", status_code=204)
-    def delete_history(conversation_id: UUID) -> Response:
+    async def delete_history(conversation_id: UUID) -> Response:
         """Delete a conversation from memory and discard pending approvals."""
         normalized = str(conversation_id)
-        chat_service.discard_pending(normalized)
-        store.clear(normalized)
+        await run_in_threadpool(chat_service.discard_pending, normalized)
+        await run_in_threadpool(store.clear, normalized)
         return Response(status_code=204)
 
     return app

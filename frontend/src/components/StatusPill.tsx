@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { StatusKind } from "../types";
 import { AlertIcon, CheckIcon, ShieldIcon } from "./icons";
 
@@ -36,7 +38,11 @@ function StatusIcon({ kind, active }: { kind: StatusKind; active: boolean }) {
   }
 }
 
-export function StatusPill({ kind, content, active = false }: StatusPillProps) {
+export const StatusPill = memo(function StatusPill({
+  kind,
+  content,
+  active = false,
+}: StatusPillProps) {
   return (
     <div className="message-in flex justify-center">
       <div
@@ -47,4 +53,4 @@ export function StatusPill({ kind, content, active = false }: StatusPillProps) {
       </div>
     </div>
   );
-}
+});

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
+from typing import Any
 
 from settings import ToolSettings
 from tools.executor import ToolExecutor
@@ -92,6 +94,29 @@ def test_executor_rejects_missing_required_arguments() -> None:
 
     assert result["ok"] is False
     assert "Missing required argument" in result["error"]
+
+
+def test_executor_logs_structured_tool_execution(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    executor = ToolExecutor(ToolSettings())
+
+    with caplog.at_level(logging.INFO, logger="tools.executor"):
+        result = executor.execute(
+            "create_folder",
+            {"path": str(tmp_path / "logged")},
+        )
+
+    assert result["ok"] is True
+    record = next(
+        record
+        for record in caplog.records
+        if record.message.startswith("tool_execution")
+    )
+    assert getattr(record, "tool") == "create_folder"
+    assert getattr(record, "ok") is True
+    assert getattr(record, "duration_ms") >= 0
 
 
 def test_executor_runs_create_folder(tmp_path: Path) -> None:

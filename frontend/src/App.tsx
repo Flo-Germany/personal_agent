@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { AppHeader } from "./components/AppHeader";
 import { ApprovalCard } from "./components/ApprovalCard";
@@ -28,9 +28,39 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isStreaming, pendingAction]);
+  }, [messages.length, isStreaming, pendingAction]);
 
-  const isEmpty = messages.length === 0;
+  const isEmpty = useMemo(() => messages.length === 0, [messages.length]);
+
+  const handleSend = useCallback(
+    (text: string) => {
+      void sendMessage(text);
+    },
+    [sendMessage],
+  );
+
+  const handlePrompt = useCallback(
+    (prompt: string) => {
+      void sendMessage(prompt);
+    },
+    [sendMessage],
+  );
+
+  const handleRefresh = useCallback(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleClear = useCallback(() => {
+    void clearChat();
+  }, [clearChat]);
+
+  const handleApprove = useCallback(() => {
+    void approve(true);
+  }, [approve]);
+
+  const handleDeny = useCallback(() => {
+    void approve(false);
+  }, [approve]);
 
   return (
     <div className="app-frame flex h-dvh w-full min-w-0 flex-col overflow-hidden rounded-[26px] p-px">
@@ -40,8 +70,8 @@ function App() {
           isWorking={isStreaming}
           isBusy={isBusy}
           canClear={!isEmpty}
-          onRefresh={() => void refresh()}
-          onClear={() => void clearChat()}
+          onRefresh={handleRefresh}
+          onClear={handleClear}
         />
 
         <main
@@ -54,10 +84,7 @@ function App() {
               Loading conversation…
             </div>
           ) : isEmpty ? (
-            <EmptyState
-              disabled={!canSend}
-              onPrompt={(prompt) => void sendMessage(prompt)}
-            />
+            <EmptyState disabled={!canSend} onPrompt={handlePrompt} />
           ) : (
             <div className="mx-auto w-full max-w-3xl space-y-5 px-4 py-5 sm:px-6">
               {messages.map((message, index) =>
@@ -82,8 +109,8 @@ function App() {
                 <ApprovalCard
                   pending={pendingAction}
                   busy={isStreaming}
-                  onApprove={() => void approve(true)}
-                  onDeny={() => void approve(false)}
+                  onApprove={handleApprove}
+                  onDeny={handleDeny}
                 />
               )}
 
@@ -95,7 +122,7 @@ function App() {
         </main>
 
         <ChatComposer
-          onSend={(text) => void sendMessage(text)}
+          onSend={handleSend}
           canSend={canSend}
           isStreaming={isStreaming}
           isLoadingHistory={isLoadingHistory}

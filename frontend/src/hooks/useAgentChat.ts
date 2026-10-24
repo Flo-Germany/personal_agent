@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   NETWORK_ERROR_MESSAGE,
@@ -9,6 +9,7 @@ import {
   fetchHistory,
   fetchIdentity,
   fetchPending,
+  isAbortError,
   postApproval,
   postChatStream,
   readStoredConversationId,
@@ -34,11 +35,14 @@ type Snapshot = {
   pending: PendingAction | null;
 };
 
-async function loadSnapshot(storedId: string | null): Promise<Snapshot> {
+async function loadSnapshot(
+  storedId: string | null,
+  signal?: AbortSignal,
+): Promise<Snapshot> {
   const [identity, history, pending] = await Promise.all([
-    fetchIdentity(),
-    storedId ? fetchHistory(storedId) : Promise.resolve([]),
-    storedId ? fetchPending(storedId) : Promise.resolve(null),
+    fetchIdentity(signal),
+    storedId ? fetchHistory(storedId, signal) : Promise.resolve([]),
+    storedId ? fetchPending(storedId, signal) : Promise.resolve(null),
   ]);
 
   return {
@@ -63,6 +67,10 @@ export function useAgentChat() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const pendingFilesRef = useRef<Set<string>>(new Set());
   const usedSemanticSearchRef = useRef(false);
+  const activeStreamRef = useRef<AbortController | null>(null);
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const streamingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const addMessage = useCallback(
     (
@@ -115,11 +123,16 @@ export function useAgentChat() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
 
     const load = async () => {
-      const snapshot = await loadSnapshot(readStoredConversationId());
-      if (cancelled) {
+      const snapshot = await loadSnapshot(
+        readStoredConversationId(),
+        controller.signal,
+      );
+      if (!mountedRef.current || controller.signal.aborted) {
         return;
       }
 
@@ -132,12 +145,17 @@ export function useAgentChat() {
     void load();
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      controller.abort();
+      activeStreamRef.current?.abort();
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+      }
     };
   }, []);
 
   const handleStreamResponse = useCallback(
-    async (response: Response): Promise<void> => {
+    async (response: Response, signal: AbortSignal): Promise<void> => {
       if (!response.ok) {
         let body: unknown = null;
 
@@ -147,14 +165,19 @@ export function useAgentChat() {
           // Non-JSON error body; fall back to the status in the message.
         }
 
-        addAssistant(
-          describeHttpError(response.status, response.statusText, body),
-        );
+        if (mountedRef.current) {
+          addAssistant(
+            describeHttpError(response.status, response.statusText, body),
+          );
+        }
         return;
       }
 
       const callbacks: StreamCallbacks = {
         onStatus: (message, phase) => {
+          if (!mountedRef.current) {
+            return;
+          }
           if (phase === "tool_started") {
             addStatus(message, "tool");
           } else if (phase === "approval") {
@@ -164,6 +187,9 @@ export function useAgentChat() {
           }
         },
         onToolResult: (ok, summary, tool, result) => {
+          if (!mountedRef.current) {
+            return;
+          }
           const files = extractToolFiles(tool, result);
           files.forEach((file) => pendingFilesRef.current.add(file));
 
@@ -173,13 +199,23 @@ export function useAgentChat() {
 
           addStatus(summary, ok ? "result-ok" : "result-error");
         },
-        onAssistant: addAssistant,
+        onAssistant: (content) => {
+          if (mountedRef.current) {
+            addAssistant(content);
+          }
+        },
         onActionRequired: (action) => {
+          if (!mountedRef.current) {
+            return;
+          }
           setPendingAction(action);
           rememberConversation(action.conversation_id);
           addStatus("Waiting for your approval.", "approval");
         },
         onFinal: (reply, id) => {
+          if (!mountedRef.current) {
+            return;
+          }
           let text = reply;
 
           if (usedSemanticSearchRef.current) {
@@ -204,6 +240,9 @@ export function useAgentChat() {
           setPendingAction(null);
         },
         onError: (message) => {
+          if (!mountedRef.current) {
+            return;
+          }
           pendingFilesRef.current.clear();
           usedSemanticSearchRef.current = false;
           addAssistant(message);
@@ -211,8 +250,8 @@ export function useAgentChat() {
         },
       };
 
-      const terminal = await consumeEventStream(response, callbacks);
-      if (!terminal) {
+      const terminal = await consumeEventStream(response, callbacks, signal);
+      if (!terminal && mountedRef.current) {
         addAssistant(STREAM_CLOSED_MESSAGE);
       }
     },
@@ -224,7 +263,7 @@ export function useAgentChat() {
       const trimmed = text.trim();
       if (
         !trimmed ||
-        isStreaming ||
+        streamingRef.current ||
         isLoadingHistory ||
         pendingAction !== null
       ) {
@@ -234,23 +273,31 @@ export function useAgentChat() {
       addMessage("user", trimmed);
       pendingFilesRef.current.clear();
       usedSemanticSearchRef.current = false;
+      streamingRef.current = true;
       setIsStreaming(true);
 
+      const controller = new AbortController();
+      activeStreamRef.current = controller;
+
       try {
-        let response: Response;
-
-        try {
-          response = await postChatStream(trimmed, conversationId);
-        } catch {
+        const response = await postChatStream(
+          trimmed,
+          conversationId,
+          controller.signal,
+        );
+        await handleStreamResponse(response, controller.signal);
+      } catch (error) {
+        if (!isAbortError(error) && mountedRef.current) {
           addAssistant(NETWORK_ERROR_MESSAGE);
-          return;
         }
-
-        await handleStreamResponse(response);
-      } catch {
-        addAssistant(NETWORK_ERROR_MESSAGE);
       } finally {
-        setIsStreaming(false);
+        if (activeStreamRef.current === controller) {
+          activeStreamRef.current = null;
+        }
+        streamingRef.current = false;
+        if (mountedRef.current) {
+          setIsStreaming(false);
+        }
       }
     },
     [
@@ -259,7 +306,6 @@ export function useAgentChat() {
       conversationId,
       handleStreamResponse,
       isLoadingHistory,
-      isStreaming,
       pendingAction,
     ],
   );
@@ -267,35 +313,43 @@ export function useAgentChat() {
   const approve = useCallback(
     async (approved: boolean) => {
       const action = pendingAction;
-      if (!action || isStreaming) {
+      if (!action || streamingRef.current) {
         return;
       }
 
       setPendingAction(null);
+      streamingRef.current = true;
       setIsStreaming(true);
 
+      const controller = new AbortController();
+      activeStreamRef.current = controller;
+
       try {
-        let response: Response;
-
-        try {
-          response = await postApproval(action.approval_id, approved);
-        } catch {
+        const response = await postApproval(
+          action.approval_id,
+          approved,
+          controller.signal,
+        );
+        await handleStreamResponse(response, controller.signal);
+      } catch (error) {
+        if (!isAbortError(error) && mountedRef.current) {
           addAssistant(NETWORK_ERROR_MESSAGE);
-          return;
         }
-
-        await handleStreamResponse(response);
-      } catch {
-        addAssistant(NETWORK_ERROR_MESSAGE);
       } finally {
-        setIsStreaming(false);
+        if (activeStreamRef.current === controller) {
+          activeStreamRef.current = null;
+        }
+        streamingRef.current = false;
+        if (mountedRef.current) {
+          setIsStreaming(false);
+        }
       }
     },
-    [addAssistant, handleStreamResponse, isStreaming, pendingAction],
+    [addAssistant, handleStreamResponse, pendingAction],
   );
 
   const clearChat = useCallback(async () => {
-    if (isStreaming || isLoadingHistory) {
+    if (streamingRef.current || isLoadingHistory) {
       return;
     }
 
@@ -313,37 +367,65 @@ export function useAgentChat() {
     }
 
     await deleteConversation(previousId);
-  }, [conversationId, isLoadingHistory, isStreaming]);
+  }, [conversationId, isLoadingHistory]);
 
   const refresh = useCallback(async () => {
-    if (isStreaming) {
+    if (streamingRef.current) {
       return;
     }
 
+    const controller = new AbortController();
+    loadControllerRef.current?.abort();
+    loadControllerRef.current = controller;
     setIsLoadingHistory(true);
 
     try {
-      const snapshot = await loadSnapshot(readStoredConversationId());
+      const snapshot = await loadSnapshot(
+        readStoredConversationId(),
+        controller.signal,
+      );
+      if (!mountedRef.current || controller.signal.aborted) {
+        return;
+      }
       setIdentity((current) => snapshot.identity ?? current);
       setMessages(snapshot.messages);
       setPendingAction(snapshot.pending);
     } finally {
-      setIsLoadingHistory(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        if (mountedRef.current) {
+          setIsLoadingHistory(false);
+        }
+      }
     }
-  }, [isStreaming]);
+  }, []);
 
-  return {
-    messages,
-    identity,
-    pendingAction,
-    conversationId,
-    isStreaming,
-    isLoadingHistory,
-    isBusy: isStreaming || isLoadingHistory,
-    canSend: !isStreaming && !isLoadingHistory && pendingAction === null,
-    sendMessage,
-    approve,
-    clearChat,
-    refresh,
-  };
+  return useMemo(
+    () => ({
+      messages,
+      identity,
+      pendingAction,
+      conversationId,
+      isStreaming,
+      isLoadingHistory,
+      isBusy: isStreaming || isLoadingHistory,
+      canSend: !isStreaming && !isLoadingHistory && pendingAction === null,
+      sendMessage,
+      approve,
+      clearChat,
+      refresh,
+    }),
+    [
+      approve,
+      clearChat,
+      conversationId,
+      identity,
+      isLoadingHistory,
+      isStreaming,
+      messages,
+      pendingAction,
+      refresh,
+      sendMessage,
+    ],
+  );
 }

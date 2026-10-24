@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Files, Images } from "lucide-react";
 
 import { FileReference } from "./FileReference";
@@ -7,7 +8,9 @@ type AttachmentBlockProps = {
   files: string[];
 };
 
-export function AttachmentBlock({ files }: AttachmentBlockProps) {
+export const AttachmentBlock = memo(function AttachmentBlock({
+  files,
+}: AttachmentBlockProps) {
   if (files.length === 0) {
     return null;
   }
@@ -39,4 +42,4 @@ export function AttachmentBlock({ files }: AttachmentBlockProps) {
       </div>
     </div>
   );
-}
+});

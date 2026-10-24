@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - Windows-only application
 logger = logging.getLogger(__name__)
 
 # Tools that change the system and therefore require explicit approval.
-TOOL_REQUIRES_CONFIRMATION = {
+TOOL_REQUIRES_CONFIRMATION: dict[str, bool] = {
     "start_program": True,
     "open_file": True,
     "create_folder": True,

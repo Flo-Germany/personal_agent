@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { QUICK_PROMPTS } from "../lib/prompts";
@@ -38,7 +38,7 @@ type ChatComposerProps = {
   pending: boolean;
 };
 
-export function ChatComposer({
+export const ChatComposer = memo(function ChatComposer({
   onSend,
   canSend,
   isStreaming,
@@ -279,4 +279,4 @@ export function ChatComposer({
       </form>
     </div>
   );
-}
+});

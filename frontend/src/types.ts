@@ -1,5 +1,7 @@
 export type ChatRole = "user" | "assistant" | "status" | "files";
 
+export type StatusPhase = "thinking" | "tool_started" | "approval";
+
 export type StatusKind =
   | "thinking"
   | "tool"
@@ -40,36 +42,67 @@ export type PendingAction = {
   expires_in_seconds?: number;
 };
 
-export type AgentEvent = {
-  type:
-    | "status"
-    | "tool_result"
-    | "action_required"
-    | "final"
-    | "error"
-    | "assistant";
+export type ToolResult = Record<string, unknown>;
+
+export type AgentStatusEvent = {
+  type: "status";
   conversation_id?: string;
-  phase?: string;
-  message?: string;
+  phase?: StatusPhase;
+  message: string;
+};
+
+export type AgentToolResultEvent = {
+  type: "tool_result";
+  conversation_id?: string;
+  tool: string;
+  ok: boolean;
   summary?: string;
-  ok?: boolean;
-  tool?: string;
-  result?: Record<string, unknown>;
-  reply?: string;
-  content?: string;
-  approval_id?: string;
-  actions?: ActionItem[];
-  status?: number;
+  result?: ToolResult;
+};
+
+export type AgentAssistantEvent = {
+  type: "assistant";
+  conversation_id?: string;
+  content: string;
+};
+
+export type AgentActionRequiredEvent = {
+  type: "action_required";
+  conversation_id?: string;
+  approval_id: string;
+  actions: ActionItem[];
+  message?: string;
   expires_in_seconds?: number;
 };
 
+export type AgentFinalEvent = {
+  type: "final";
+  conversation_id?: string;
+  reply: string;
+};
+
+export type AgentErrorEvent = {
+  type: "error";
+  conversation_id?: string;
+  message: string;
+  status?: number;
+};
+
+export type AgentEvent =
+  | AgentStatusEvent
+  | AgentToolResultEvent
+  | AgentAssistantEvent
+  | AgentActionRequiredEvent
+  | AgentFinalEvent
+  | AgentErrorEvent;
+
 export type StreamCallbacks = {
-  onStatus: (message: string, phase?: string) => void;
+  onStatus: (message: string, phase?: StatusPhase) => void;
   onToolResult: (
     ok: boolean,
     summary: string,
     tool?: string,
-    result?: Record<string, unknown>,
+    result?: ToolResult,
   ) => void;
   onAssistant: (content: string) => void;
   onActionRequired: (action: PendingAction) => void;

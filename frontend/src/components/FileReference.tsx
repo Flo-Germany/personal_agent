@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import {
@@ -158,7 +165,9 @@ type FileReferenceProps = {
   path: string;
 };
 
-export function FileReference({ path }: FileReferenceProps) {
+export const FileReference = memo(function FileReference({
+  path,
+}: FileReferenceProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -187,27 +196,34 @@ export function FileReference({ path }: FileReferenceProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [previewOpen]);
 
-  const name = fileName(path);
-  const extension = fileExtension(path);
-  const FileIcon = iconForExtension(extension);
-  const source = localFileSrc(path);
+  const name = useMemo(() => fileName(path), [path]);
+  const extension = useMemo(() => fileExtension(path), [path]);
+  const FileIcon = useMemo(() => iconForExtension(extension), [extension]);
+  const source = useMemo(() => localFileSrc(path), [path]);
 
-  const openFile = () => {
+  const openFile = useCallback(() => {
     void openLocalFile(path);
-  };
+  }, [path]);
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.target !== event.currentTarget) {
-      return;
-    }
+  const revealFile = useCallback(() => {
+    void revealLocalFile(path);
+  }, [path]);
 
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openFile();
-    }
-  };
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLSpanElement>) => {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
 
-  const copyPath = async () => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openFile();
+      }
+    },
+    [openFile],
+  );
+
+  const copyPath = useCallback(async () => {
     const ok = await copyLocalPath(path);
     if (!ok) {
       return;
@@ -218,7 +234,7 @@ export function FileReference({ path }: FileReferenceProps) {
       window.clearTimeout(copyTimer.current);
     }
     copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
-  };
+  }, [path]);
 
   const actions = (
     <>
@@ -227,12 +243,12 @@ export function FileReference({ path }: FileReferenceProps) {
       </ActionButton>
       <ActionButton
         label="Show in folder"
-        onClick={() => void revealLocalFile(path)}
+        onClick={revealFile}
         overlay={false}
       >
         <FolderOpen className="size-3.5" />
       </ActionButton>
-      <ActionButton label="Copy path" onClick={() => void copyPath()} overlay={false}>
+      <ActionButton label="Copy path" onClick={copyPath} overlay={false}>
         {copied ? (
           <Check className="size-3.5 text-emerald-300" />
         ) : (
@@ -265,12 +281,12 @@ export function FileReference({ path }: FileReferenceProps) {
                 </ActionButton>
                 <ActionButton
                   label="Show in folder"
-                  onClick={() => void revealLocalFile(path)}
+                  onClick={revealFile}
                   overlay
                 >
                   <FolderOpen className="size-3.5" />
                 </ActionButton>
-                <ActionButton label="Copy path" onClick={() => void copyPath()} overlay>
+                <ActionButton label="Copy path" onClick={copyPath} overlay>
                   {copied ? (
                     <Check className="size-3.5 text-emerald-300" />
                   ) : (
@@ -340,12 +356,12 @@ export function FileReference({ path }: FileReferenceProps) {
             </ActionButton>
             <ActionButton
               label="Show in folder"
-              onClick={() => void revealLocalFile(path)}
+              onClick={revealFile}
               overlay
             >
               <FolderOpen className="size-3.5" />
             </ActionButton>
-            <ActionButton label="Copy path" onClick={() => void copyPath()} overlay>
+            <ActionButton label="Copy path" onClick={copyPath} overlay>
               {copied ? (
                 <Check className="size-3.5 text-emerald-300" />
               ) : (
@@ -386,4 +402,4 @@ export function FileReference({ path }: FileReferenceProps) {
       </span>
     </span>
   );
-}
+});

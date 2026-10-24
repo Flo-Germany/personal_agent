@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import type { Identity } from "../types";
 import { hideToTray } from "../lib/window";
 import { AgentAvatar } from "./AgentAvatar";
@@ -12,7 +14,7 @@ type AppHeaderProps = {
   onClear: () => void;
 };
 
-export function AppHeader({
+export const AppHeader = memo(function AppHeader({
   identity,
   isWorking,
   isBusy,
@@ -86,4 +88,4 @@ export function AppHeader({
       </button>
     </header>
   );
-}
+});

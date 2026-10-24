@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { QUICK_PROMPTS } from "../lib/prompts";
 import { AgentAvatar } from "./AgentAvatar";
 import { ArrowRightIcon } from "./icons";
@@ -7,7 +9,10 @@ type EmptyStateProps = {
   disabled: boolean;
 };
 
-export function EmptyState({ onPrompt, disabled }: EmptyStateProps) {
+export const EmptyState = memo(function EmptyState({
+  onPrompt,
+  disabled,
+}: EmptyStateProps) {
   return (
     <div className="flex min-h-full flex-col items-center justify-center px-5 py-10">
       <div className="relative mb-5">
@@ -39,4 +44,4 @@ export function EmptyState({ onPrompt, disabled }: EmptyStateProps) {
       </div>
     </div>
   );
-}
+});

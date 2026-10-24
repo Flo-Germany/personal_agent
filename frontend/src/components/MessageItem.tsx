@@ -1,8 +1,14 @@
+import { memo } from "react";
+
 import type { ChatMessage } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
 import { MarkdownContent } from "./MarkdownContent";
 
-export function MessageItem({ message }: { message: ChatMessage }) {
+export const MessageItem = memo(function MessageItem({
+  message,
+}: {
+  message: ChatMessage;
+}) {
   if (message.role === "user") {
     return (
       <div className="message-in flex justify-end">
@@ -24,9 +30,9 @@ export function MessageItem({ message }: { message: ChatMessage }) {
       </div>
     </div>
   );
-}
+});
 
-export function TypingIndicator() {
+export const TypingIndicator = memo(function TypingIndicator() {
   return (
     <div className="message-in flex gap-2.5">
       <AgentAvatar size="sm" />
@@ -38,4 +44,4 @@ export function TypingIndicator() {
       </div>
     </div>
   );
-}
+});

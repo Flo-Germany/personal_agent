@@ -139,8 +139,6 @@ def _matching_windows(window_title: str) -> list[Any]:
 
 def _window_text(window: Any) -> tuple[str, int]:
     """Walk a pywinauto UI Automation tree and collect readable text."""
-    import pywinauto  # noqa: F401 - ensure the dependency is available
-
     chunks: list[str] = []
     seen: set[str] = set()
     total = 0

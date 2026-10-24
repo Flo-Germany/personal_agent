@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
-from agent.ollama_client import NativeOllamaClient, _native_root
+from agent.ollama_client import NativeOllamaClient, _ConnectionPool, _native_root
 
 
 def test_native_client_sends_num_ctx_and_reads_text() -> None:
@@ -181,3 +183,49 @@ def test_native_root_strips_the_openai_suffix() -> None:
     assert _native_root("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434"
     assert _native_root("http://127.0.0.1:11434/v1/") == "http://127.0.0.1:11434"
     assert _native_root("http://127.0.0.1:11434") == "http://127.0.0.1:11434"
+
+
+def test_connection_pool_reuses_a_keep_alive_connection() -> None:
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        connections = 0
+
+        def setup(self) -> None:
+            type(self).connections += 1
+            super().setup()
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            length = int(self.headers.get("Content-Length", "0"))
+            self.rfile.read(length)
+            body = json.dumps({"message": {"content": "ok"}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    pool = _ConnectionPool()
+
+    try:
+        client = NativeOllamaClient(
+            f"http://127.0.0.1:{server.server_port}/v1",
+            post_json=pool.post,
+        )
+        for _ in range(2):
+            completion = client.chat.completions.create(
+                model="test",
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            assert completion.choices[0].message.content == "ok"
+        assert Handler.connections == 1
+    finally:
+        pool.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

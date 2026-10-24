@@ -61,6 +61,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             create_tray(app)?;
+
+            // The window is created hidden to avoid a white flash. Nothing in
+            // the frontend shows it, so reveal it once the webview exists.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {

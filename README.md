@@ -246,6 +246,19 @@ Endpoints:
 - `DELETE /chat/history/{conversation_id}` — clear the chat and any pending
   approval
 
+### Concurrency and resources
+
+FastAPI endpoints are async. Blocking work (Ollama calls, file scans, CLIP
+inference, SQLite queries) runs in Starlette's threadpool, so the event loop
+stays responsive. Streaming generators are also iterated in the threadpool and
+are explicitly closed when a client disconnects, releasing the per-conversation
+lock and rolling back the partial turn.
+
+The native Ollama client reuses one keep-alive HTTP connection per worker thread.
+The vision index keeps a single CLIP embedder and caches one SQLite connection
+per worker thread; connections are closed during application shutdown. Every
+tool execution is logged with its name, success flag, and duration.
+
 ### SSE event types
 
 ```text
