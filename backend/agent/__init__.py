@@ -1,4 +1,5 @@
 """Agent orchestration package.
 
-The ReAct loop will live here. It is intentionally not implemented yet.
+The chat service, identity prompt, and knowledge extraction live here. The
+ReAct/tool loop will be added once tools are enabled.
 """

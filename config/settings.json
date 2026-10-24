@@ -1,13 +1,24 @@
 {
+  "agent_name": "Nova",
+  "personality": "Warm, calm, and practical. Curious about the user's goals and direct without being blunt.",
+  "system_prompt": "Be concise but thorough. Prefer practical steps and concrete examples. Ask a clarifying question when a request is ambiguous. Never invent facts. Respect the user's privacy and keep all work on this machine. When the conversation history or knowledge base contains relevant details, use them and stay consistent with them.",
   "backend": {
     "host": "127.0.0.1",
     "port": 8000
   },
   "ollama": {
     "base_url": "http://127.0.0.1:11434/v1",
-    "model": "hermes3"
+    "model": "hermes3",
+    "timeout_seconds": 120,
+    "temperature": 0.7,
+    "max_retries": 1
   },
   "agent": {
     "max_iterations": 5
+  },
+  "memory": {
+    "knowledge_base_path": "memory/knowledge_base.md",
+    "max_conversations": 100,
+    "learn_from_chats": true
   }
 }
