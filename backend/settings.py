@@ -12,6 +12,44 @@ from pydantic import BaseModel, Field
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "settings.json"
 
+_DEFAULT_ENV = {
+    "OLLAMA_FLASH_ATTENTION": "1",
+}
+
+
+def _load_dotenv(path: Path) -> None:
+    """Load simple KEY=VALUE pairs without adding a python-dotenv dependency.
+
+    Existing process environment variables win, so explicit shell/OS settings
+    are never overridden by the local file.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if value and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv(PROJECT_ROOT / ".env")
+for _env_key, _env_value in _DEFAULT_ENV.items():
+    os.environ.setdefault(_env_key, _env_value)
+
 
 class BackendSettings(BaseModel):
     host: str = "127.0.0.1"
@@ -24,6 +62,11 @@ class OllamaSettings(BaseModel):
     timeout_seconds: float = Field(default=120.0, gt=0)
     temperature: float = Field(default=0.5, ge=0, le=2)
     max_retries: int = Field(default=1, ge=0, le=5)
+    # 0 unloads the model immediately after every request, keeping VRAM free
+    # for the vision/text model switch. Set a positive value to keep it warm.
+    keep_alive_seconds: int = Field(default=0, ge=0, le=86_400)
+    # Recommended model quantization; avoid Q8/FP16 variants on limited VRAM.
+    model_quantization: str = Field(default="q4_K_M", min_length=1, max_length=40)
     # Ollama defaults to a small context window unless told otherwise. The
     # identity, personality, knowledge base, and tool schemas together need
     # considerably more than the default, so set it explicitly.
@@ -33,6 +76,17 @@ class OllamaSettings(BaseModel):
     # into the latest user message for those models; "system" always uses the
     # system role, and "user" always folds it into the latest user message.
     system_prompt_mode: Literal["auto", "system", "user"] = "auto"
+
+    def quantization_warning(self) -> str | None:
+        """Warn when the model tag advertises a large quantization."""
+        model = self.model.casefold()
+        markers = ("fp16", "f16", "q8", "q6", "q5")
+        if not any(marker in model for marker in markers):
+            return None
+        return (
+            f"Model '{self.model}' appears to use a large quantization. "
+            f"Prefer a '{self.model_quantization}' variant to reduce VRAM use."
+        )
 
 
 class AgentSettings(BaseModel):

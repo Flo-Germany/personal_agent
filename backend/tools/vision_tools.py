@@ -533,10 +533,12 @@ class VisionService:
         settings: VisionSettings,
         embedder: Embedder | None = None,
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
+        keep_alive_seconds: int = 0,
     ) -> None:
         self.settings = settings
         self.embedder = embedder or ClipEmbedder(settings.embed_model)
         self.ollama_base_url = ollama_base_url
+        self.keep_alive_seconds = keep_alive_seconds
         self.store = ImageVectorStore(
             settings.resolved_index_path(),
             settings.embed_model,
@@ -1065,7 +1067,10 @@ class VisionService:
         return encoded, image.width, image.height
 
     def _ask_vision_model(self, question: str, image_b64: str) -> str:
-        endpoint = self.ollama_base_url.rstrip("/") + "/chat/completions"
+        base = self.ollama_base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        endpoint = f"{base}/api/chat"
         payload = {
             "model": self.settings.screen_model,
             "messages": [
@@ -1079,20 +1084,16 @@ class VisionService:
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": question},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_b64}"
-                            },
-                        },
-                    ],
+                    "content": question,
+                    "images": [image_b64],
                 },
             ],
             "stream": False,
-            "temperature": 0.2,
-            "max_tokens": self.settings.screen_max_tokens,
+            "keep_alive": self.keep_alive_seconds,
+            "options": {
+                "temperature": 0.2,
+                "num_predict": self.settings.screen_max_tokens,
+            },
         }
 
         request = urllib.request.Request(
@@ -1128,11 +1129,7 @@ class VisionService:
                 f"{endpoint}: {exc.reason}"
             ) from exc
 
-        choices = body.get("choices") or []
-        if not choices:
-            raise RuntimeError("Ollama returned no vision response.")
-
-        message = choices[0].get("message") or {}
+        message = body.get("message") or {}
         content = message.get("content")
 
         if isinstance(content, list):

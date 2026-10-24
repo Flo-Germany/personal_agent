@@ -42,6 +42,7 @@ def test_native_client_sends_num_ctx_and_reads_text() -> None:
     assert call["timeout"] == 42.0
     assert call["payload"]["model"] == "hermes3"
     assert call["payload"]["stream"] is False
+    assert call["payload"]["keep_alive"] == 0
     assert call["payload"]["options"] == {
         "num_ctx": 16384,
         "temperature": 0.2,

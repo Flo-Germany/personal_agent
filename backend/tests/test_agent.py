@@ -174,6 +174,14 @@ def test_system_prompt_includes_self_aware_identity() -> None:
     assert "say you are not sure instead of inventing it" in prompt
 
 
+def test_quantization_warning_flags_large_models() -> None:
+    assert OllamaSettings(model="qwen3-vl:8b-instruct").quantization_warning() is None
+    warning = OllamaSettings(model="some-model:q8_0").quantization_warning()
+    assert warning is not None
+    assert "q4_K_M" in warning
+    assert OllamaSettings().keep_alive_seconds == 0
+
+
 def test_system_prompt_instructs_powershell_administration() -> None:
     prompt = build_system_prompt(Settings(agent_name="Compa"))
 

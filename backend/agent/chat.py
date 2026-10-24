@@ -299,8 +299,12 @@ class ChatService:
             settings.ollama.base_url,
             timeout=settings.ollama.timeout_seconds,
             num_ctx=settings.ollama.context_window,
+            keep_alive=settings.ollama.keep_alive_seconds,
             max_retries=settings.ollama.max_retries,
         )
+        warning = settings.ollama.quantization_warning()
+        if warning:
+            logger.warning("%s", warning)
         self._pending = pending_store or PendingActionStore(
             settings.agent.approval_ttl_seconds
         )

@@ -38,12 +38,14 @@ class NativeOllamaClient:
         *,
         timeout: float = 120.0,
         num_ctx: int = DEFAULT_CONTEXT_WINDOW,
+        keep_alive: int = 0,
         max_retries: int = 0,
         post_json: PostJson | None = None,
     ) -> None:
         self._endpoint = f"{_native_root(base_url)}/api/chat"
         self._timeout = timeout
         self._num_ctx = num_ctx
+        self._keep_alive = keep_alive
         self._max_retries = max_retries
         self._post_json = post_json or _CONNECTION_POOL.post
         self.chat = SimpleNamespace(
@@ -55,6 +57,7 @@ class NativeOllamaClient:
             "model": kwargs["model"],
             "messages": _native_messages(kwargs["messages"]),
             "stream": False,
+            "keep_alive": self._keep_alive,
             "options": {
                 "num_ctx": self._num_ctx,
                 "temperature": kwargs.get("temperature", 0.7),

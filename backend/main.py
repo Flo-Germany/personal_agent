@@ -90,6 +90,7 @@ def create_app(
     vision = vision_service or VisionService(
         settings.vision,
         ollama_base_url=settings.ollama.base_url,
+        keep_alive_seconds=settings.ollama.keep_alive_seconds,
     )
 
     if chat_service is None:

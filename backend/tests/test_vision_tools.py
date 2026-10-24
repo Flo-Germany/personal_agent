@@ -415,7 +415,7 @@ def test_ask_vision_model_sends_concise_bounded_request(
             return None
 
         def read(self) -> bytes:
-            return b'{"choices":[{"message":{"content":"a window"}}]}'
+            return b'{"message":{"role":"assistant","content":"a window"}}'
 
     def fake_urlopen(request: object, timeout: float) -> FakeResponse:
         captured["request"] = request
@@ -436,13 +436,14 @@ def test_ask_vision_model_sends_concise_bounded_request(
 
     request = captured["request"]
     payload = json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+    assert request.full_url.endswith("/api/chat")  # type: ignore[attr-defined]
     assert payload["model"] == "test-vision"
-    assert payload["max_tokens"] == 321
+    assert payload["keep_alive"] == 0
+    assert payload["options"] == {"temperature": 0.2, "num_predict": 321}
     assert payload["messages"][0]["role"] == "system"
     assert "without chain-of-thought" in payload["messages"][0]["content"]
-    assert payload["messages"][1]["content"][1]["image_url"]["url"].startswith(
-        "data:image/png;base64,"
-    )
+    assert payload["messages"][1]["content"] == "What is visible?"
+    assert payload["messages"][1]["images"] == ["BASE64"]
 
 
 def test_analyze_screen_explains_timeout(

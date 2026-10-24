@@ -119,6 +119,8 @@ startup, so restart uvicorn after changing it.
     "timeout_seconds": 120,
     "temperature": 0.5,
     "max_retries": 1,
+    "keep_alive_seconds": 0,
+    "model_quantization": "q4_K_M",
     "context_window": 16384,
     "system_prompt_mode": "auto"
   },
@@ -186,6 +188,15 @@ the model no longer fits in VRAM. `ollama.system_prompt_mode` controls how the
 system prompt is delivered: `"auto"` (default) folds it into the latest user
 message for Hermes models, `"system"` always uses the system role, and `"user"`
 always folds it.
+
+`ollama.keep_alive_seconds` is sent as Ollama's `keep_alive` on every chat and
+vision request. The default `0` unloads the model immediately, guaranteeing that
+the text and vision models never compete for VRAM. This also means the next
+request cold-loads the model; if that is slower than your workflow needs, set a
+positive value (for example `300`) to keep it warm. For strict exclusivity, keep
+it at `0`. `ollama.model_quantization` documents the preferred variant
+(`q4_K_M` by default). The backend logs a warning when the model tag advertises
+`q5`/`q6`/`q8`/`fp16`, which can consume much more VRAM than necessary.
 
 The reply language is chosen only from the latest user message, or from an
 explicit request in the current conversation. Standing language-preference lines
@@ -271,6 +282,22 @@ The native Ollama client reuses one keep-alive HTTP connection per worker thread
 The vision index keeps a single CLIP embedder and caches one SQLite connection
 per worker thread; connections are closed during application shutdown. Every
 tool execution is logged with its name, success flag, and duration.
+
+### Inference tuning
+
+The backend loads `PROJECT_ROOT/.env` at startup (existing OS variables win) and
+sets `OLLAMA_FLASH_ATTENTION=1` by default. Flash attention is a **server-side**
+Ollama setting, so the Ollama server must be restarted after changing it. On
+Windows:
+
+```powershell
+[Environment]::SetEnvironmentVariable("OLLAMA_FLASH_ATTENTION", "1", "User")
+# Restart the Ollama tray app or run: $env:OLLAMA_FLASH_ATTENTION=1; ollama serve
+```
+
+The server log should show `OLLAMA_FLASH_ATTENTION:true`. The backend also sends
+`keep_alive: 0` on every chat and vision request, so only one model stays in
+VRAM at a time. See `.env.example` for the tracked example.
 
 ### SSE event types
 
