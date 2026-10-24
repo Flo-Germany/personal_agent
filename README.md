@@ -1,16 +1,17 @@
 # Personal Agent
 
 A local, private desktop AI assistant. A Tauri v2 desktop shell talks to a
-FastAPI backend, which will drive tool calls and a local Ollama model (Hermes 3).
+FastAPI backend, which will eventually drive tool calls and a local Ollama
+model (Hermes 3).
 
 ## Structure
 
 ```
 frontend/            Tauri v2 + React + TypeScript + Tailwind CSS
-  src/               Chat shell UI
-  src-tauri/         Rust desktop shell and Tauri configuration
+  src/               Chat UI
+  src-tauri/         Rust shell, system tray, and Tauri configuration
 backend/             FastAPI backend
-  main.py            API entrypoint
+  main.py            API entrypoint (/health, /chat)
   agent/             ReAct loop (not implemented yet)
   tools/             Permissioned tools (allowlist placeholder)
   .venv/             Local virtual environment (gitignored)
@@ -22,7 +23,7 @@ memory/              Local conversations/databases (gitignored)
 
 - Node.js 20+ and npm
 - Python 3.11+
-- Rust toolchain (required by Tauri): https://rustup.rs
+- Rust toolchain and VS Build Tools with the C++ workload (required by Tauri)
 - Ollama with the `hermes3` model for later stages
 
 ## Backend
@@ -33,7 +34,8 @@ cd backend
 uvicorn main:app --reload
 ```
 
-Health check: <http://127.0.0.1:8000/health>
+- Health check: <http://127.0.0.1:8000/health>
+- Chat (mock): `POST http://127.0.0.1:8000/chat` with `{"message": "Hello"}`
 
 To recreate the environment:
 
@@ -46,11 +48,17 @@ pip install -r requirements.txt
 
 ## Frontend
 
+Start the backend first, then:
+
 ```powershell
 cd frontend
 npm install
 npm run tauri dev
 ```
 
-The UI is currently a static chat shell; backend chat integration, tray behavior,
-and the tool loop are intentionally not implemented yet.
+The app starts hidden in the system tray. Click the tray icon to show or hide
+the chat window; right-click it for **Show / Hide** and **Quit**. Closing the
+window hides it instead of quitting.
+
+The UI calls the local FastAPI `/chat` endpoint and currently displays its mock
+reply. Set `VITE_API_URL` to override the default `http://127.0.0.1:8000`.
