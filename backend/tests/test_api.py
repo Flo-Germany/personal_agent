@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from agent.chat import LLMError
 from main import create_app
 from memory.store import ConversationStore
-from settings import MemorySettings, Settings
+from settings import MemorySettings, Settings, VisionSettings
 
 
 class FakeChatService:
@@ -62,6 +62,11 @@ def settings(tmp_path) -> Settings:
             knowledge_base_path=tmp_path / "knowledge.md",
             max_conversations=20,
         ),
+        vision=VisionSettings(
+            enabled=False,
+            index_path=tmp_path / "vision.sqlite3",
+            scan_roots=[str(tmp_path)],
+        ),
     )
 
 
@@ -85,6 +90,17 @@ def test_health_reports_ok(client: TestClient) -> None:
         "service": "personal-agent-backend",
         "version": "0.1.0",
     }
+
+
+def test_vision_status_reports_the_disabled_index(client: TestClient) -> None:
+    response = client.get("/vision/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is False
+    assert payload["indexed_images"] == 0
+    assert payload["model"] == "clip-ViT-B-32"
+    assert isinstance(payload["roots"], list)
 
 
 def test_identity_is_exposed(client: TestClient) -> None:

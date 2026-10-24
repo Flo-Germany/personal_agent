@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from typing import Any, Iterator
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
@@ -19,6 +20,7 @@ from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import Settings, load_settings
 from tools.executor import ToolExecutor
+from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ def create_app(
     settings: Settings | None = None,
     store: ConversationStore | None = None,
     chat_service: ChatService | None = None,
+    vision_service: VisionService | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     store = store or ConversationStore(
@@ -81,20 +84,35 @@ def create_app(
     )
     knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
     knowledge.ensure_file()
+    vision = vision_service or VisionService(
+        settings.vision,
+        ollama_base_url=settings.ollama.base_url,
+    )
 
     if chat_service is None:
         chat_service = ChatService(
             settings,
             store,
             knowledge,
-            ToolExecutor(settings.tools),
+            ToolExecutor(settings.tools, vision=vision),
         )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        if settings.vision.enabled:
+            vision.start()
+        try:
+            yield
+        finally:
+            vision.stop()
 
     app = FastAPI(
         title="Personal Agent API",
         description="Local backend for the personal desktop agent.",
         version="0.1.0",
+        lifespan=lifespan,
     )
+    app.state.vision = vision
 
     # The Tauri webview and Vite dev server are the only allowed origins.
     app.add_middleware(
@@ -163,6 +181,11 @@ def create_app(
             personality=settings.personality,
             model=settings.ollama.model,
         )
+
+    @app.get("/vision/status")
+    def vision_status() -> dict[str, Any]:
+        """Report global image-index progress and crawl statistics."""
+        return vision.status()
 
     @app.post("/chat/stream")
     def chat_stream(payload: ChatRequest) -> StreamingResponse:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -49,6 +50,52 @@ class ToolSettings(BaseModel):
     max_unzip_bytes: int = Field(default=200_000_000, ge=1)
 
 
+class VisionSettings(BaseModel):
+    """Global CLIP image index. Disabled by default so tests stay offline."""
+
+    enabled: bool = False
+    embed_model: str = "clip-ViT-B-32"
+    index_path: Path = Path("memory/vision_index.sqlite3")
+    scan_roots: list[str] = Field(default_factory=lambda: [str(Path.home())])
+    skip_directory_names: list[str] = Field(default_factory=list)
+    exclude_paths: list[str] = Field(default_factory=list)
+    batch_size: int = Field(default=8, ge=1, le=32)
+    scan_interval_seconds: float = Field(default=900.0, ge=30, le=86_400)
+    max_images: int = Field(default=100_000, ge=100, le=1_000_000)
+    max_file_mb: int = Field(default=50, ge=1, le=500)
+    min_confidence_z: float = Field(default=3.9, ge=0.0, le=10.0)
+    min_result_z: float = Field(default=3.5, ge=0.0, le=10.0)
+    dedupe_threshold: float = Field(default=0.995, ge=0.0, le=1.0)
+    screen_model: str = "qwen3-vl:8b-instruct"
+    screen_timeout_seconds: float = Field(default=180.0, gt=0.0, le=600.0)
+    screen_max_width: int = Field(default=1600, ge=320, le=3840)
+    screen_max_tokens: int = Field(default=700, ge=64, le=8192)
+
+    def resolved_index_path(self) -> Path:
+        if self.index_path.is_absolute():
+            return self.index_path
+        return PROJECT_ROOT / self.index_path
+
+    def resolved_scan_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        seen: set[str] = set()
+
+        for raw in self.scan_roots:
+            try:
+                path = Path(os.path.expandvars(raw)).expanduser()
+            except (OSError, ValueError):
+                continue
+
+            key = str(path).casefold()
+            if key in seen or not path.is_dir():
+                continue
+
+            seen.add(key)
+            roots.append(path)
+
+        return roots
+
+
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
     personality: str = ""
@@ -59,6 +106,7 @@ class Settings(BaseModel):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
+    vision: VisionSettings = Field(default_factory=VisionSettings)
 
 
 def load_settings(path: Path | None = None) -> Settings:

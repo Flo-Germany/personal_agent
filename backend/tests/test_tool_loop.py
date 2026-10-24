@@ -416,6 +416,81 @@ def test_normalization_replaces_missing_placeholder_path(tmp_path: Path) -> None
     assert parsed["sort_by"] == "modified_desc"
 
 
+def test_open_file_asks_for_editor_when_user_did_not_name_one(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("hello", encoding="utf-8")
+
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "open_file",
+                    {"path": str(target), "program": "code"},
+                )
+            )
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, f"Open {target}"))
+
+    final = final_event(events)
+    assert "Which editor or program" in final["reply"]
+    assert not any(event["type"] == "action_required" for event in events)
+    assert service.get_pending_for_conversation(conversation_id) is None
+
+    history = store.load(conversation_id)
+    assert any(
+        message.get("role") == "tool"
+        and "needs_program" in str(message.get("content", ""))
+        for message in history
+    )
+
+
+def test_open_file_with_named_program_requires_approval(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("hello", encoding="utf-8")
+
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "open_file",
+                    {"path": str(target), "program": "notepad"},
+                )
+            )
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(
+        service.start_turn(
+            conversation_id,
+            f"Open {target} with Notepad",
+        )
+    )
+
+    action = action_event(events)
+    assert action["actions"][0]["tool"] == "open_file"
+    assert "notepad" in action["actions"][0]["description"].lower()
+
+
+def test_open_file_program_name_detection() -> None:
+    from agent.chat import _program_was_named_by_user
+
+    assert _program_was_named_by_user("Open it with VS Code", "code")
+    assert _program_was_named_by_user("use notepad please", "notepad")
+    assert _program_was_named_by_user("open in Chrome", "chrome")
+    assert not _program_was_named_by_user("just open the file", "code")
+    assert not _program_was_named_by_user("open in some editor", "notepad")
+
+
 def test_normalization_replaces_placeholder_home_for_modifying_tools(
     tmp_path: Path,
 ) -> None:

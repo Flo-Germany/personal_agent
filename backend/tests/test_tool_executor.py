@@ -20,11 +20,12 @@ def test_schemas_use_the_openai_function_format() -> None:
         assert len(function["description"]) > 40
         assert function["parameters"]["type"] == "object"
         assert function["parameters"]["additionalProperties"] is False
-        assert function["parameters"]["required"]
+        assert isinstance(function["parameters"]["required"], list)
         names.add(function["name"])
 
     assert names == {
         "start_program",
+        "open_file",
         "create_folder",
         "create_file",
         "copy_file",
@@ -33,17 +34,22 @@ def test_schemas_use_the_openai_function_format() -> None:
         "unzip_file",
         "read_file_content",
         "search_system",
+        "semantic_image_search",
+        "get_open_windows",
+        "read_window_content",
+        "analyze_screen",
     }
 
 
-def test_start_program_schema_is_restricted() -> None:
+def test_start_program_schema_accepts_any_program() -> None:
     schema = next(
         item for item in TOOL_SCHEMAS if item["function"]["name"] == "start_program"
     )
     parameter = schema["function"]["parameters"]["properties"]["program_name"]
 
     assert parameter["type"] == "string"
-    assert parameter["enum"] == ["calculator", "notepad", "explorer", "paint"]
+    assert "enum" not in parameter
+    assert "executable" in parameter["description"].lower()
 
 
 def test_executor_rejects_unknown_tool(tmp_path: Path) -> None:
@@ -94,8 +100,13 @@ def test_executor_requires_confirmation() -> None:
 
     assert executor.requires_confirmation("create_folder") is True
     assert executor.requires_confirmation("delete_file_or_folder") is True
+    assert executor.requires_confirmation("start_program") is True
+    assert executor.requires_confirmation("open_file") is True
     assert executor.requires_confirmation("read_file_content") is False
     assert executor.requires_confirmation("search_system") is False
+    assert executor.requires_confirmation("get_open_windows") is False
+    assert executor.requires_confirmation("read_window_content") is False
+    assert executor.requires_confirmation("analyze_screen") is False
 
 
 def test_executor_ignores_unknown_search_keys(tmp_path: Path) -> None:

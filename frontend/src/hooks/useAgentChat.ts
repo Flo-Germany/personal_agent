@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   NETWORK_ERROR_MESSAGE,
@@ -14,6 +14,11 @@ import {
   readStoredConversationId,
   storeConversationId,
 } from "../lib/api";
+import {
+  extractToolFiles,
+  replyMentionsPath,
+  stripExternalImages,
+} from "../lib/localFiles";
 import type {
   ChatMessage,
   ChatRole,
@@ -56,12 +61,25 @@ export function useAgentChat() {
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const pendingFilesRef = useRef<Set<string>>(new Set());
+  const usedSemanticSearchRef = useRef(false);
 
   const addMessage = useCallback(
-    (role: ChatRole, content: string, statusKind?: StatusKind) => {
+    (
+      role: ChatRole,
+      content: string,
+      statusKind?: StatusKind,
+      files?: string[],
+    ) => {
       setMessages((current) => [
         ...current,
-        { id: crypto.randomUUID(), role, content, statusKind },
+        {
+          id: crypto.randomUUID(),
+          role,
+          content,
+          statusKind,
+          files,
+        },
       ]);
     },
     [],
@@ -75,6 +93,16 @@ export function useAgentChat() {
   const addStatus = useCallback(
     (content: string, statusKind: StatusKind) =>
       addMessage("status", content, statusKind),
+    [addMessage],
+  );
+
+  const addAttachments = useCallback(
+    (files: string[]) => {
+      const unique = [...new Set(files)];
+      if (unique.length > 0) {
+        addMessage("files", "", undefined, unique);
+      }
+    },
     [addMessage],
   );
 
@@ -135,7 +163,14 @@ export function useAgentChat() {
             addStatus(message, "thinking");
           }
         },
-        onToolResult: (ok, summary) => {
+        onToolResult: (ok, summary, tool, result) => {
+          const files = extractToolFiles(tool, result);
+          files.forEach((file) => pendingFilesRef.current.add(file));
+
+          if (tool === "semantic_image_search") {
+            usedSemanticSearchRef.current = true;
+          }
+
           addStatus(summary, ok ? "result-ok" : "result-error");
         },
         onAssistant: addAssistant,
@@ -145,11 +180,32 @@ export function useAgentChat() {
           addStatus("Waiting for your approval.", "approval");
         },
         onFinal: (reply, id) => {
-          addAssistant(reply);
+          let text = reply;
+
+          if (usedSemanticSearchRef.current) {
+            text = stripExternalImages(text);
+          }
+
+          const missingFiles = [...pendingFilesRef.current].filter(
+            (path) => !replyMentionsPath(text, path),
+          );
+
+          if (text.trim()) {
+            addAssistant(text);
+          }
+
+          if (missingFiles.length > 0) {
+            addAttachments(missingFiles);
+          }
+
+          pendingFilesRef.current.clear();
+          usedSemanticSearchRef.current = false;
           rememberConversation(id);
           setPendingAction(null);
         },
         onError: (message) => {
+          pendingFilesRef.current.clear();
+          usedSemanticSearchRef.current = false;
           addAssistant(message);
           setPendingAction(null);
         },
@@ -160,7 +216,7 @@ export function useAgentChat() {
         addAssistant(STREAM_CLOSED_MESSAGE);
       }
     },
-    [addAssistant, addStatus, rememberConversation],
+    [addAssistant, addAttachments, addStatus, rememberConversation],
   );
 
   const sendMessage = useCallback(
@@ -176,6 +232,8 @@ export function useAgentChat() {
       }
 
       addMessage("user", trimmed);
+      pendingFilesRef.current.clear();
+      usedSemanticSearchRef.current = false;
       setIsStreaming(true);
 
       try {
@@ -246,6 +304,8 @@ export function useAgentChat() {
     setMessages([]);
     setConversationId(null);
     setPendingAction(null);
+    pendingFilesRef.current.clear();
+    usedSemanticSearchRef.current = false;
     storeConversationId(null);
 
     if (!previousId) {

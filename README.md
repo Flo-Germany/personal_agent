@@ -12,8 +12,11 @@ file system and applications through a Human-in-the-Loop approval flow.
 - Persistent knowledge base across chats and restarts, stored as an editable
   Markdown file
 - Agentic OS tools: search the file system, read files, create folders, copy,
-  move, delete (Recycle Bin), unzip archives, and launch allowlisted apps
-- Human-in-the-Loop approvals for every modifying action
+  move, delete (Recycle Bin), unzip archives, open files in a chosen editor, and
+  launch any installed program
+- Window awareness and UI Automation text reading, plus local screen analysis
+  with `qwen3-vl:8b-instruct`
+- Human-in-the-Loop approvals for every modifying, file-opening, or program-launch action
 - Real-time SSE status updates: thinking, tool started, tool result, approval
   needed, final answer
 - Protected Windows locations and Recycle Bin deletion for destructive actions
@@ -24,6 +27,8 @@ file system and applications through a Human-in-the-Loop approval flow.
 - System tray with show/hide, quit, and close-to-tray behavior
 - Dark, minimal chat UI with Markdown rendering (GFM tables, task lists, and
   syntax-highlighted code blocks with copy buttons)
+- Rich local-file rendering: image thumbnail galleries plus interactive file
+  cards with open, show-in-folder, and copy-path actions
 - Frameless, transparent window with rounded corners, a custom drag region, and
   a hide-to-tray window button
 
@@ -32,9 +37,9 @@ file system and applications through a Human-in-the-Loop approval flow.
 ```
 frontend/            Tauri v2 + React + TypeScript + Tailwind CSS
   src/App.tsx        App shell: gradient frame, chat layout, empty state
-  src/components/    Header, messages, Markdown, approval card, composer
+  src/components/    Header, messages, Markdown, file cards, approval card, composer
   src/hooks/         Streaming chat state and approval flow
-  src/lib/           API/SSE client, quick prompts, window controls
+  src/lib/           API/SSE client, local-file parsing, quick prompts, Tauri actions
   src-tauri/         Rust shell, system tray, and Tauri configuration
 backend/             FastAPI backend
   main.py            API entrypoint (SSE, approvals, history)
@@ -47,12 +52,14 @@ backend/             FastAPI backend
   memory/store.py    In-memory conversation history (including tool messages)
   memory/knowledge.py File-backed, user-editable knowledge base
   tools/os_tools.py  Full-filesystem Windows operations and safety rules
+  tools/window_tools.py Window listing and UI Automation text extraction
+  tools/vision_tools.py Global CLIP image crawler, SQLite vector store, screen vision
   tools/schemas.py   OpenAI-compatible tool definitions
   tools/executor.py  Validated tool dispatch and confirmation flags
   tests/             pytest suite
   .venv/             Local virtual environment (gitignored)
-config/settings.json Backend, Ollama, identity, memory, and tool settings
-memory/              Knowledge base and local runtime data (gitignored)
+config/settings.json Backend, Ollama, identity, memory, vision, and tool settings
+memory/              Knowledge base, image index, and local data (gitignored)
 ```
 
 ## Prerequisites
@@ -64,8 +71,21 @@ memory/              Knowledge base and local runtime data (gitignored)
 
 ```powershell
 ollama pull hermes3
+ollama pull qwen3-vl:8b-instruct
 ollama serve
 ```
+
+The first semantic image search downloads the `clip-ViT-B-32` model (about
+600 MB) into the Hugging Face cache. After that, indexing and search run fully
+offline. Screen awareness uses the local `qwen3-vl:8b-instruct` model in Ollama; no
+screenshot leaves the machine.
+
+> **Vision model compatibility:** Ollama 0.30 and newer no longer load the
+> `mllama` architecture used by `llama3.2-vision`, even when the model is
+> downloaded successfully. `qwen3-vl` is supported by current Ollama releases.
+> If you must use `llama3.2-vision`, install an Ollama version older than
+> 0.30.0. Do not re-pull the model to fix `unknown model architecture: 'mllama'`;
+> the manifest is valid, but the runtime no longer has a loader for it.
 
 ## Configuration
 
@@ -99,6 +119,24 @@ startup, so restart uvicorn after changing it.
     "max_search_files": 20000,
     "max_search_seconds": 30,
     "max_unzip_bytes": 209715200
+  },
+  "vision": {
+    "enabled": true,
+    "embed_model": "clip-ViT-B-32",
+    "index_path": "memory/vision_index.sqlite3",
+    "scan_roots": ["~"],
+    "batch_size": 8,
+    "scan_interval_seconds": 600,
+    "max_images": 150000,
+    "max_file_mb": 50,
+    "exclude_paths": [],
+    "min_confidence_z": 3.9,
+    "min_result_z": 3.5,
+    "dedupe_threshold": 0.995,
+    "screen_model": "qwen3-vl:8b-instruct",
+    "screen_timeout_seconds": 180,
+    "screen_max_width": 1600,
+    "screen_max_tokens": 700
   }
 }
 ```
@@ -117,6 +155,19 @@ The system message sent to Hermes 3 is composed from:
 `agent.max_iterations` bounds tool rounds per segment.
 `agent.approval_ttl_seconds` controls how long a pending approval remains valid.
 `tools.*` caps file reads, searches, and zip extraction.
+`vision.*` controls the global CLIP image index: `scan_roots` defaults to the
+current user profile (`~`); add more folders or a drive root such as `C:\` to
+widen it. `scan_interval_seconds` controls how often the crawler rescans for
+new, changed, and deleted images. `max_images` and `max_file_mb` bound the work.
+`exclude_paths` accepts case-insensitive path fragments to skip folders such as
+game asset packs or build caches. `min_confidence_z` and `min_result_z` control
+when semantic search reports "no confident match" instead of returning weak
+matches; `dedupe_threshold` suppresses near-identical copies.
+`screen_model` selects the local Ollama model used by `analyze_screen`;
+`screen_timeout_seconds` and `screen_max_width` bound the screenshot request.
+`screen_max_tokens` caps the model's output so a runaway response cannot hold
+the request open indefinitely. Prefer non-thinking vision models for screen
+analysis: a thinking model can spend the entire timeout on hidden reasoning.
 
 ## Backend
 
@@ -130,6 +181,8 @@ Endpoints:
 
 - `GET /health` — backend status
 - `GET /identity` — configured name, personality, and model
+- `GET /vision/status` — image-index phase, indexed count, crawl counters, and
+  the last error
 - `POST /chat/stream` — send a message; returns `text/event-stream`
 - `POST /chat/approve` — `{"approval_id": "...", "approved": true|false}`;
   resumes the paused agent and returns a stream
@@ -158,8 +211,10 @@ The SSE stream ends after `final`, `error`, or `action_required`.
 
 1. The user message is appended and the entire history plus tool schemas is sent
    to Hermes 3.
-2. Read-only tools (`search_system`, `read_file_content`) run immediately and
-   stream `tool_started` / `tool_result` events.
+2. Read-only tools (`search_system`, `read_file_content`,
+   `semantic_image_search`, `get_open_windows`, `read_window_content`,
+   `analyze_screen`) run immediately and stream `tool_started` / `tool_result`
+   events.
 3. Any modifying tool pauses the loop. The assistant tool-call message is stored,
    a pending approval is created, and an `action_required` event is streamed.
    The HTTP stream then closes; no thread waits for a click.
@@ -178,11 +233,15 @@ If Ollama is not running, streams emit a readable error event; the legacy
 
 ## Tools and security
 
-The agent can use nine tools:
+The agent can use fourteen tools:
 
 | Tool | Confirmation | Purpose |
 |---|---|---|
 | `search_system` | No | Recursive or direct-child search by name/glob, extension, size, modified time, hidden flag, or all drives; newest/oldest sorting; known-folder aliases |
+| `semantic_image_search` | No | Search the whole PC for images by visual content with a local CLIP index; returns ranked paths and scores |
+| `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
+| `read_window_content` | No | Read text from an open app via Windows UI Automation |
+| `analyze_screen` | No | Capture the primary screen in memory and ask the local `qwen3-vl:8b-instruct` model a question |
 | `read_file_content` | No | Read text files; binary/image files return metadata only |
 | `create_folder` | Yes | Create a folder anywhere outside protected locations |
 | `create_file` | Yes | Create a UTF-8 text file, without overwriting unless explicitly requested |
@@ -190,7 +249,8 @@ The agent can use nine tools:
 | `move_file_or_folder` | Yes | Move a file/folder, including across drives; no overwrite |
 | `delete_file_or_folder` | Yes | Move a file/folder to the Windows Recycle Bin |
 | `unzip_file` | Yes | Extract a `.zip` safely into any non-protected folder |
-| `start_program` | Yes | Launch only `calculator`, `notepad`, `explorer`, or `paint` |
+| `start_program` | Yes | Launch any installed program by name or executable path; no arguments, no shell |
+| `open_file` | Yes | Open an existing file in an explicitly chosen editor/program |
 
 Security boundaries:
 
@@ -205,8 +265,14 @@ Security boundaries:
 - Zip extraction rejects path escapes, caps entry count, and caps uncompressed
   size.
 - Searches cap results, scanned files, and elapsed time.
-- `start_program` uses fixed executable paths, no shell, no arguments, and no
-  arbitrary programs.
+- `start_program` can launch any installed program or executable, but always
+  requires approval. It passes no arguments and never uses a shell.
+- `open_file` requires an explicit editor/program; the agent asks the user when
+  none is named. It also always requires approval.
+- Window awareness is read-only: it lists windows and reads UI Automation text,
+  but does not click, type, or control applications.
+- `analyze_screen` captures the primary monitor in memory, sends it only to the
+  local Ollama endpoint, and never writes a screenshot to disk.
 - The agent has no shell command, arbitrary write-content, or registry tool.
 
 Search resolves the real Windows known folders for `Documents`, `Downloads`,
@@ -222,6 +288,84 @@ from the model is either executed or rejected; it is never shown to the user.
 Tool errors are fed back to the model so it can explain the problem. Tool side
 effects are not undone if a later model call fails, but the failed chat turn is
 removed from memory.
+
+## Semantic image index
+
+`semantic_image_search` finds pictures by what they show, not by filename. The
+index is local and starts automatically with the FastAPI app when
+`vision.enabled` is true:
+
+- A daemon thread walks `vision.scan_roots` recursively. The default is the
+  current user profile (`~`); add `C:\` or another drive to include more.
+- It skips hidden and system folders and common noise such as `AppData`,
+  `Windows`, `Program Files`, `node_modules`, `.git`, `.venv`, `target`, and
+  caches. Offline OneDrive placeholders and files above `max_file_mb` are not
+  hydrated or embedded.
+- Images are embedded with `clip-ViT-B-32` in small batches and stored as
+  normalized float32 vectors in `memory/vision_index.sqlite3`. Search is a
+  chunked cosine scan in NumPy, so there is no Chroma or other vector service.
+- Rescans compare path, size, and modification time, so unchanged files are not
+  re-embedded. New files are added, changed files are updated, and deleted files
+  are pruned. The thread sleeps for `scan_interval_seconds` between passes.
+- Search queries are compared using several natural-language prompt variants,
+  near-identical images are suppressed, and results must stand out from the
+  index's score distribution. If nothing is confidently related, the tool
+  returns an empty result with a `low` confidence value instead of five
+  unrelated images. The tool result includes `confidence`, `best_score`,
+  `score_gap`, and `z_score` for diagnosis.
+- Filtering paths is available through `exclude_paths`, which is useful for
+  large game asset packs, texture dumps, or development caches.
+- The CLIP model is downloaded once from Hugging Face on first use (about
+  600 MB) and then runs fully offline. The first full crawl can take a while on
+  CPU; later passes are incremental. `clip-ViT-B-32` is fast; switching
+  `embed_model` to a larger CLIP model improves difficult queries but requires
+  deleting the index so it can be rebuilt.
+- `GET /vision/status` reports the phase (`indexing`, `idle`, `error`), indexed
+  count, crawl counters, roots, model, and last error. The tool result also says
+  whether the index is still building.
+
+Ask naturally, for example: *"Search my whole computer for a picture of a dog"*
+or *"Find my beach vacation photos."* The tool returns up to 5 confident matches
+by default (up to 10) with absolute paths, similarity scores, and modified times.
+
+## Screen awareness
+
+Three read-only tools cover the desktop:
+
+- `get_open_windows` uses `pygetwindow` to list visible top-level windows,
+  their exact titles, geometry, and which one is active. Minimized and hidden
+  windows are omitted.
+- `read_window_content` uses `pywinauto` UI Automation to walk the named
+  window's control tree and collect readable text and document values. It tries
+  the UIA backend first, then Win32. Some browsers and custom-rendered apps
+  expose little text; the result says so and suggests `analyze_screen`.
+- `analyze_screen` uses `mss` to capture the primary monitor, downscales it to
+  `screen_max_width`, encodes it as an in-memory PNG, and sends a base64 image
+  URL plus the user's question to the local Ollama
+  `/v1/chat/completions` endpoint with the configured `screen_model`
+  (`qwen3-vl:8b-instruct` by default). The screenshot is never written to disk, so
+  there are no temporary files to clean up. Only the model's text answer is
+  returned; the image is not exposed in the tool result.
+
+Pull the vision model once:
+
+```powershell
+ollama pull qwen3-vl:8b-instruct
+```
+
+If Ollama reports `unknown model architecture`, the model file can be present
+while the installed Ollama runtime cannot load it. This is not fixed by pulling
+again. Check `ollama show <model>` and use a model supported by your Ollama
+version; for `mllama`/`llama3.2-vision`, you would need Ollama older than 0.30.0.
+If a thinking model times out, switch to its `-instruct` variant (for example
+`qwen3-vl:8b-instruct`), lower `screen_max_tokens`, or raise
+`screen_timeout_seconds`.
+
+The agent is instructed to use window tools for "which apps are open" and
+"read this document", and `analyze_screen` for "what is on my screen" or visual
+questions. It does not click, type, or otherwise control applications. Screen
+captures are only requested for clear screen-related requests and go only to the
+local Ollama instance.
 
 ## Memory
 
@@ -261,8 +405,11 @@ The suite covers the API, identity endpoint, validation, full in-memory chat
 history, the knowledge base, fact extraction and deduplication, prompt
 composition, context assembly, Ollama error mapping, full-filesystem tool
 behavior, protected paths, Recycle Bin deletion, tool schemas, dispatch,
-HITL pause/approve/deny, approval TTL/idempotency, SSE frames, and rollback.
-Ollama is not required for the tests.
+HITL pause/approve/deny, approval TTL/idempotency, SSE frames, rollback, and the
+incremental CLIP image index (crawl, skip rules, updates, pruning, search, search
+confidence), plus window enumeration and screen-analysis routing.
+Ollama is not required for the tests; the vision tests use a fake embedder and
+fake capture/model methods.
 
 ## Frontend
 
@@ -289,6 +436,33 @@ a pending approval after a reload. Messages render GitHub-flavored Markdown with
 syntax-highlighted code blocks, tables, task lists, and copy buttons. The dark
 theme uses Inter and a subtle violet-to-emerald gradient frame. Set
 `VITE_API_URL` to override the default backend URL `http://127.0.0.1:8000`.
+
+File references are intercepted in Markdown links, `file:///` URLs, raw
+`C:\...` paths, and bare paths in prose:
+
+- Image references render as lazy-loaded thumbnails, grouped into a responsive
+  gallery when several appear together. Hovering reveals a preview (with a
+  full-size lightbox), open, reveal, and copy actions. The Tauri asset protocol
+  (`convertFileSrc`) serves the files without exposing the whole webview to
+  `file://` restrictions.
+- Other files render as rounded cards with a type icon, truncated filename, and
+  file type. Hovering reveals **Open file**, **Show in folder**, and **Copy
+  path**. Opening uses `@tauri-apps/plugin-shell`, revealing uses
+  `@tauri-apps/plugin-opener`, and copying uses
+  `@tauri-apps/plugin-clipboard-manager`.
+- Canonical files returned by tools are also collected from the structured
+  `tool_result` events and rendered as an attachment panel when the model's
+  reply omits them. This keeps paths correct even if the model prints a wrong
+  link or invents an external image URL; external image embeds are stripped on
+  local image-search turns.
+- Paths inside inline code and fenced code blocks are left untouched.
+- The system prompt asks the model to emit
+  `[name.ext](file:///C:/absolute/path/name.ext)` links with `%20` for spaces.
+
+The Tauri capabilities grant only `shell:allow-open`,
+`opener:allow-reveal-item-in-dir`, `clipboard-manager:allow-write-text`, and the
+window hide/drag permissions. The asset protocol is enabled in
+`src-tauri/tauri.conf.json` with a local-file read scope.
 
 ## Known limitation
 

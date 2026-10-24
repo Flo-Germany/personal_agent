@@ -73,8 +73,9 @@ _GENERIC_ENDINGS = (
 )
 _REJECTED_MARKERS = ("unknown", "not provided", "n/a", "no information")
 _ACTION_REQUEST = re.compile(
-    r"\b(?:wants to|would like to|asked the assistant to)\s+"
-    r"(?:create|use|delete|move|copy|extract|search|read|open)\b",
+    r"\b(?:wants(?: the assistant)? to|would like to|asked the assistant to|"
+    r"needs to)\s+"
+    r"(?:create|use|delete|move|copy|extract|search|read|open|send|find|list|show)\b",
     re.I,
 )
 _PATH_LIKE = re.compile(
@@ -88,7 +89,26 @@ _IMPERATIVE_ACTION = re.compile(
 _TOOL_MENTION = re.compile(
     r"\b(?:create_folder|create_file|copy_file|delete_file_or_folder|"
     r"move_file_or_folder|unzip_file|read_file_content|search_system|"
-    r"start_program)\b",
+    r"semantic_image_search|start_program)\b",
+    re.I,
+)
+_ONE_OFF_SEARCH = re.compile(
+    r"(?:\b(?:is|are)\s+(?:currently\s+)?(?:searching|looking)\b|"
+    r"\b(?:sucht|suchen)\b).*"
+    r"\b(?:file|folder|picture|image|photo|computer|download|"
+    r"datei|ordner|bild|foto|computer|download)s?\b",
+    re.I,
+)
+_SEARCH_PREFERENCE = re.compile(
+    r"\b(?:prefers?|likes?|bevorzugt|mag)\b.*"
+    r"\b(?:search(?:ing)?|suchen)\b.*"
+    r"\b(?:image|picture|photo|file|bild|foto|datei)s?\b",
+    re.I,
+)
+_FILE_LINK_REQUEST = re.compile(
+    r"\b(?:wants? to|möchte|will)\b.*"
+    r"\b(?:show|display|open|link|anzeigen|verlinken|öffnen)\b.*"
+    r"\b(?:file|datei|image|bild|photo|foto)\b",
     re.I,
 )
 _LANGUAGE_INSTRUCTION_FACT = re.compile(
@@ -200,10 +220,28 @@ def _is_concrete_fact(fact: str) -> bool:
     ):
         return False
     if _ACTION_REQUEST.search(fact) and (
-        "file" in lowered or "folder" in lowered or _PATH_LIKE.search(fact)
+        any(
+            word in lowered
+            for word in (
+                "file",
+                "folder",
+                "picture",
+                "image",
+                "photo",
+                "computer",
+                "download",
+            )
+        )
+        or _PATH_LIKE.search(fact)
     ):
         return False
     if _TOOL_MENTION.search(fact):
+        return False
+    if _ONE_OFF_SEARCH.search(fact):
+        return False
+    if _SEARCH_PREFERENCE.search(fact):
+        return False
+    if _FILE_LINK_REQUEST.search(fact):
         return False
     if _IMPERATIVE_ACTION.match(fact.strip()) and (
         "file" in lowered

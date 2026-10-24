@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Tools that change the system and therefore require explicit approval.
 TOOL_REQUIRES_CONFIRMATION = {
     "start_program": True,
+    "open_file": True,
     "create_folder": True,
     "create_file": True,
     "copy_file": True,
@@ -41,8 +42,11 @@ TOOL_REQUIRES_CONFIRMATION = {
     "delete_file_or_folder": True,
     "read_file_content": False,
     "search_system": False,
+    "semantic_image_search": False,
+    "get_open_windows": False,
+    "read_window_content": False,
+    "analyze_screen": False,
 }
-_PUBLIC_PROGRAMS = ("calculator", "notepad", "explorer", "paint")
 _PROGRAM_NAMES = {"calculator", "calc", "notepad", "explorer", "paint", "mspaint"}
 
 _MAX_SEARCH_RESULTS = 200
@@ -156,6 +160,274 @@ def _program_path(key: str) -> Path:
     return candidates[0]
 
 
+_PROGRAM_SUFFIXES = {".exe", ".com", ".lnk"}
+_COMMON_PROGRAM_KEYS = {
+    "chrome": ("chrome", "google chrome", "googlechrome"),
+    "msedge": ("edge", "microsoft edge", "msedge"),
+    "code": ("code", "vs code", "visual studio code"),
+    "firefox": ("firefox", "mozilla firefox"),
+}
+
+
+def _common_program_path(key: str) -> Path | None:
+    env = os.environ
+    program_files = Path(env.get("ProgramFiles", r"C:\Program Files"))
+    program_files_x86 = Path(env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    local_app_data = Path(env.get("LOCALAPPDATA", ""))
+
+    candidates: list[Path] = []
+
+    if key in _COMMON_PROGRAM_KEYS["chrome"]:
+        candidates.extend(
+            [
+                program_files / "Google" / "Chrome" / "Application" / "chrome.exe",
+                program_files_x86
+                / "Google"
+                / "Chrome"
+                / "Application"
+                / "chrome.exe",
+            ]
+        )
+    elif key in _COMMON_PROGRAM_KEYS["msedge"]:
+        candidates.extend(
+            [
+                program_files_x86
+                / "Microsoft"
+                / "Edge"
+                / "Application"
+                / "msedge.exe",
+                program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            ]
+        )
+        for base in (
+            program_files_x86 / "Microsoft" / "EdgeCore",
+            program_files / "Microsoft" / "EdgeCore",
+        ):
+            if not base.is_dir():
+                continue
+            try:
+                versions = sorted(
+                    (entry for entry in base.iterdir() if entry.is_dir()),
+                    reverse=True,
+                )
+            except OSError:
+                continue
+            for version in versions:
+                candidate = version / "msedge.exe"
+                if candidate.is_file():
+                    candidates.append(candidate)
+                    break
+    elif key in _COMMON_PROGRAM_KEYS["code"]:
+        candidates.append(
+            local_app_data / "Programs" / "Microsoft VS Code" / "Code.exe"
+        )
+    elif key in _COMMON_PROGRAM_KEYS["firefox"]:
+        candidates.extend(
+            [
+                program_files / "Mozilla Firefox" / "firefox.exe",
+                program_files_x86 / "Mozilla Firefox" / "firefox.exe",
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+
+    return None
+
+
+def _registry_program_path(name: str) -> Path | None:
+    if winreg is None:
+        return None
+
+    keys = [name]
+    if not name.casefold().endswith(".exe"):
+        keys.insert(0, f"{name}.exe")
+
+    base = r"Software\Microsoft\Windows\CurrentVersion\App Paths"
+
+    for key_name in keys:
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, f"{base}\\{key_name}") as key:
+                    value, _ = winreg.QueryValueEx(key, None)
+            except OSError:
+                continue
+
+            try:
+                candidate = Path(os.path.expandvars(str(value))).expanduser()
+            except (OSError, ValueError):
+                continue
+
+            if candidate.is_file():
+                return candidate.resolve()
+
+    return None
+
+
+def _shortcut_target(shortcut: Path) -> Path | None:
+    try:
+        import win32com.client
+    except Exception:  # noqa: BLE001 - optional COM dependency
+        return None
+
+    try:
+        shell = win32com.client.Dispatch("WScript.Shell")
+        target = Path(shell.CreateShortcut(str(shortcut)).TargetPath)
+    except Exception:  # noqa: BLE001
+        return None
+
+    return target.resolve() if target.is_file() else None
+
+
+def _start_menu_shortcut(name: str) -> Path | None:
+    env = os.environ
+    roots = [
+        Path(env.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+        Path(env.get("PROGRAMDATA", ""))
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs",
+    ]
+    requested = Path(name).stem.casefold()
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+
+        try:
+            shortcuts = root.rglob("*.lnk")
+        except OSError:
+            continue
+
+        for shortcut in shortcuts:
+            if shortcut.stem.casefold() == requested:
+                target = _shortcut_target(shortcut)
+                return target or shortcut.resolve()
+
+    return None
+
+
+def _resolve_program(program: str) -> Path:
+    """Resolve an alias, executable name, Start Menu app, or absolute path."""
+    raw = str(program or "").strip().strip('"')
+    if not raw:
+        raise ToolError("A program name or executable path is required.")
+
+    key = raw.casefold()
+    alias_key = key[:-4] if key.endswith(".exe") else key
+
+    if alias_key in _PROGRAM_NAMES:
+        candidate = _program_path(alias_key)
+        if candidate.is_file():
+            return candidate.resolve()
+
+    candidate = Path(os.path.expandvars(raw)).expanduser()
+
+    if candidate.is_file():
+        if candidate.suffix.casefold() not in _PROGRAM_SUFFIXES:
+            raise ToolError(
+                f"{candidate} is not an executable program. Choose an .exe, "
+                ".com, or Start Menu shortcut."
+            )
+        return candidate.resolve()
+
+    if candidate.is_absolute() or any(part in raw for part in ("\\", "/")):
+        raise ToolError(f"Program not found at {candidate}.")
+
+    common = _common_program_path(alias_key)
+    if common is not None:
+        return common
+
+    found = shutil.which(raw)
+    if found:
+        executable = Path(found).resolve()
+        if executable.suffix.casefold() in _PROGRAM_SUFFIXES:
+            return executable
+
+    registry = _registry_program_path(raw)
+    if registry is not None:
+        return registry
+
+    shortcut = _start_menu_shortcut(raw)
+    if shortcut is not None:
+        return shortcut
+
+    raise ToolError(
+        f"Could not find the program {raw!r}. Provide an absolute path to an "
+        "installed .exe, or use a Start Menu application name."
+    )
+
+
+def start_program(program_name: str) -> dict[str, Any]:
+    """Launch any installed program or executable after user approval."""
+    path = _resolve_program(program_name)
+
+    try:
+        if path.suffix.casefold() == ".lnk":
+            os.startfile(str(path))
+        else:
+            subprocess.Popen([str(path)], shell=False)
+    except OSError as exc:
+        raise ToolError(f"Could not start {path.name}: {exc}") from exc
+
+    return {
+        "ok": True,
+        "message": f"Started {path.name}.",
+        "program": str(path),
+    }
+
+
+def open_file(path: str, program: str) -> dict[str, Any]:
+    """Open one existing file in an explicitly chosen program."""
+    target = _absolute_path(path)
+    if not target.exists():
+        raise ToolError(f"File not found: {target}")
+    if not target.is_file():
+        raise ToolError(f"Not a file: {target}")
+
+    raw_program = str(program or "").strip()
+    if not raw_program:
+        raise ToolError(
+            "Choose the editor or program to open this file with. Ask the user "
+            "which application they want; do not guess."
+        )
+
+    application = _resolve_program(raw_program)
+    if application.suffix.casefold() == ".lnk":
+        resolved = _shortcut_target(application)
+        if resolved is None:
+            raise ToolError(
+                f"Could not resolve the shortcut {application.name} to an "
+                "executable. Choose the application's .exe path instead."
+            )
+        application = resolved
+
+    if application.suffix.casefold() not in {".exe", ".com"}:
+        raise ToolError(
+            f"{application} is not a direct executable. Choose the application's "
+            ".exe path instead."
+        )
+
+    try:
+        subprocess.Popen(
+            [str(application), str(target)],
+            shell=False,
+        )
+    except OSError as exc:
+        raise ToolError(
+            f"Could not open {target.name} with {application.name}: {exc}"
+        ) from exc
+
+    return {
+        "ok": True,
+        "message": f"Opened {target.name} with {application.name}.",
+        "path": str(target),
+        "program": str(application),
+    }
+
+
 def _protected_tree_roots() -> list[Path]:
     roots: list[Path] = [
         _windows_root(),
@@ -242,28 +514,6 @@ def _is_hidden(path: Path, stats: os.stat_result) -> bool:
         return True
     hidden_flag = getattr(stat_module, "FILE_ATTRIBUTE_HIDDEN", 0)
     return bool(getattr(stats, "st_file_attributes", 0) & hidden_flag)
-
-
-def start_program(program_name: str) -> dict[str, Any]:
-    """Launch one allowlisted application. No arguments or shell are allowed."""
-    key = str(program_name).strip().lower()
-
-    if key not in _PROGRAM_NAMES:
-        allowed = ", ".join(_PUBLIC_PROGRAMS)
-        raise ToolError(
-            f"Program '{program_name}' is not allowlisted. Allowed programs: {allowed}."
-        )
-
-    path = _program_path(key)
-    if not path.is_file():
-        raise ToolError(f"Allowlisted program '{key}' was not found at {path}.")
-
-    try:
-        subprocess.Popen([str(path)], shell=False)
-    except OSError as exc:
-        raise ToolError(f"Could not start {key}: {exc}") from exc
-
-    return {"ok": True, "message": f"Started {key}.", "program": key}
 
 
 def create_folder(path: str) -> dict[str, Any]:

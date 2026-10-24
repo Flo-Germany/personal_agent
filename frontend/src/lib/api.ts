@@ -102,6 +102,8 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
       callbacks.onToolResult(
         Boolean(event.ok),
         event.summary ?? "Tool completed.",
+        event.tool,
+        event.result,
       );
       return false;
     case "assistant":

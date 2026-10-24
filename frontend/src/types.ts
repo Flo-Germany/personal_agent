@@ -1,4 +1,4 @@
-export type ChatRole = "user" | "assistant" | "status";
+export type ChatRole = "user" | "assistant" | "status" | "files";
 
 export type StatusKind =
   | "thinking"
@@ -12,6 +12,7 @@ export type ChatMessage = {
   role: ChatRole;
   content: string;
   statusKind?: StatusKind;
+  files?: string[];
 };
 
 export type Identity = {
@@ -52,6 +53,8 @@ export type AgentEvent = {
   message?: string;
   summary?: string;
   ok?: boolean;
+  tool?: string;
+  result?: Record<string, unknown>;
   reply?: string;
   content?: string;
   approval_id?: string;
@@ -62,7 +65,12 @@ export type AgentEvent = {
 
 export type StreamCallbacks = {
   onStatus: (message: string, phase?: string) => void;
-  onToolResult: (ok: boolean, summary: string) => void;
+  onToolResult: (
+    ok: boolean,
+    summary: string,
+    tool?: string,
+    result?: Record<string, unknown>,
+  ) => void;
   onAssistant: (content: string) => void;
   onActionRequired: (action: PendingAction) => void;
   onFinal: (reply: string, conversationId?: string) => void;

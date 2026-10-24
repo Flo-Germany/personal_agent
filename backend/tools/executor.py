@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from settings import ToolSettings
-from tools import os_tools
+from tools import os_tools, window_tools
+
+if TYPE_CHECKING:
+    from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +19,13 @@ logger = logging.getLogger(__name__)
 class ToolExecutor:
     """Bind tool names to their implementations and HITL flags."""
 
-    def __init__(self, settings: ToolSettings) -> None:
+    def __init__(
+        self,
+        settings: ToolSettings,
+        vision: VisionService | None = None,
+    ) -> None:
         self.settings = settings
+        self.vision = vision
 
         tool_settings = settings
 
@@ -69,8 +77,44 @@ class ToolExecutor:
                 **kwargs,
             )
 
+        def semantic_image_search(
+            query: str,
+            limit: int = 5,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            if vision is None:
+                return {
+                    "ok": False,
+                    "error": "Semantic image search is not available.",
+                }
+            return vision.search(query, limit=limit)
+
+        def analyze_screen(
+            user_question: str,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            if vision is None:
+                return {
+                    "ok": False,
+                    "error": "Screen analysis is not available.",
+                }
+            return vision.analyze_screen(user_question)
+
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
-            "start_program": lambda program_name: os_tools.start_program(program_name),
+            "start_program": lambda program_name, **_ignored: os_tools.start_program(
+                program_name
+            ),
+            "open_file": lambda path, program, **_ignored: os_tools.open_file(
+                path,
+                program,
+            ),
+            "get_open_windows": lambda **_ignored: window_tools.get_open_windows(),
+            "read_window_content": (
+                lambda window_title, **_ignored: window_tools.read_window_content(
+                    window_title
+                )
+            ),
+            "analyze_screen": analyze_screen,
             "create_folder": lambda path: os_tools.create_folder(path),
             "create_file": lambda path, content, overwrite=False: os_tools.create_file(
                 path,
@@ -95,6 +139,7 @@ class ToolExecutor:
                 max_bytes=tool_settings.max_unzip_bytes,
             ),
             "search_system": search,
+            "semantic_image_search": semantic_image_search,
         }
 
     def requires_confirmation(self, name: str) -> bool:
@@ -125,6 +170,8 @@ class ToolExecutor:
         except TypeError as exc:
             return {"ok": False, "error": f"Invalid arguments for {name}: {exc}"}
         except os_tools.ToolError as exc:
+            return {"ok": False, "error": str(exc)}
+        except window_tools.WindowToolError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to the model
             logger.exception("Tool %s failed", name)

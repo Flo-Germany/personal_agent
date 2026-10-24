@@ -5,10 +5,23 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
+import type {
+  ComponentPropsWithoutRef,
+  ReactNode,
+} from "react";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
+import { Files, Images } from "lucide-react";
 import remarkGfm from "remark-gfm";
+
+import { FileReference } from "./FileReference";
+import {
+  isImagePath,
+  localPathFromHref,
+  localPathFromText,
+  toFileUrl,
+} from "../lib/localFiles";
+import { remarkLocalFilePaths } from "../lib/remarkLocalFilePaths";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
@@ -175,11 +188,294 @@ function readCodeChild(children: ReactNode): {
   return { code, language: resolveLanguage(match?.[1]) };
 }
 
-const components: Components = {
-  a: ({ children, ...props }) => (
-    <a {...props} target="_blank" rel="noreferrer noopener">
+type AnchorProps = ComponentPropsWithoutRef<"a"> & { node?: unknown };
+
+function textFromChildren(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((child) => {
+      if (typeof child === "string" || typeof child === "number") {
+        return String(child);
+      }
+      if (isValidElement(child)) {
+        const props = child.props as { children?: ReactNode };
+        return textFromChildren(props.children);
+      }
+      return "";
+    })
+    .join("");
+}
+
+function resolvePathFromAnchor(
+  href: string | undefined,
+  children: ReactNode,
+): string | null {
+  return (
+    localPathFromHref(href) ??
+    localPathFromText(textFromChildren(children))
+  );
+}
+
+function LocalFileAnchor({ href, children, title }: AnchorProps) {
+  const path = resolvePathFromAnchor(href, children);
+
+  if (path) {
+    return <FileReference path={path} />;
+  }
+
+  return (
+    <a href={href} title={title} target="_blank" rel="noreferrer noopener">
       {children}
     </a>
+  );
+}
+
+type ImageProps = ComponentPropsWithoutRef<"img"> & { node?: unknown };
+
+function LocalFileImage({ src, alt }: ImageProps) {
+  const path = src ? localPathFromHref(src) : null;
+
+  if (path) {
+    return <FileReference path={path} />;
+  }
+
+  return (
+    <img src={src} alt={alt ?? ""} loading="lazy" draggable={false} />
+  );
+}
+
+function resolveFileElement(node: ReactNode): string | null {
+  if (!isValidElement(node)) {
+    return null;
+  }
+
+  if (node.type === LocalFileAnchor) {
+    const props = node.props as { href?: string; children?: ReactNode };
+    return resolvePathFromAnchor(props.href, props.children);
+  }
+
+  if (node.type === LocalFileImage) {
+    const props = node.props as { src?: string };
+    return props.src ? localPathFromHref(props.src) : null;
+  }
+
+  return null;
+}
+
+function isIgnorableNode(node: ReactNode): boolean {
+  if (typeof node === "string") {
+    return node.trim() === "";
+  }
+  return isValidElement(node) && node.type === "br";
+}
+
+function collectFileInfo(children: ReactNode): {
+  count: number;
+  images: number;
+} {
+  let count = 0;
+  let images = 0;
+
+  const visit = (nodes: ReactNode) => {
+    for (const node of Children.toArray(nodes)) {
+      const path = resolveFileElement(node);
+      if (path) {
+        count += 1;
+        if (isImagePath(path)) {
+          images += 1;
+        }
+        continue;
+      }
+
+      if (isValidElement(node)) {
+        const props = node.props as { children?: ReactNode };
+        if (props.children !== undefined) {
+          visit(props.children);
+        }
+      }
+    }
+  };
+
+  visit(children);
+  return { count, images };
+}
+
+function FileAwareParagraph({ children }: { children?: ReactNode }) {
+  const nodes = Children.toArray(children);
+  const paths = nodes
+    .map(resolveFileElement)
+    .filter((path): path is string => path !== null);
+
+  if (paths.length === 0) {
+    return <p>{children}</p>;
+  }
+
+  const onlyFiles = nodes.every(
+    (node) => isIgnorableNode(node) || resolveFileElement(node) !== null,
+  );
+
+  if (onlyFiles) {
+    const allImages = paths.every((path) => isImagePath(path));
+    const gallery = (
+      <div className={allImages ? "image-gallery" : "file-grid"}>
+        {children}
+      </div>
+    );
+
+    return paths.length > 1 ? (
+      <GalleryFrame
+        kind={allImages ? "images" : "files"}
+        count={paths.length}
+      >
+        {gallery}
+      </GalleryFrame>
+    ) : (
+      gallery
+    );
+  }
+
+  return <div className="file-mixed">{children}</div>;
+}
+
+function GalleryFrame({
+  kind,
+  count,
+  children,
+}: {
+  kind: "images" | "files";
+  count: number;
+  children: ReactNode;
+}) {
+  const Icon = kind === "images" ? Images : Files;
+  const label =
+    kind === "images"
+      ? count === 1
+        ? "image"
+        : "images"
+      : count === 1
+        ? "file"
+        : "files";
+
+  return (
+    <div className="file-gallery-panel">
+      <div className="file-gallery-heading">
+        <Icon className="size-3" />
+        <span>
+          {count} {label}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function fileListInfo(
+  children: ReactNode,
+): { allImages: boolean; count: number } | null {
+  const items = Children.toArray(children).filter(isValidElement);
+
+  if (items.length === 0 || !items.every((item) => item.type === "li")) {
+    return null;
+  }
+
+  let total = 0;
+  let images = 0;
+
+  for (const item of items) {
+    const props = item.props as { children?: ReactNode };
+    const info = collectFileInfo(props.children);
+
+    if (info.count === 0) {
+      return null;
+    }
+
+    total += info.count;
+    images += info.images;
+  }
+
+  return { allImages: total > 0 && images === total, count: total };
+}
+
+function FileAwareUnorderedList({
+  children,
+  className,
+}: {
+  children?: ReactNode;
+  className?: string;
+}) {
+  const info = fileListInfo(children);
+
+  if (info) {
+    const list = (
+      <ul
+        className={`${className ?? ""} ${
+          info.allImages ? "image-gallery" : "file-grid"
+        }`.trim()}
+      >
+        {children}
+      </ul>
+    );
+
+    return info.count > 1 ? (
+      <GalleryFrame
+        kind={info.allImages ? "images" : "files"}
+        count={info.count}
+      >
+        {list}
+      </GalleryFrame>
+    ) : (
+      list
+    );
+  }
+
+  return <ul className={className}>{children}</ul>;
+}
+
+function FileAwareOrderedList({
+  children,
+  className,
+}: {
+  children?: ReactNode;
+  className?: string;
+}) {
+  const info = fileListInfo(children);
+
+  if (info) {
+    const list = (
+      <ol
+        className={`${className ?? ""} ${
+          info.allImages ? "image-gallery" : "file-grid"
+        }`.trim()}
+      >
+        {children}
+      </ol>
+    );
+
+    return info.count > 1 ? (
+      <GalleryFrame
+        kind={info.allImages ? "images" : "files"}
+        count={info.count}
+      >
+        {list}
+      </GalleryFrame>
+    ) : (
+      list
+    );
+  }
+
+  return <ol className={className}>{children}</ol>;
+}
+
+const components: Components = {
+  a: LocalFileAnchor,
+  img: LocalFileImage,
+  p: ({ children }) => <FileAwareParagraph>{children}</FileAwareParagraph>,
+  ul: ({ children, className }) => (
+    <FileAwareUnorderedList className={className}>
+      {children}
+    </FileAwareUnorderedList>
+  ),
+  ol: ({ children, className }) => (
+    <FileAwareOrderedList className={className}>{children}</FileAwareOrderedList>
   ),
   pre: ({ children }) => {
     const block = readCodeChild(children);
@@ -202,6 +498,27 @@ const components: Components = {
   ),
 };
 
+function preserveLocalFileUrls(url: string): string {
+  if (/^(?:file:|[A-Za-z]:[\\/]|\\\\)/i.test(url)) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+/**
+ * Repair raw Windows paths inside markdown link destinations before parsing.
+ * ReactMarkdown would otherwise drop destinations like `](C:\\path\\file.png)`.
+ */
+function repairLocalLinkDestinations(content: string): string {
+  return content.replace(
+    /\]\(([A-Za-z]:[\\/][^)\r\n]*)\)/g,
+    (match, destination: string) => {
+      const path = localPathFromText(destination);
+      return path ? `](${toFileUrl(path)})` : match;
+    },
+  );
+}
+
 type MarkdownContentProps = {
   content: string;
   className?: string;
@@ -213,8 +530,12 @@ export function MarkdownContent({
 }: MarkdownContentProps) {
   return (
     <div className={`markdown-body ${className}`.trim()}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {content}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkLocalFilePaths]}
+        components={components}
+        urlTransform={preserveLocalFileUrls}
+      >
+        {repairLocalLinkDestinations(content)}
       </ReactMarkdown>
     </div>
   );

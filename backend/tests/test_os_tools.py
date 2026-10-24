@@ -27,8 +27,13 @@ def test_requires_confirmation_flags() -> None:
     assert os_tools.requires_confirmation("delete_file_or_folder") is True
     assert os_tools.requires_confirmation("unzip_file") is True
     assert os_tools.requires_confirmation("start_program") is True
+    assert os_tools.requires_confirmation("open_file") is True
     assert os_tools.requires_confirmation("read_file_content") is False
     assert os_tools.requires_confirmation("search_system") is False
+    assert os_tools.requires_confirmation("semantic_image_search") is False
+    assert os_tools.requires_confirmation("get_open_windows") is False
+    assert os_tools.requires_confirmation("read_window_content") is False
+    assert os_tools.requires_confirmation("analyze_screen") is False
     # Unknown tools fail closed.
     assert os_tools.requires_confirmation("unknown_tool") is True
 
@@ -348,7 +353,7 @@ def test_unzip_size_limit(workdir: Path) -> None:
         os_tools.unzip_file(str(archive), str(workdir / "out"), max_bytes=10)
 
 
-def test_start_program_uses_only_allowlisted_absolute_executables(
+def test_start_program_resolves_known_alias(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -370,17 +375,78 @@ def test_start_program_uses_only_allowlisted_absolute_executables(
     assert launches == [([str(system32 / "notepad.exe")], {"shell": False})]
 
 
-def test_start_program_rejects_unknown_and_paths(
+def test_start_program_accepts_any_absolute_executable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(os_tools, "_system32", lambda: tmp_path)
+    program = tmp_path / "custom app.exe"
+    program.write_bytes(b"")
+    launches: list[list[str]] = []
+
+    monkeypatch.setattr(
+        os_tools.subprocess,
+        "Popen",
+        lambda args, **kwargs: launches.append(args),
+    )
+
+    result = os_tools.start_program(str(program))
+
+    assert result["ok"] is True
+    assert result["program"] == str(program.resolve())
+    assert launches == [[str(program.resolve())]]
+
+
+def test_start_program_rejects_unknown_program(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os_tools.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(os_tools, "_registry_program_path", lambda _name: None)
+    monkeypatch.setattr(os_tools, "_start_menu_shortcut", lambda _name: None)
 
     with pytest.raises(ToolError):
-        os_tools.start_program("cmd")
+        os_tools.start_program("definitely-not-an-installed-program-xyz")
+
+
+def test_open_file_requires_an_explicit_program(tmp_path: Path) -> None:
+    document = tmp_path / "notes.txt"
+    document.write_text("hello", encoding="utf-8")
+
+    with pytest.raises(ToolError) as error:
+        os_tools.open_file(str(document), "")
+
+    assert "Ask the user" in str(error.value)
+
+
+def test_open_file_launches_selected_editor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "notes.txt"
+    document.write_text("hello", encoding="utf-8")
+    editor = tmp_path / "editor.exe"
+    editor.write_bytes(b"")
+    launches: list[list[str]] = []
+
+    monkeypatch.setattr(
+        os_tools.subprocess,
+        "Popen",
+        lambda args, **kwargs: launches.append(args),
+    )
+
+    result = os_tools.open_file(str(document), str(editor))
+
+    assert result["ok"] is True
+    assert result["path"] == str(document)
+    assert result["program"] == str(editor.resolve())
+    assert launches == [[str(editor.resolve()), str(document)]]
+
+
+def test_open_file_rejects_missing_file(tmp_path: Path) -> None:
+    editor = tmp_path / "editor.exe"
+    editor.write_bytes(b"")
 
     with pytest.raises(ToolError):
-        os_tools.start_program(r"C:\Windows\System32\notepad.exe")
+        os_tools.open_file(str(tmp_path / "missing.txt"), str(editor))
 
 
 def test_path_resolution_expands_relative_paths_to_home() -> None:

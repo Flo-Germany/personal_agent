@@ -90,37 +90,113 @@ def _parse_arguments(call: dict[str, Any]) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _short_path(value: Any) -> str:
+    """Show only the final path component in transient status messages."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    try:
+        name = Path(text).name
+    except (OSError, ValueError):
+        name = ""
+
+    return name or text
+
+
+def _program_was_named_by_user(user_message: str, program: str) -> bool:
+    """Whether the latest user message actually names the chosen program."""
+    message = str(user_message or "").casefold()
+    program_text = str(program or "").strip().casefold()
+    if not message or not program_text:
+        return False
+
+    candidates: set[str] = {program_text}
+
+    try:
+        path = Path(program_text)
+    except (OSError, ValueError):
+        path = None
+
+    if path is not None:
+        candidates.add(path.name.casefold())
+        candidates.add(path.stem.casefold())
+
+    stem = path.stem.casefold() if path is not None else program_text
+    aliases = {
+        "winword": ("word", "microsoft word"),
+        "excel": ("excel", "microsoft excel"),
+        "powerpnt": ("powerpoint", "microsoft powerpoint"),
+        "outlook": ("outlook", "microsoft outlook"),
+        "msedge": ("edge", "microsoft edge"),
+        "chrome": ("chrome", "google chrome"),
+        "code": ("vs code", "visual studio code"),
+        "explorer": ("file explorer",),
+        "mspaint": ("paint",),
+        "calc": ("calculator",),
+    }
+    candidates.update(aliases.get(stem, ()))
+
+    for candidate in candidates:
+        if candidate and re.search(
+            rf"(?<!\w){re.escape(candidate)}(?!\w)",
+            message,
+        ):
+            return True
+
+    return False
+
+
 def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
     if name == "start_program":
         return f"Opening {arguments.get('program_name', 'an application')}..."
+    if name == "open_file":
+        return (
+            f"Opening {_short_path(arguments.get('path'))} with "
+            f"{arguments.get('program', 'a program')}..."
+        )
     if name == "create_folder":
-        return f"Creating folder {arguments.get('path', '')}..."
+        return f"Creating folder {_short_path(arguments.get('path'))}..."
     if name == "create_file":
-        return f"Creating file {arguments.get('path', '')}..."
+        return f"Creating file {_short_path(arguments.get('path'))}..."
     if name == "copy_file":
         return (
-            f"Copying {arguments.get('source_path', '')} to "
-            f"{arguments.get('destination_path', '')}..."
+            f"Copying {_short_path(arguments.get('source_path'))} to "
+            f"{_short_path(arguments.get('destination_path'))}..."
         )
     if name == "move_file_or_folder":
         return (
-            f"Moving {arguments.get('source_path', '')} to "
-            f"{arguments.get('destination_path', '')}..."
+            f"Moving {_short_path(arguments.get('source_path'))} to "
+            f"{_short_path(arguments.get('destination_path'))}..."
         )
     if name == "delete_file_or_folder":
-        return f"Moving {arguments.get('path', '')} to the Recycle Bin..."
+        return (
+            f"Moving {_short_path(arguments.get('path'))} to the Recycle Bin..."
+        )
     if name == "unzip_file":
-        return f"Extracting {arguments.get('archive_path', '')}..."
+        return f"Extracting {_short_path(arguments.get('archive_path'))}..."
     if name == "read_file_content":
-        return f"Reading {arguments.get('path', '')}..."
+        return f"Reading {_short_path(arguments.get('path'))}..."
     if name == "search_system":
-        return f"Searching {arguments.get('root', 'the file system')}..."
+        return (
+            f"Searching {_short_path(arguments.get('root')) or 'the file system'}..."
+        )
+    if name == "semantic_image_search":
+        return (
+            "Searching images for "
+            f'"{arguments.get("query", "a visual description")}"...'
+        )
     return f"Running {name}..."
 
 
 def _action_description(name: str, arguments: dict[str, Any]) -> str:
     if name == "start_program":
-        return f"Open {arguments.get('program_name', 'an application')}"
+        return f"Start program {arguments.get('program_name', 'an application')}"
+    if name == "open_file":
+        return (
+            f"Open {arguments.get('path', '')} with "
+            f"{arguments.get('program', 'a program')}"
+        )
     if name == "create_folder":
         return f"Create folder {arguments.get('path', '')}"
     if name == "create_file":
@@ -441,6 +517,52 @@ class ChatService:
                 for call in serialized_calls
                 if not self._tools.requires_confirmation(call["function"]["name"])
             ]
+
+            user_message = self._last_user_message(conversation_id)
+            invalid_open_calls = [
+                call
+                for call in confirmation_calls
+                if call["function"]["name"] == "open_file"
+                and not _program_was_named_by_user(
+                    user_message,
+                    str(_parse_arguments(call).get("program", "")),
+                )
+            ]
+
+            if invalid_open_calls:
+                for call in invalid_open_calls:
+                    self._store.append(
+                        conversation_id,
+                        "tool",
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "needs_program": True,
+                                "error": (
+                                    "The user did not name an editor or program. "
+                                    "Ask which application to use; do not choose "
+                                    "one based on the file extension."
+                                ),
+                            }
+                        ),
+                        tool_call_id=call["id"],
+                        name="open_file",
+                    )
+
+                first_path = str(
+                    _parse_arguments(invalid_open_calls[0]).get("path", "")
+                )
+                file_name = _short_path(first_path) or "this file"
+                reply = (
+                    f"Which editor or program should I use to open {file_name}?"
+                )
+                self._store.append(conversation_id, "assistant", reply)
+                yield {
+                    "type": "final",
+                    "conversation_id": conversation_id,
+                    "reply": reply,
+                }
+                return
 
             for call in read_only_calls:
                 name = call["function"]["name"]

@@ -1,0 +1,389 @@
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Eye,
+  File,
+  FileArchive,
+  FileAudio,
+  FileCode,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  FolderOpen,
+  Presentation,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+import {
+  IMAGE_EXTENSIONS,
+  fileExtension,
+  fileName,
+  isImagePath,
+  localFileSrc,
+} from "../lib/localFiles";
+import {
+  copyLocalPath,
+  openLocalFile,
+  revealLocalFile,
+} from "../lib/tauriActions";
+
+const DOCUMENT_EXTENSIONS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "odt",
+  "rtf",
+  "txt",
+  "md",
+  "markdown",
+]);
+const CODE_EXTENSIONS = new Set([
+  "py",
+  "js",
+  "jsx",
+  "ts",
+  "tsx",
+  "css",
+  "html",
+  "htm",
+  "json",
+  "xml",
+  "yaml",
+  "yml",
+  "ps1",
+  "sh",
+  "bat",
+  "cmd",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "rs",
+  "go",
+  "sql",
+]);
+const SHEET_EXTENSIONS = new Set(["xls", "xlsx", "csv", "ods"]);
+const ARCHIVE_EXTENSIONS = new Set([
+  "zip",
+  "rar",
+  "7z",
+  "tar",
+  "gz",
+  "iso",
+]);
+const VIDEO_EXTENSIONS = new Set([
+  "mp4",
+  "mov",
+  "avi",
+  "mkv",
+  "webm",
+  "wmv",
+]);
+const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac"]);
+const PRESENTATION_EXTENSIONS = new Set(["ppt", "pptx", "odp"]);
+
+function iconForExtension(extension: string): LucideIcon {
+  if (DOCUMENT_EXTENSIONS.has(extension)) {
+    return FileText;
+  }
+  if (CODE_EXTENSIONS.has(extension)) {
+    return FileCode;
+  }
+  if (SHEET_EXTENSIONS.has(extension)) {
+    return FileSpreadsheet;
+  }
+  if (ARCHIVE_EXTENSIONS.has(extension)) {
+    return FileArchive;
+  }
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return FileVideo;
+  }
+  if (AUDIO_EXTENSIONS.has(extension)) {
+    return FileAudio;
+  }
+  if (PRESENTATION_EXTENSIONS.has(extension)) {
+    return Presentation;
+  }
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return FileImage;
+  }
+  return File;
+}
+
+function extensionLabel(extension: string): string {
+  return extension ? `${extension.toUpperCase()} file` : "File";
+}
+
+type ActionButtonProps = {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+  overlay?: boolean;
+};
+
+function ActionButton({
+  label,
+  onClick,
+  children,
+  overlay = false,
+}: ActionButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={(event: MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick();
+      }}
+      aria-label={label}
+      title={label}
+      className={`flex size-6 items-center justify-center rounded-md transition-all duration-200 ease-out ${
+        overlay
+          ? "text-white/75 hover:bg-white/15 hover:text-white"
+          : "text-white/35 hover:bg-white/[0.08] hover:text-white/85"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+type FileReferenceProps = {
+  path: string;
+};
+
+export function FileReference({ path }: FileReferenceProps) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current !== null) {
+        window.clearTimeout(copyTimer.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!previewOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPreviewOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewOpen]);
+
+  const name = fileName(path);
+  const extension = fileExtension(path);
+  const FileIcon = iconForExtension(extension);
+  const source = localFileSrc(path);
+
+  const openFile = () => {
+    void openLocalFile(path);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openFile();
+    }
+  };
+
+  const copyPath = async () => {
+    const ok = await copyLocalPath(path);
+    if (!ok) {
+      return;
+    }
+
+    setCopied(true);
+    if (copyTimer.current !== null) {
+      window.clearTimeout(copyTimer.current);
+    }
+    copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  const actions = (
+    <>
+      <ActionButton label="Open file" onClick={openFile} overlay={false}>
+        <ExternalLink className="size-3.5" />
+      </ActionButton>
+      <ActionButton
+        label="Show in folder"
+        onClick={() => void revealLocalFile(path)}
+        overlay={false}
+      >
+        <FolderOpen className="size-3.5" />
+      </ActionButton>
+      <ActionButton label="Copy path" onClick={() => void copyPath()} overlay={false}>
+        {copied ? (
+          <Check className="size-3.5 text-emerald-300" />
+        ) : (
+          <Copy className="size-3.5" />
+        )}
+      </ActionButton>
+    </>
+  );
+
+  const previewDialog = previewOpen
+    ? createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Preview ${name}`}
+            onClick={(event) => event.stopPropagation()}
+            className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#161616] shadow-[0_30px_90px_rgba(0,0,0,0.7)]"
+          >
+            <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-white/80">
+                {name}
+              </span>
+              <span className="flex shrink-0 items-center gap-0.5">
+                <ActionButton label="Open file" onClick={openFile} overlay>
+                  <ExternalLink className="size-3.5" />
+                </ActionButton>
+                <ActionButton
+                  label="Show in folder"
+                  onClick={() => void revealLocalFile(path)}
+                  overlay
+                >
+                  <FolderOpen className="size-3.5" />
+                </ActionButton>
+                <ActionButton label="Copy path" onClick={() => void copyPath()} overlay>
+                  {copied ? (
+                    <Check className="size-3.5 text-emerald-300" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                </ActionButton>
+                <ActionButton
+                  label="Close preview"
+                  onClick={() => setPreviewOpen(false)}
+                  overlay
+                >
+                  <X className="size-4" />
+                </ActionButton>
+              </span>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-black/25 p-2">
+              <img
+                src={source}
+                alt={name}
+                className="max-h-[72vh] w-auto max-w-full rounded-lg object-contain"
+              />
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
+
+  if (isImagePath(path) && !imageFailed) {
+    return (
+      <>
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={openFile}
+          onKeyDown={handleKeyDown}
+          aria-label={`Open ${name}`}
+          className="file-ref-image group relative block w-44 max-w-full cursor-pointer overflow-hidden rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_12px_34px_-14px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
+        >
+          <span className="block aspect-[4/3] overflow-hidden bg-black/30">
+            <img
+              src={source}
+              alt={name}
+              loading="lazy"
+              draggable={false}
+              onError={() => setImageFailed(true)}
+              className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.04]"
+            />
+          </span>
+
+          <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent px-2 pt-6 pb-1.5">
+            <span className="block truncate text-[11px] font-medium text-white/90">
+              {name}
+            </span>
+          </span>
+
+          <span className="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/65 p-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 ease-out pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+            <ActionButton
+              label="Preview image"
+              onClick={() => setPreviewOpen(true)}
+              overlay
+            >
+              <Eye className="size-3.5" />
+            </ActionButton>
+            <ActionButton label="Open file" onClick={openFile} overlay>
+              <ExternalLink className="size-3.5" />
+            </ActionButton>
+            <ActionButton
+              label="Show in folder"
+              onClick={() => void revealLocalFile(path)}
+              overlay
+            >
+              <FolderOpen className="size-3.5" />
+            </ActionButton>
+            <ActionButton label="Copy path" onClick={() => void copyPath()} overlay>
+              {copied ? (
+                <Check className="size-3.5 text-emerald-300" />
+              ) : (
+                <Copy className="size-3.5" />
+              )}
+            </ActionButton>
+          </span>
+        </span>
+        {previewDialog}
+      </>
+    );
+  }
+
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={openFile}
+      onKeyDown={handleKeyDown}
+      aria-label={`Open ${name}`}
+      className="file-ref-card group flex w-full max-w-md min-w-0 cursor-pointer items-center gap-2.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] px-3 py-2.5 text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_10px_26px_-18px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.07] bg-white/[0.045] text-white/55 transition-colors duration-200 ease-out group-hover:border-violet-300/15 group-hover:text-violet-200/80">
+        <FileIcon className="size-4" />
+      </span>
+
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-medium text-white/90">
+          {name}
+        </span>
+        <span className="mt-0.5 block text-[10px] tracking-wide text-white/35 uppercase">
+          {extensionLabel(extension)}
+        </span>
+      </span>
+
+      <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-200 ease-out pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+        {actions}
+      </span>
+    </span>
+  );
+}

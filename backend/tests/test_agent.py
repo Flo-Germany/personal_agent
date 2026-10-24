@@ -418,6 +418,10 @@ def test_parse_facts_rejects_none_and_query_requests() -> None:
         "PROJECTS: The user wants to create a new folder named AgentFeatureTest "
         "in Downloads.\n"
         "PROJECTS: The user wants to use unzip_file on C:\\Downloads\\x.zip.\n"
+        "PROJECTS: The user wants the assistant to search their whole computer "
+        "for a picture of a cyberpunk city.\n"
+        "PROJECTS: The user is currently searching their computer for a picture "
+        "of a cyberpunk city at night.\n"
         "PREFERENCES: The user prefers short answers.\n"
     )
 

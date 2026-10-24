@@ -4,6 +4,7 @@ import { AlertIcon, CheckIcon, ShieldIcon } from "./icons";
 type StatusPillProps = {
   kind: StatusKind;
   content: string;
+  active?: boolean;
 };
 
 const TONE: Record<StatusKind, string> = {
@@ -14,11 +15,13 @@ const TONE: Record<StatusKind, string> = {
   approval: "text-amber-200/80",
 };
 
-function StatusIcon({ kind }: { kind: StatusKind }) {
+function StatusIcon({ kind, active }: { kind: StatusKind; active: boolean }) {
   switch (kind) {
     case "thinking":
-      return (
+      return active ? (
         <span className="size-3 shrink-0 animate-spin rounded-full border border-white/20 border-t-white/70" />
+      ) : (
+        <CheckIcon className="size-3 shrink-0 text-emerald-300/70" />
       );
     case "tool":
       return (
@@ -33,13 +36,13 @@ function StatusIcon({ kind }: { kind: StatusKind }) {
   }
 }
 
-export function StatusPill({ kind, content }: StatusPillProps) {
+export function StatusPill({ kind, content, active = false }: StatusPillProps) {
   return (
     <div className="message-in flex justify-center">
       <div
         className={`inline-flex max-w-[92%] items-center gap-1.5 rounded-full border border-white/[0.06] bg-white/[0.025] px-2.5 py-1 text-[11px] leading-4 ${TONE[kind]}`}
       >
-        <StatusIcon kind={kind} />
+        <StatusIcon kind={kind} active={active} />
         <span className="break-words">{content}</span>
       </div>
     </div>

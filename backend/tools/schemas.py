@@ -14,24 +14,62 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "start_program",
             "description": (
-                "Launch one of the user's allowed local Windows applications. "
-                "This is a modifying action and requires explicit user approval "
-                "before it runs. Allowed programs: 'calculator' (Calculator), "
-                "'notepad' (Notepad), 'explorer' (File Explorer), and 'paint' "
-                "(Paint). It launches exactly one program and cannot pass "
-                "arguments, run shell commands, run scripts, or start any other "
-                "application."
+                "Launch any installed Windows program by name or executable path. "
+                "This is a system-changing action and always requires explicit "
+                "user approval before it runs. Accepts an absolute path to an "
+                ".exe/.com file, an executable available on PATH, a Start Menu "
+                "application name, or an installed app name such as 'chrome', "
+                "'code', or 'notepad'. It launches exactly one program with no "
+                "arguments and never uses a shell. To open a specific document, "
+                "use open_file instead and choose the application explicitly."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "program_name": {
                         "type": "string",
-                        "enum": ["calculator", "notepad", "explorer", "paint"],
-                        "description": "Allowlisted program to launch.",
+                        "description": (
+                            "Program name or executable path, for example "
+                            "'notepad', 'chrome', or "
+                            "'C:\\\\Program Files\\\\App\\\\app.exe'."
+                        ),
                     }
                 },
                 "required": ["program_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_file",
+            "description": (
+                "Open one existing local file in an explicitly chosen editor or "
+                "program. This launches an application and always requires "
+                "explicit user approval. The program is required: if the user did "
+                "not name an application, ask which editor or program to use before "
+                "calling this tool; never assume a default handler. The program can "
+                "be an installed app name or an absolute .exe path. Use "
+                "start_program only when launching a program without a document."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Exact path of the existing file to open.",
+                    },
+                    "program": {
+                        "type": "string",
+                        "description": (
+                            "Editor or program to use, for example 'notepad', "
+                            "'code', 'chrome', or an absolute .exe path. Ask the "
+                            "user when they have not specified one."
+                        ),
+                    },
+                },
+                "required": ["path", "program"],
                 "additionalProperties": False,
             },
         },
@@ -343,6 +381,135 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["root"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "semantic_image_search",
+            "description": (
+                "Find local image files anywhere on the user's computer by what "
+                "they show, not by filename. Use this when the user asks for "
+                "pictures of something (for example 'a red car', 'a dog on a "
+                "beach', 'my vacation photos', 'a screenshot of a chart') or asks "
+                "to search the whole PC for an image by description. Uses a local "
+                "CLIP index that is built and refreshed continuously in the "
+                "background. Read-only, so no approval is required. It already "
+                "covers the whole indexed computer; do not pass a folder, root, "
+                "drive, or all_drives argument. Returns up to "
+                "10 absolute paths ranked by visual similarity, with scores, "
+                "modified times, and a confidence value. If confidence is low, "
+                "results is empty: do not invent or present unrelated images; "
+                "tell the user no confident visual match was found and ask for a "
+                "more specific English description. English descriptions work "
+                "best. If the index is still building, the result says so; retry "
+                "a little later or tell the user how many images are indexed so "
+                "far. Use search_system instead when the user asks by filename, "
+                "extension, size, or date."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Visual description of the image to find, such as "
+                            "'a red car' or 'beach vacation'. Prefer English."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": (
+                            "Maximum number of matches to return. Defaults to 5."
+                        ),
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_open_windows",
+            "description": (
+                "List all visible top-level application windows on the user's "
+                "Windows desktop, including each exact window title and whether "
+                "it is the active window. Read-only, so no approval is needed. "
+                "Use this first when the user asks which programs are open or "
+                "when you need the exact title for read_window_content. Minimized "
+                "or hidden windows are not listed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_window_content",
+            "description": (
+                "Read the readable text from an open native Windows application "
+                "by its exact or partial window title, using Windows UI Automation. "
+                "Read-only, so no approval is needed. Use get_open_windows first to "
+                "get the title, then use this when the user asks what is written in "
+                "a document or open app. Works best with text editors, dialogs, and "
+                "accessible documents; some browsers and custom-rendered apps expose "
+                "little or no text. If the result says no text was found, use "
+                "analyze_screen to look at the visible screen instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_title": {
+                        "type": "string",
+                        "description": (
+                            "Exact or partial title of an open window, for example "
+                            "'Untitled - Notepad' or 'report.docx - Word'."
+                        ),
+                    }
+                },
+                "required": ["window_title"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_screen",
+            "description": (
+                "Look at the user's current primary screen and answer a question "
+                "about what is visible. Read-only and local: captures one screenshot "
+                "in memory, sends it only to the local Ollama model "
+                "'llama3.2-vision', and returns its text answer. No file is left on "
+                "disk. Use this for questions such as 'What is on my screen?', "
+                "'Look at my screen', 'What does this error say?', or any question "
+                "about visual layout. Do not use it when the user asks about a "
+                "specific open document that read_window_content can read, and do "
+                "not capture the screen without a clear screen-related request."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_question": {
+                        "type": "string",
+                        "description": (
+                            "The user's question about the screen, including any "
+                            "specific visual details to look for."
+                        ),
+                    }
+                },
+                "required": ["user_question"],
                 "additionalProperties": False,
             },
         },

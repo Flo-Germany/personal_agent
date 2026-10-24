@@ -28,5 +28,23 @@
     "max_search_files": 20000,
     "max_search_seconds": 30,
     "max_unzip_bytes": 209715200
+  },
+  "vision": {
+    "enabled": true,
+    "embed_model": "clip-ViT-B-32",
+    "index_path": "memory/vision_index.sqlite3",
+    "scan_roots": ["~"],
+    "batch_size": 8,
+    "scan_interval_seconds": 600,
+    "max_images": 150000,
+    "max_file_mb": 50,
+    "exclude_paths": [],
+    "min_confidence_z": 3.9,
+    "min_result_z": 3.5,
+    "dedupe_threshold": 0.995,
+    "screen_model": "qwen3-vl:8b-instruct",
+    "screen_timeout_seconds": 180,
+    "screen_max_width": 1600,
+    "screen_max_tokens": 700
   }
 }

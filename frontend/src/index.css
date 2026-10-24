@@ -314,3 +314,77 @@ a:focus-visible {
 .markdown-compact > * + * {
   margin-top: 0.45rem;
 }
+
+/* Rich local-file cards and image galleries. */
+.markdown-body .image-gallery,
+.markdown-body .file-grid {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0.55rem 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.markdown-body .file-gallery-panel {
+  margin: 0.65rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.018);
+  padding: 0.5rem;
+}
+
+.markdown-body .file-gallery-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.15rem 0.45rem;
+  color: rgba(255, 255, 255, 0.32);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.markdown-body .file-gallery-panel .image-gallery,
+.markdown-body .file-gallery-panel .file-grid {
+  margin: 0;
+}
+
+.markdown-body .image-gallery {
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+}
+
+.markdown-body .file-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+}
+
+.markdown-body .image-gallery > li,
+.markdown-body .file-grid > li {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.markdown-body .image-gallery > li::marker,
+.markdown-body .file-grid > li::marker {
+  content: none;
+}
+
+.markdown-body .image-gallery .file-ref-image,
+.markdown-body .file-grid .file-ref-card {
+  width: 100%;
+  max-width: none;
+}
+
+.markdown-body .file-mixed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 0.5rem 0;
+}
+
+.markdown-body .file-ref-image img {
+  max-width: none;
+  border-radius: 0;
+}

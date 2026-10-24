@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { AppHeader } from "./components/AppHeader";
 import { ApprovalCard } from "./components/ApprovalCard";
+import { AttachmentBlock } from "./components/AttachmentBlock";
 import { ChatComposer } from "./components/ChatComposer";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem, TypingIndicator } from "./components/MessageItem";
@@ -59,12 +60,18 @@ function App() {
             />
           ) : (
             <div className="mx-auto w-full max-w-3xl space-y-5 px-4 py-5 sm:px-6">
-              {messages.map((message) =>
+              {messages.map((message, index) =>
                 message.role === "status" ? (
                   <StatusPill
                     key={message.id}
                     kind={message.statusKind ?? "thinking"}
                     content={message.content}
+                    active={isStreaming && index === messages.length - 1}
+                  />
+                ) : message.role === "files" ? (
+                  <AttachmentBlock
+                    key={message.id}
+                    files={message.files ?? []}
                   />
                 ) : (
                   <MessageItem key={message.id} message={message} />

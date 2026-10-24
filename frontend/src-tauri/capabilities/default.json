@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "core:window:allow-hide",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "shell:allow-open",
+    "clipboard-manager:allow-write-text",
+    "opener:allow-reveal-item-in-dir"
   ]
 }
