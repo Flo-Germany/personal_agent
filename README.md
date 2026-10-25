@@ -22,6 +22,10 @@ file system and applications through a Human-in-the-Loop approval flow.
 - Window awareness and UI Automation text reading, plus local screen analysis
   with `qwen3-vl:8b-instruct`; with multiple monitors the agent asks which
   display to analyze and shows a live preview of each one
+- App-aware GUI control: per-application shortcuts and workflows (Outlook,
+  Explorer, browsers, Notepad, VS Code, Office), post-action window/focus
+  feedback, duplicate-click loop breaking, and prevention of duplicate app
+  launches
 - Comprehensive read-only system diagnosis: hardware, live CPU/memory/GPU,
   top processes, disk/SSD health, services, startup apps, security, event-log
   errors, and CPU/memory benchmarks with matplotlib charts
@@ -72,11 +76,12 @@ backend/             FastAPI backend
   memory/knowledge.py File-backed, user-editable knowledge base
   tools/os_tools.py  Full-filesystem Windows operations and safety rules
   tools/window_tools.py Window listing and UI Automation text extraction
+  tools/app_knowledge.py Per-app shortcuts/workflows and secondary-window hints
   tools/vision_tools.py Global CLIP image crawler, SQLite vector store, screen vision
   tools/system_diagnosis.py Read-only system health/performance diagnosis and charts
   tools/schemas.py   OpenAI-compatible tool definitions
   tools/executor.py  Validated tool dispatch and confirmation flags
-  tests/             pytest suite
+  tests/             pytest suite and opt-in live real-app harness
   .venv/             Local virtual environment (gitignored)
 config/settings.json   Backend, Ollama, identity, memory, vision, and tool settings
 config/personality.md  Compa's editable personality and character sheet
@@ -137,7 +142,8 @@ startup, so restart uvicorn after changing it.
   "agent": {
     "max_iterations": 0,
     "max_auto_approved_actions": 0,
-    "approval_ttl_seconds": 600
+    "approval_ttl_seconds": 600,
+    "dynamic_tools": true
   },
   "memory": {
     "knowledge_base_path": "memory/knowledge_base.md",
@@ -168,6 +174,8 @@ startup, so restart uvicorn after changing it.
     "min_result_z": 2.4,
     "dedupe_threshold": 0.995,
     "screen_model": "qwen3-vl:8b-instruct",
+    "ground_model": "",
+    "ground_context_window": 8192,
     "screen_timeout_seconds": 180,
     "screen_max_width": 1600,
     "screen_max_tokens": 700
@@ -221,6 +229,15 @@ cache every minute. `ollama.model_quantization` documents the preferred variant
 (`q4_K_M` by default). The backend logs a warning when the model tag advertises
 `q5`/`q6`/`q8`/`fp16`, which can consume much more VRAM than necessary.
 
+`agent.dynamic_tools` (default `true`) sends only the tool schemas the request
+plausibly needs. Base and GUI tools are always included, so a chat turn and a GUI
+turn share one cached prompt prefix; file, image-search, and diagnosis schemas
+are added only when the message mentions them. This removes roughly nine schemas
+(~2.3k tokens), which measured as **2.96 s → 1.52 s** for the same GUI decision
+step (about 22 → 35 generated tokens/s). Switching tool lists forces Ollama to
+re-evaluate the whole prompt, so the always-on base covers the common
+chat↔GUI transitions. Set it to `false` to always send the full schema list.
+
 The reply language is chosen only from the latest user message, or from an
 explicit request in the current conversation. Standing language-preference lines
 in the knowledge base are filtered out before the prompt is built, so a stored
@@ -250,6 +267,12 @@ hard limit: the agent keeps working until the task is done, however many steps
 that takes. Set a positive value only if you want an explicit safety cap; when a
 cap is reached, the agent summarizes the evidence it already has instead of
 ending with a tool-limit error.
+Independent of that cap, three consecutive identical read-only calls with the
+same arguments are treated as a loop: the third call is not executed and the
+agent is asked to answer from the results it already has. File bodies sent to
+the model are capped at 12,000 characters (the chat still shows the full file),
+so a single large read cannot overflow the context window and hide its own
+result.
 `agent.max_auto_approved_actions` works the same way for actions that run after
 one approval: `0` means no cap.
 `agent.approval_ttl_seconds` controls how long a pending approval remains valid.
@@ -444,7 +467,7 @@ The agent can use eighteen tools:
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
 | `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
 | `get_desktop_context` | No | Foreground window, process/parent chain, visible/minimized windows, dialogs, and the focused UI control |
-| `analyze_screen_ui` | No | Set-of-Mark UI map: numbered bounding boxes, element IDs, coordinate map, annotated screenshot, and a vision-model suggestion |
+| `analyze_screen_ui` | No | Set-of-Mark UI map: element IDs/names/centers, app guide and shortcuts, numbered screenshot, local name match or vision suggestion, focused-control and window state |
 | `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element |
 | `click_element` | Yes | Highlight, glide, and click a detected element; physical input aborts instantly |
 | `keyboard_type_text` | Yes | Type into the focused field with synthetic keys or layout-safe clipboard paste |
@@ -586,12 +609,18 @@ Three read-only tools cover the desktop:
   This always happens when several displays are present, so a guessed monitor is
   never captured.
 - The vision request deliberately uses the same `ollama.context_window`, system
-  prompt, and tool schemas as chat. Ollama therefore reuses the loaded runner
-  and the cached chat prefix instead of reloading the model at a different
+  prompt, and focused tool profile as chat. Ollama therefore reuses the loaded
+  runner and the cached chat prefix instead of reloading the model at a different
   context size and re-evaluating the ~8k-token prompt. Screen analysis now takes
   a couple of seconds and does not slow down the next answer. If
   `vision.screen_model` differs from `ollama.model`, the prompt-prefix reuse is
   skipped because the models cannot share a runner.
+- `vision.ground_model` (empty by default) can point Set-of-Mark element
+  grounding at a separate model; `vision.ground_context_window` then bounds its
+  small context. A `qwen3-vl:4b-instruct` grounding model was measured on the
+  reference machine and was **slower** than the warm 8B model (5.7 s vs 0.8 s)
+  because it writes far longer JSON answers, so the default stays with
+  `qwen3-vl:8b-instruct`.
 
 Pull the vision model once:
 
@@ -620,7 +649,11 @@ The GUI layer is deliberately **UI-Automation-first, vision-assisted**:
 - `analyze_screen_ui` captures the target window's display and walks the Windows
   UI Automation tree with `pywinauto`. It keeps visible, enabled interactable
   controls (buttons, edits, menus, tabs, list items, and similar), exposes only
-  the on-screen part of each rectangle, and numbers them row by row.
+  the on-screen part of each rectangle, and numbers them row by row. The full
+  list holds up to `automation.max_elements` (140) controls; the screenshot
+  labels at most `automation.max_annotated_elements` (60), prioritizing input
+  fields, lists, and tabs. A control without a numbered box is still clickable
+  by name or ID.
 - If UIA exposes fewer than three controls, an OpenCV contour fallback adds
   conservative visual regions. This helps icon-only and custom-rendered apps
   where accessibility is poor. The fallback is optional (`automation.visual_fallback`).
@@ -628,18 +661,30 @@ The GUI layer is deliberately **UI-Automation-first, vision-assisted**:
   semi-transparent colored box and a numbered chip over every element. The tool
   returns the screenshot path (shown in the chat), the full element list, a
   compact `coordinate_map` of `ID -> {x, y, name, type}`, a `snapshot_id`, and a
-  `suggested_id` from `qwen3-vl`. IDs are only valid for that snapshot. The
-  parser stores a short-lived snapshot in memory; stale IDs are rejected.
+  `suggested_id`. The suggestion comes from an exact name match when one control
+  is unambiguous (no model call), and from `qwen3-vl` otherwise. IDs are only
+  valid for that snapshot. The parser stores a short-lived snapshot in memory;
+  stale IDs are rejected.
+- A full Set-of-Mark pass captures only the target window (not the whole 4K
+  display), annotates it, and saves the PNG with `compress_level=1`. When the
+  window content is unchanged within `automation.snapshot_reuse_seconds`, the
+  previous snapshot is reused after a cheap pixel-fingerprint check instead of
+  running UIA, annotation, and grounding again. A fresh pass measured ~0.56 s
+  and an unchanged reuse ~0.05 s.
 - `move_cursor_to` and `click_element` accept `snapshot_id`, `element_id`, and
   `element_name`. The name is checked against the snapshot, so a stale or
   hallucinated ID cannot silently click the wrong control. The pointer shows a
-  red highlight for `highlight_seconds`, then glides linearly over
-  `move_duration_seconds` while checking the killswitch between steps.
+  click-through red highlight for `highlight_seconds` while it glides over a
+  distance-adaptive duration (0.12 s for a short hop, capped by
+  `move_duration_seconds`), checking the killswitch between steps. The highlight
+  never blocks the glide and is withdrawn immediately before the click.
 - `keyboard_type_text` types into the already-focused field. Simple layout-safe
   text uses synthetic key events; text containing `@`, `:`, `!`, umlauts, or
-  other layout-sensitive characters uses a clipboard paste and restores the
-  previous clipboard text. `keyboard_press_keys` handles Enter, Tab, Escape,
-  arrows, and combinations such as Ctrl+S.
+  other layout-sensitive characters, or longer than 48 characters, uses a
+  clipboard paste and restores the previous clipboard text. Long form values
+  therefore take one paste instead of one keystroke per character.
+  `keyboard_press_keys` handles Enter, Tab, Escape, arrows, and combinations
+  such as Ctrl+S.
 - Every input tool requires explicit HITL approval. The approval card says:
   *"Requesting cursor control to click #7 'New Email'. Please take your hands
   off the mouse and keyboard."* The agent is told to prefer CLI commands and
@@ -660,9 +705,12 @@ new user message clears the halt. The agent is instructed to report the abort an
 ask how to continue, never to retry silently.
 
 Configuration lives under `automation` in `config/settings.json`:
-`enabled`, `move_duration_seconds`, `highlight_seconds`, `arm_delay_seconds`,
-`move_threshold_pixels`, `max_elements`, `type_interval_seconds`,
-`screenshot_max_width`, `visual_fallback`, `pre_action_validation`, and
+`enabled`, `move_duration_seconds` (0.4 cap), `highlight_seconds` (0.3),
+`arm_delay_seconds`, `move_threshold_pixels`, `max_elements` (140),
+`max_annotated_elements` (60), `type_interval_seconds`,
+`action_settle_seconds` (0.9), `verify_foreground`, `screenshot_max_width`,
+`screenshot_keep`, `local_grounding`, `snapshot_reuse_seconds`,
+`snapshot_reuse_threshold`, `visual_fallback`, `pre_action_validation`, and
 `validation_tolerance_px`.
 
 ### Context-aware pre-action validation
@@ -691,6 +739,93 @@ again.
 Failures are explicit: `context_changed`, `element_missing`, or
 `focus_changed`, plus `fresh_context` and the last annotated screenshot. The
 agent is told to re-run `analyze_screen_ui` and never retry the stale ID.
+
+### GUI step latency
+
+A GUI step used to cost several serialized passes: a full-display capture,
+UIA/OpenCV discovery, an annotated PNG, a `qwen3-vl` grounding call, then a 0.5 s
+highlight plus a 0.9 s glide. The current pipeline removes most of that:
+
+- the capture is cropped to the target window and the PNG uses
+  `compress_level=1` instead of `optimize=True`
+- UIA control names drive grounding, so the vision model runs only for
+  unlabeled/visual-only elements
+- an unchanged screen reuses the previous snapshot after a pixel-fingerprint
+  check instead of re-running UIA, annotation, and grounding
+- the red highlight is click-through and overlaps a distance-adaptive glide
+- long text is pasted instead of typed character by character
+- the model receives ~5.5 KB of element data instead of ~18 KB, and the focused
+  tool profile is smaller, so each decision round is roughly twice as fast
+
+`analyze_screen_ui` measured **4.7 s → 0.56 s** for a fresh pass and **0.05 s**
+for a reuse on the reference machine. A live smoke test (one chat turn, then a
+read-only GUI analysis of VS Code) completed in 2.5 s and 4.3 s.
+
+### Application awareness and state feedback
+
+The agent no longer treats the desktop as anonymous pixels. `analyze_screen_ui`
+returns a compact **app guide** (`app`) with the app's shortcuts and workflow,
+`app_windows` (other windows of the same process), the preferred window, the
+recent action log, `window_foreground`, and the live focused control. Known
+profiles cover Outlook, File Explorer, Chrome/Edge/Firefox, Notepad, VS Code,
+Word/Excel/PowerPoint, and a generic Windows fallback. The guides encode
+human knowledge such as *Outlook's Ctrl+N opens a separate compose window*,
+*Explorer uses Ctrl+L instead of the breadcrumb address bar*, and *a browser
+window title is not the page heading*.
+
+Every `click_element`, `keyboard_type_text`, and `keyboard_press_keys` result
+contains an `outcome`:
+
+```text
+window_opened   new top-level windows (title, process, handle, active)
+window_closed   windows that disappeared
+title_changed   same window, new title (navigation, save, modified marker)
+focus           foreground window
+focused_control name/type of the live focused control
+ui_changed      whether anything changed
+```
+
+That feedback drives the next step: a newly opened compose window becomes the
+preferred window, and the agent is told not to click the control that opened it
+again. Repeating a click that produced no state change returns
+`loop_detected` with the recent actions, so a loop is broken instead of
+repeated. Text fields are exempt from that guard (clicking a field again is how
+a person refocuses it), and transient windows such as `Pop-upHost`, tooltips,
+and menus never become the app target.
+
+Keyboard input is now gated on a verified target: the analyzed window must be
+foreground (the backend force-activates it, including the Alt/AttachThreadInput
+unlock), and typing requires a text-capable control in that process and window.
+A click on Explorer's address bar that fails to focus the edit is recovered
+with Ctrl+L inside the same approved action. `start_program` returns
+`already_running` with the existing windows instead of launching a duplicate
+instance.
+
+### Real-application acceptance tests
+
+`backend/tests/live_real_apps.py` is an opt-in harness that drives the real
+agent, the real local model, real approvals, and real applications:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario outlook
+backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario browser
+backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario explorer
+backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario all
+```
+
+Measured on the reference machine with `qwen3-vl:8b-instruct`:
+
+| Scenario | What it proves | Result |
+| --- | --- | --- |
+| `outlook` | one compose window, To/Subject/Body filled exactly, no send, no loop | PASS (~60–120 s) |
+| `browser` | isolated Chrome profile, Ctrl+L navigation, reads the real page heading | PASS (~11–16 s) |
+| `explorer` | Ctrl+L navigation in a real Explorer window, then reads the new folder | PASS (~23–32 s) |
+
+The harness denies Send/Delete/Format actions, launches Chrome with an isolated
+`--user-data-dir`, discards Outlook drafts through the Outlook object model,
+and closes only the windows it created. Notepad is a shared tabbed app on this
+machine and games cannot be tested safely, so those are covered by the
+deterministic mock/e2e suite instead.
 
 ### Self-improvement and durable lessons
 
@@ -887,6 +1022,16 @@ system diagnosis collection, findings, chart generation, and tool dispatch.
 Ollama is not required for the tests; the vision tests use a fake embedder and
 fake capture/model methods, and the diagnosis tests use synthetic system data.
 
+The opt-in live harness drives the real model, real approvals, and real
+applications; it is not collected by pytest:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario all
+```
+
+It denies Send/Delete/Format actions, isolates Chrome in a throwaway profile,
+discards Outlook drafts through COM, and closes only its own windows.
+
 ## Frontend
 
 Ollama must be running. The desktop app starts the FastAPI backend itself as a
@@ -1023,3 +1168,11 @@ Ollama drops the oldest turns first. For complex chores, splitting the request
 into smaller steps (search, create, move a file) gives the most reliable
 results. A larger tool-calling model can use the same loop without backend
 changes.
+
+Small local models can still try to answer a combined *action + question*
+request from the currently visible state instead of performing the action
+("what is the folder name?" answered before Ctrl+L navigation). The runtime and
+prompt now enforce action-first ordering with foreground/focus checks, the
+`outcome` state deltas, and loop detection; the live real-app harness verifies
+this against Outlook, Chrome, and Explorer. If a model insists on the shortcut,
+split the request into an action turn and a question turn.

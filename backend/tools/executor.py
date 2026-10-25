@@ -191,6 +191,32 @@ class ToolExecutor:
             )
 
         def start_program(program_name: str) -> dict[str, Any]:
+            finder = getattr(self.automation, "app_windows", None)
+            if callable(finder):
+                try:
+                    existing = finder(program_name)
+                except Exception:  # noqa: BLE001 - detection is best effort
+                    existing = []
+                if existing:
+                    prefer = getattr(self.automation, "prefer_window", None)
+                    if callable(prefer):
+                        prefer(existing[0])
+                    return {
+                        "ok": True,
+                        "already_running": True,
+                        "windows": existing[:8],
+                        "message": (
+                            f"{program_name} is already running; use the "
+                            f"existing window '{existing[0]}' instead of "
+                            "opening another instance."
+                        ),
+                        "next_step": (
+                            "Call analyze_screen_ui with that exact window "
+                            "title. For a new document, use the app shortcut "
+                            "(for example Ctrl+N) inside the existing window."
+                        ),
+                    }
+
             before: set[str] = set()
             titles = getattr(self.automation, "visible_window_titles", None)
             if callable(titles):

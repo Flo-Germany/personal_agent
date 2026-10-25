@@ -49,6 +49,8 @@ CONTEXT_WINDOW_MESSAGES = 10
 # schemas already consume part of the context, so this leaves room for the
 # answer. Long tool loops keep the current request plus the most recent steps.
 CONTEXT_WINDOW_CHARS = 40000
+# Largest file body sent to the model. The UI still receives the full result.
+_MODEL_READ_CHARS = 12000
 # Wait for a quiet moment before extracting facts, so the learning call does
 # not compete with a rapid follow-up message.
 LEARNING_IDLE_SECONDS = 3.0
@@ -114,6 +116,253 @@ _META_STEP = re.compile(
     r"bitte)\b",
     re.IGNORECASE,
 )
+
+# Tool schemas are ~6k tokens, which directly slows generation on a local
+# model. Base + GUI tools are always sent (one stable prompt prefix for chat and
+# GUI work); the rest are added only when the request mentions them. Set
+# agent.dynamic_tools to false to always send every schema.
+_BASE_TOOL_NAMES = {
+    "propose_plan",
+    "run_powershell_query",
+    "run_powershell_action",
+    "start_program",
+    "open_file",
+    "read_file_content",
+    "search_system",
+}
+_GUI_TOOL_NAMES = {
+    "get_open_windows",
+    "read_window_content",
+    "get_desktop_context",
+    "analyze_screen_ui",
+    "analyze_screen",
+    "move_cursor_to",
+    "click_element",
+    "keyboard_type_text",
+    "keyboard_press_keys",
+}
+_FILE_TOOL_NAMES = {
+    "create_folder",
+    "create_file",
+    "copy_file",
+    "move_file_or_folder",
+    "delete_file_or_folder",
+    "unzip_file",
+}
+_FILE_HINT = re.compile(
+    r"\b(?:file|files|folder|folders|directory|subfolder|desktop|downloads|"
+    r"documents|pdf|docx?|txt|csv|xlsx?|zip|unzip|extract|copy|move|rename|"
+    r"delete|remove|create|mkdir|backup|organize|sort|note|notes|memo|"
+    r"report|write|script|json|yaml|config|log|ordner|datei|"
+    r"dateien|verzeichnis|kopiere|kopieren|verschiebe|verschieben|umbenennen|"
+    r"lösche|löschen|erstelle|erstellen|entpacke|entpacken|sichere|speichere|"
+    r"speichern|notiz|notizen|bericht|schreibe|schreiben|"
+    r"sortiere|organisiere)\b",
+    re.IGNORECASE,
+)
+_VISION_HINT = re.compile(
+    r"\b(?:image|images|photo|photos|picture|pictures|screenshot|wallpaper|"
+    r"jpg|jpeg|png|bild|bilder|foto|fotos)\b",
+    re.IGNORECASE,
+)
+_DIAGNOSIS_HINT = re.compile(
+    r"\b(?:diagnos\w*|health|benchmark|hardware|temperature|thermal|"
+    r"smart\w*|overheat\w*|slow|performance|uptime|event log|"
+    r"gesundheit|leistung|langsam|temperatur|diagnose)\b",
+    re.IGNORECASE,
+)
+
+
+def _profile_tool_names(message: str) -> set[str]:
+    """Pick the tool schemas a user request plausibly needs.
+
+    Base + GUI tools are always included so that chat and GUI work share one
+    stable prompt prefix: switching the tool list forces Ollama to re-evaluate
+    the whole prompt (several seconds), which would erase the gain from the
+    shorter schema list. File, image-search, and diagnosis tools are added only
+    when the request mentions them.
+    """
+    text = str(message or "")
+    names = set(_BASE_TOOL_NAMES) | set(_GUI_TOOL_NAMES)
+    if _FILE_HINT.search(text):
+        names |= _FILE_TOOL_NAMES
+    if _VISION_HINT.search(text):
+        names.add("semantic_image_search")
+    if _DIAGNOSIS_HINT.search(text):
+        names.add("system_diagnosis")
+    return names
+
+
+def _compact_element(element: Any) -> dict[str, Any] | None:
+    if not isinstance(element, dict):
+        return None
+    compact: dict[str, Any] = {
+        "id": element.get("id"),
+        "name": element.get("name"),
+        "type": element.get("type") or element.get("control_type"),
+    }
+    center = element.get("center")
+    if isinstance(center, (list, tuple)) and len(center) >= 2:
+        compact["center"] = [int(center[0]), int(center[1])]
+    if element.get("enabled") is False:
+        compact["disabled"] = True
+    return compact
+
+
+def _compact_context(context: Any) -> dict[str, Any] | None:
+    """Keep only the live-context fields the planner actually needs."""
+    if not isinstance(context, dict):
+        return None
+    active = context.get("active") or {}
+    focused = context.get("focused") or {}
+    compact: dict[str, Any] = {}
+    if active:
+        compact["active"] = {
+            "title": active.get("title"),
+            "process_name": active.get("process_name"),
+        }
+    if focused:
+        compact["focused"] = {
+            "name": focused.get("name"),
+            "control_type": focused.get("control_type"),
+        }
+    dialogs = [
+        item.get("title")
+        for item in context.get("dialogs") or []
+        if isinstance(item, dict) and item.get("title")
+    ]
+    if dialogs:
+        compact["dialogs"] = dialogs
+    return compact or None
+
+
+def _compact_som_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Drop redundant SoM fields before the result is stored as model history.
+
+    The UI receives the full result; the model only needs IDs, names, centers,
+    and a short context. ``coordinate_map`` duplicated every element, and the
+    full context/window list added thousands of tokens to every later turn.
+    """
+    compact: dict[str, Any] = {
+        "ok": True,
+        "snapshot_id": result.get("snapshot_id"),
+        "window_title": result.get("window_title"),
+        "display": result.get("display"),
+        "process_name": result.get("process_name"),
+        "window_foreground": result.get("window_foreground"),
+        "app": result.get("app"),
+        "app_windows": result.get("app_windows"),
+        "preferred_window_title": result.get("preferred_window_title"),
+        "recent_actions": result.get("recent_actions"),
+        "grounding": result.get("grounding"),
+        "suggested_id": result.get("suggested_id"),
+        "suggested_element": _compact_element(result.get("suggested_element")),
+        "confidence": result.get("confidence"),
+        "message": result.get("message"),
+        "next_step": result.get("next_step"),
+        "elements": [
+            item
+            for item in (
+                _compact_element(element)
+                for element in result.get("elements") or []
+            )
+            if item is not None
+        ],
+    }
+    context = _compact_context(result.get("context"))
+    if context:
+        compact["context"] = context
+    for key in ("reused", "grounding_error", "element_missing", "context_changed"):
+        if result.get(key):
+            compact[key] = result[key]
+    return compact
+
+
+def _compact_desktop_context(result: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {"ok": True}
+    for key in ("app", "app_windows", "preferred_window_title", "recent_actions"):
+        if result.get(key):
+            compact[key] = result[key]
+    active = result.get("active") or {}
+    if isinstance(active, dict) and active:
+        compact["active"] = {
+            "title": active.get("title"),
+            "process_name": active.get("process_name"),
+            "rect": active.get("rect"),
+            "minimized": active.get("minimized"),
+        }
+    focused = result.get("focused") or {}
+    if isinstance(focused, dict) and focused:
+        compact["focused"] = {
+            "name": focused.get("name"),
+            "control_type": focused.get("control_type"),
+            "text_capable": focused.get("text_capable"),
+        }
+    windows = []
+    for window in result.get("windows") or []:
+        if not isinstance(window, dict):
+            continue
+        windows.append(
+            {
+                "title": window.get("title"),
+                "process_name": window.get("process_name"),
+                "rect": window.get("rect"),
+                "minimized": window.get("minimized"),
+                "active": window.get("active"),
+            }
+        )
+    compact["windows"] = windows
+    dialogs = [
+        item.get("title")
+        for item in result.get("dialogs") or []
+        if isinstance(item, dict) and item.get("title")
+    ]
+    if dialogs:
+        compact["dialogs"] = dialogs
+    return compact
+
+
+def _model_facing_tool_result(name: str, result: dict[str, Any]) -> str:
+    """Serialize a tool result for conversation history (not for the UI)."""
+    try:
+        if name == "analyze_screen_ui" and result.get("ok"):
+            projected: Any = _compact_som_result(result)
+        elif name == "get_desktop_context" and result.get("ok"):
+            projected = _compact_desktop_context(result)
+        elif (
+            name == "read_file_content"
+            and result.get("ok")
+            and isinstance(result.get("content"), str)
+        ):
+            projected = _compact_read_file(result)
+        else:
+            projected = result
+        return json.dumps(projected, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 - never lose a result over projection
+        logger.debug("Could not compact tool result %s", name, exc_info=True)
+        return json.dumps(result, ensure_ascii=False, default=str)
+
+
+def _compact_read_file(result: dict[str, Any]) -> dict[str, Any]:
+    """Cap a file body before it enters the model context.
+
+    A 55 KB README is roughly 14k tokens. Combined with the system prompt and
+    tool schemas it overflows the context window; Ollama then drops the oldest
+    tokens, which can remove the answer the model just read, and the agent
+    retries the same read forever. The UI still shows the full result.
+    """
+    projection = dict(result)
+    content = projection.get("content")
+    if isinstance(content, str) and len(content) > _MODEL_READ_CHARS:
+        projection["content"] = (
+            content[:_MODEL_READ_CHARS]
+            + f"\n\n[Truncated: showing the first {_MODEL_READ_CHARS} of "
+            f"{len(content)} characters. Use run_powershell_query with "
+            "Get-Content/Select-String to inspect a specific part.]"
+        )
+        projection["truncated"] = True
+    return projection
+
 
 _FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
 _SCREEN_REQUEST = re.compile(
@@ -715,7 +964,7 @@ class ChatService:
                     self._store.append(
                         conversation_id,
                         "tool",
-                        json.dumps(result, ensure_ascii=False, default=str),
+                        _model_facing_tool_result(name, result),
                         tool_call_id=call["id"],
                         name=name,
                     )
@@ -881,7 +1130,7 @@ class ChatService:
                 self._store.append(
                     conversation_id,
                     "tool",
-                    json.dumps(result, ensure_ascii=False, default=str),
+                    _model_facing_tool_result("analyze_screen", result),
                     tool_call_id=call["id"],
                     name="analyze_screen",
                 )
@@ -927,6 +1176,25 @@ class ChatService:
                 self._clear_interrupt(conversation_id)
                 self._end_turn(conversation_id)
 
+    def _tool_schemas(self, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the tool schemas relevant to the current request."""
+        if not self._settings.agent.dynamic_tools:
+            return TOOL_SCHEMAS
+
+        message = ""
+        for item in reversed(history):
+            if item.get("role") == "user":
+                message = str(item.get("content") or "")
+                break
+
+        names = _profile_tool_names(message)
+        selected = [
+            schema
+            for schema in TOOL_SCHEMAS
+            if schema["function"]["name"] in names
+        ]
+        return selected or TOOL_SCHEMAS
+
     def _screen_context(
         self,
         conversation_id: str,
@@ -942,11 +1210,10 @@ class ChatService:
             return None
         if self._settings.vision.screen_model != self._settings.ollama.model:
             return None
+        history = self._store.load(conversation_id)
         return {
-            "system_prompt": self._system_prompt(
-                self._store.load(conversation_id)
-            ),
-            "tools": TOOL_SCHEMAS,
+            "system_prompt": self._system_prompt(history),
+            "tools": self._tool_schemas(history),
         }
 
     def _stream_with_improvement(
@@ -972,6 +1239,89 @@ class ChatService:
                     success=False,
                 )
             yield event
+
+    @staticmethod
+    def _repeated_read_result(name: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "repeated": True,
+            "tool": name,
+            "error": (
+                "This exact read-only call already ran twice with the same "
+                "arguments. Do not call it again; answer with the evidence you "
+                "already have."
+            ),
+        }
+
+    @staticmethod
+    def _note_read_call(
+        state: dict[str, Any],
+        signature: tuple[str, str],
+    ) -> bool:
+        """Track consecutive identical read-only calls.
+
+        The third identical call in a row is treated as a loop. A legitimate
+        read -> edit -> verify workflow is not affected because any other tool
+        call resets the counter.
+        """
+        if state.get("signature") == signature:
+            state["count"] = int(state.get("count", 0)) + 1
+        else:
+            state["signature"] = signature
+            state["count"] = 1
+        return int(state["count"]) >= 3
+
+    def _summarize_without_tools(
+        self,
+        conversation_id: str,
+        *,
+        message: str,
+        nudge_text: str,
+    ) -> Iterator[dict[str, Any]]:
+        """Force a final answer from the evidence already collected."""
+        yield {
+            "type": "status",
+            "conversation_id": conversation_id,
+            "phase": "thinking",
+            "message": message,
+        }
+        try:
+            outcome = yield from self._stream_completion(
+                conversation_id,
+                self._store.load(conversation_id),
+                nudge=True,
+                nudge_text=nudge_text,
+                include_tools=False,
+            )
+        except LLMError as exc:
+            logger.warning("Tool-free summary failed: %s", exc)
+            raise LLMError(
+                "The agent could not finish the request.",
+                status_code=502,
+            ) from exc
+
+        choices = getattr(outcome.completion, "choices", None)
+        summary = ""
+        if choices:
+            summary = getattr(choices[0].message, "content", "") or ""
+        reply = self._normalize_reply(summary).strip()
+        if not reply or self._looks_like_raw_tool_call(reply):
+            raise LLMError(
+                "The agent could not finish the request.",
+                status_code=502,
+            )
+        self._store.append(conversation_id, "assistant", reply)
+        self._turn_plans.pop(conversation_id, None)
+        yield {
+            "type": "final",
+            "conversation_id": conversation_id,
+            "reply": reply,
+            "streamed": (
+                outcome.streamed_content is not None
+                and self._normalize_reply(outcome.streamed_content).strip()
+                == reply
+            ),
+        }
 
     def _execute_tool(
         self,
@@ -1034,9 +1384,27 @@ class ChatService:
         executed = set(executed_signatures or ())
         auto_approved_actions = 0
         round_index = 0
+        force_summary = False
+        read_repeat: dict[str, Any] = {"signature": None, "count": 0}
 
         while True:
             self._raise_if_cancelled(conversation_id)
+            if force_summary:
+                yield from self._summarize_without_tools(
+                    conversation_id,
+                    message=(
+                        "The same read was repeated; summarizing the evidence "
+                        "collected so far..."
+                    ),
+                    nudge_text=(
+                        "You repeated the same read-only tool call with "
+                        "identical arguments. Do not call any more tools. "
+                        "Answer using the results you already have, and state "
+                        "clearly what could not be determined. Never claim an "
+                        "action succeeded unless a tool result confirmed it."
+                    ),
+                )
+                return
             yield {
                 "type": "status",
                 "conversation_id": conversation_id,
@@ -1530,7 +1898,14 @@ class ChatService:
 
                     if requires_confirmation:
                         signature = self._call_signature(name, arguments)
-                        if signature in executed:
+                        # Keyboard input is often legitimately repeated (Tab
+                        # between fields, the same text in two fields). Only
+                        # deduplicate actions whose exact repetition is a loop.
+                        dedupe = name not in {
+                            "keyboard_press_keys",
+                            "keyboard_type_text",
+                        }
+                        if dedupe and signature in executed:
                             duplicate = True
                             result = {
                                 "ok": False,
@@ -1540,7 +1915,8 @@ class ChatService:
                                 ),
                             }
                         else:
-                            executed.add(signature)
+                            if dedupe:
+                                executed.add(signature)
                             auto_approved_actions += 1
                             if (
                                 max_auto_approved > 0
@@ -1565,19 +1941,26 @@ class ChatService:
                                 conversation_id,
                             )
                     else:
-                        yield {
-                            "type": "status",
-                            "conversation_id": conversation_id,
-                            "phase": "tool_started",
-                            "tool": name,
-                            "arguments": parsed,
-                            "message": _tool_status_message(name, parsed),
-                        }
-                        result = self._execute_tool(
-                            name,
-                            arguments,
-                            conversation_id,
-                        )
+                        if self._note_read_call(
+                            read_repeat,
+                            self._call_signature(name, arguments),
+                        ):
+                            force_summary = True
+                            result = self._repeated_read_result(name)
+                        else:
+                            yield {
+                                "type": "status",
+                                "conversation_id": conversation_id,
+                                "phase": "tool_started",
+                                "tool": name,
+                                "arguments": parsed,
+                                "message": _tool_status_message(name, parsed),
+                            }
+                            result = self._execute_tool(
+                                name,
+                                arguments,
+                                conversation_id,
+                            )
 
                     if name == "propose_plan":
                         self._record_plan(conversation_id, result)
@@ -1585,7 +1968,7 @@ class ChatService:
                     self._store.append(
                         conversation_id,
                         "tool",
-                        json.dumps(result, ensure_ascii=False, default=str),
+                        _model_facing_tool_result(name, result),
                         tool_call_id=call["id"],
                         name=name,
                     )
@@ -1608,21 +1991,28 @@ class ChatService:
                 name = call["function"]["name"]
                 arguments = call["function"]["arguments"]
                 parsed = _parse_arguments(call)
-                yield {
-                    "type": "status",
-                    "conversation_id": conversation_id,
-                    "phase": "tool_started",
-                    "tool": name,
-                    "arguments": parsed,
-                    "message": _tool_status_message(name, parsed),
-                }
-                result = self._execute_tool(name, arguments, conversation_id)
+                if self._note_read_call(
+                    read_repeat,
+                    self._call_signature(name, arguments),
+                ):
+                    force_summary = True
+                    result = self._repeated_read_result(name)
+                else:
+                    yield {
+                        "type": "status",
+                        "conversation_id": conversation_id,
+                        "phase": "tool_started",
+                        "tool": name,
+                        "arguments": parsed,
+                        "message": _tool_status_message(name, parsed),
+                    }
+                    result = self._execute_tool(name, arguments, conversation_id)
                 if name == "propose_plan":
                     self._record_plan(conversation_id, result)
                 self._store.append(
                     conversation_id,
                     "tool",
-                    json.dumps(result, ensure_ascii=False, default=str),
+                    _model_facing_tool_result(name, result),
                     tool_call_id=call["id"],
                     name=name,
                 )
@@ -1754,7 +2144,9 @@ class ChatService:
             self._client.chat.completions.create(
                 model=self._settings.ollama.model,
                 messages=messages,
-                tools=TOOL_SCHEMAS,
+                tools=self._tool_schemas(
+                    [{"role": "user", "content": "Reply with OK."}]
+                ),
                 tool_choice="auto",
                 temperature=0.0,
                 max_tokens=1,
@@ -1976,7 +2368,7 @@ class ChatService:
         chunks = stream_chat(
             model=model,
             messages=messages,
-            tools=TOOL_SCHEMAS if include_tools else None,
+            tools=self._tool_schemas(history) if include_tools else None,
             tool_choice=tool_choice,
             temperature=self._settings.ollama.temperature,
         )
@@ -2126,7 +2518,7 @@ class ChatService:
             return self._client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=TOOL_SCHEMAS if include_tools else None,
+                tools=self._tool_schemas(history) if include_tools else None,
                 tool_choice=tool_choice,
                 temperature=self._settings.ollama.temperature,
             )

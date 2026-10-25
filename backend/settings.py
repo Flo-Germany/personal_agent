@@ -108,6 +108,10 @@ class AgentSettings(BaseModel):
     # memory/knowledge_base.md.
     self_improvement_enabled: bool = True
     self_improvement_workflow_min_tools: int = Field(default=3, ge=1, le=20)
+    # Send only the tool schemas the request plausibly needs. The full set is
+    # ~6k tokens; a focused set keeps prompt evaluation and generation fast on
+    # a local model. Set to false to always send every tool schema.
+    dynamic_tools: bool = True
 
 
 class MemorySettings(BaseModel):
@@ -154,6 +158,11 @@ class VisionSettings(BaseModel):
     min_result_z: float = Field(default=2.4, ge=0.0, le=10.0)
     dedupe_threshold: float = Field(default=0.995, ge=0.0, le=1.0)
     screen_model: str = "qwen3-vl:8b-instruct"
+    # Grounding-only model for Set-of-Mark element selection. Empty means the
+    # screen model is used. A small dedicated model shortens each GUI step
+    # without touching the chat planner, and can run next to it in VRAM.
+    ground_model: str = ""
+    ground_context_window: int = Field(default=8192, ge=2048, le=65536)
     screen_timeout_seconds: float = Field(default=180.0, gt=0.0, le=600.0)
     screen_max_width: int = Field(default=1600, ge=320, le=3840)
     screen_max_tokens: int = Field(default=700, ge=64, le=8192)
@@ -187,18 +196,42 @@ class AutomationSettings(BaseModel):
     """GUI control: Set-of-Mark detection, smooth pointer, physical killswitch."""
 
     enabled: bool = True
-    move_duration_seconds: float = Field(default=0.9, ge=0.1, le=5.0)
-    highlight_seconds: float = Field(default=0.5, ge=0.0, le=2.0)
+    move_duration_seconds: float = Field(default=0.4, ge=0.1, le=5.0)
+    highlight_seconds: float = Field(default=0.3, ge=0.0, le=2.0)
     arm_delay_seconds: float = Field(default=0.4, ge=0.0, le=2.0)
     move_threshold_pixels: int = Field(default=4, ge=1, le=50)
-    max_elements: int = Field(default=60, ge=5, le=200)
+    max_elements: int = Field(default=140, ge=5, le=400)
+    # The annotated screenshot labels at most this many controls (priority:
+    # input fields first, then lists/tabs, then buttons). The model still gets
+    # the full element list, and clicks work by name/ID even when an element is
+    # not drawn in the image.
+    max_annotated_elements: int = Field(default=60, ge=5, le=200)
     min_element_size: int = Field(default=8, ge=2, le=100)
     max_element_scan: int = Field(default=3000, ge=100, le=20000)
     max_element_depth: int = Field(default=20, ge=2, le=60)
     type_interval_seconds: float = Field(default=0.02, ge=0.0, le=0.2)
+    # How long to watch the desktop for a window change after an action. A
+    # short value keeps actions snappy; apps that open windows slowly can use a
+    # larger one.
+    action_settle_seconds: float = Field(default=0.9, ge=0.0, le=5.0)
+    # Require keyboard input to come from the analyzed window that is actually
+    # foreground. Disable only in unit tests.
+    verify_foreground: bool = True
     screenshot_dir: Path = Path("memory/screenshots")
     screenshot_max_width: int = Field(default=1600, ge=640, le=3840)
+    # Keep only the newest annotated snapshots so a long GUI task does not
+    # accumulate hundreds of megabytes in memory/screenshots.
+    screenshot_keep: int = Field(default=200, ge=10, le=5000)
     visual_fallback: bool = True
+    # Skip the grounding model when an element name already matches the intent
+    # unambiguously. This saves a VLM round per GUI step and avoids wrong picks
+    # on well-labeled native controls.
+    local_grounding: bool = True
+    # Reuse the previous snapshot when the window pixels did not change (for
+    # example after typing into a field). Recomputed from a fingerprint of the
+    # live screen, so stale IDs cannot silently be used.
+    snapshot_reuse_seconds: float = Field(default=20.0, ge=0.0, le=300.0)
+    snapshot_reuse_threshold: float = Field(default=0.02, ge=0.0, le=0.5)
     # Re-check the live window/process/rect/focus immediately before an action.
     pre_action_validation: bool = True
     validation_tolerance_px: int = Field(default=8, ge=1, le=100)

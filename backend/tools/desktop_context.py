@@ -83,6 +83,77 @@ def _window_text(hwnd: int) -> str:
     return buffer.value.strip()
 
 
+def foreground_handle() -> int:
+    try:
+        return int(_user32.GetForegroundWindow() or 0)
+    except Exception:  # noqa: BLE001 - best effort
+        return 0
+
+
+def force_foreground(hwnd: int) -> bool:
+    """Bring a window to the foreground so keyboard input reaches it.
+
+    A background process cannot always call SetForegroundWindow directly.
+    Attaching to the current foreground thread (the usual trick used by
+    automation tools) lifts that restriction; an Alt tap is the last resort.
+    """
+    if os.name != "nt":
+        return False
+    target = int(hwnd or 0)
+    if not target:
+        return False
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = ctypes.c_void_p
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = [
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.BOOL,
+    ]
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+    if int(user32.GetForegroundWindow() or 0) == target:
+        return True
+
+    user32.ShowWindow(target, 9)  # SW_RESTORE
+    foreground = int(user32.GetForegroundWindow() or 0)
+    foreground_thread = (
+        int(user32.GetWindowThreadProcessId(foreground, None))
+        if foreground
+        else 0
+    )
+    current_thread = int(kernel32.GetCurrentThreadId())
+    attached = False
+    if foreground_thread and foreground_thread != current_thread:
+        attached = bool(
+            user32.AttachThreadInput(current_thread, foreground_thread, True)
+        )
+    try:
+        user32.BringWindowToTop(target)
+        user32.SetForegroundWindow(target)
+        if int(user32.GetForegroundWindow() or 0) == target:
+            return True
+
+        # Last resort: an Alt tap releases the foreground lock on some builds.
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.SetForegroundWindow(target)
+        return int(user32.GetForegroundWindow() or 0) == target
+    finally:
+        if attached:
+            user32.AttachThreadInput(current_thread, foreground_thread, False)
+
+
 def _class_name(hwnd: int) -> str:
     buffer = ctypes.create_unicode_buffer(256)
     _user32.GetClassNameW(hwnd, buffer, 256)
@@ -282,6 +353,53 @@ class DesktopContextService:
             focused=focused,
             captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         )
+
+    def quick_windows(self) -> dict[int, dict[str, Any]]:
+        """Cheap visible-window snapshot for post-action change detection.
+
+        Unlike :meth:`capture` this deliberately skips process details and the
+        UIA focus query, so it can be polled several times per second without
+        dominating a GUI action.
+        """
+        windows: dict[int, dict[str, Any]] = {}
+        active = int(_user32.GetForegroundWindow())
+
+        def callback(hwnd: int, _lparam: int) -> bool:
+            try:
+                if not _user32.IsWindowVisible(hwnd):
+                    return True
+                title = _window_text(hwnd)
+                if not title:
+                    return True
+                rect = _window_rect(hwnd)
+                if rect is None:
+                    return True
+                if rect[2] - rect[0] < 40 or rect[3] - rect[1] < 30:
+                    return True
+                windows[int(hwnd)] = {
+                    "handle": int(hwnd),
+                    "title": title,
+                    "process_id": _process_id(hwnd),
+                    "rect": [rect[0], rect[1], rect[2], rect[3]],
+                    "minimized": bool(_user32.IsIconic(hwnd)),
+                    "active": int(hwnd) == active,
+                }
+            except Exception:  # noqa: BLE001 - a window can vanish mid-enum
+                logger.debug("Quick window enumeration skipped one window")
+            return True
+
+        _user32.EnumWindows(_ENUM_PROC(callback), 0)
+        return windows
+
+    @staticmethod
+    def state_signature(windows: dict[int, dict[str, Any]]) -> str:
+        """Stable hash of window titles, positions, and focus."""
+        raw = "|".join(
+            f"{handle}:{item.get('title')}:{item.get('process_id')}:"
+            f"{item.get('rect')}:{item.get('minimized')}:{item.get('active')}"
+            for handle, item in sorted(windows.items())
+        )
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     def focused_control(self) -> dict[str, Any] | None:
         """Return the UIA focused element, or None when it cannot be read."""

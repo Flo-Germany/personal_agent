@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
+import queue
 import string
 import threading
 import time
@@ -75,11 +77,31 @@ _ALLOWED_KEYS = {
 
 
 class OverlayHighlighter:
-    """Brief red ring around the target, drawn with a transparent Tk overlay."""
+    """Brief red ring around the target, drawn with a transparent Tk overlay.
+
+    The overlay lives on one background thread and is click-through, so showing
+    it never blocks the cursor glide and never intercepts the click that
+    follows. Earlier versions created a Tk root and joined the thread for the
+    full highlight duration, which added about half a second to every action.
+    """
+
+    # Extended window styles that let mouse input fall through the overlay.
+    _GWL_EXSTYLE = -20
+    _WS_EX_LAYERED = 0x00080000
+    _WS_EX_TRANSPARENT = 0x00000020
+    _WS_EX_NOACTIVATE = 0x08000000
+    _WS_EX_TOOLWINDOW = 0x00000080
 
     def __init__(self, settings: AutomationSettings) -> None:
         self.settings = settings
+        self._requests: queue.Queue[tuple[int, int, float] | None] = queue.Queue(
+            maxsize=1
+        )
         self._lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._broken = False
+        self._hide_requested = threading.Event()
+        self._visible = threading.Event()
 
     def show(self, x: int, y: int, duration: float | None = None) -> None:
         seconds = (
@@ -87,21 +109,52 @@ class OverlayHighlighter:
             if duration is None
             else max(0.0, float(duration))
         )
-        if seconds <= 0:
+        if seconds <= 0 or self._broken:
             return
 
-        # Serialize overlays so two actions cannot leave orphan windows.
         with self._lock:
-            thread = threading.Thread(
-                target=self._run,
-                args=(int(x), int(y), seconds),
-                name="agent-cursor-highlight",
-                daemon=True,
-            )
-            thread.start()
-            thread.join(timeout=seconds + 1.0)
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(
+                    target=self._run,
+                    name="agent-cursor-highlight",
+                    daemon=True,
+                )
+                self._worker.start()
 
-    def _run(self, x: int, y: int, duration: float) -> None:
+        self._hide_requested.clear()
+        request = (int(x), int(y), seconds)
+        try:
+            self._requests.put_nowait(request)
+        except queue.Full:
+            # A newer target supersedes a ring that has not been drawn yet.
+            try:
+                self._requests.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._requests.put_nowait(request)
+            except queue.Full:
+                pass
+
+    def hide(self, timeout: float = 0.3) -> None:
+        """Withdraw the ring before a synthetic click.
+
+        The ring is click-through on Windows, but hiding it first makes the
+        click deterministic even if the OS refuses the extended style.
+        """
+        if self._worker is None or not self._worker.is_alive():
+            return
+        self._hide_requested.set()
+        # Drop a ring that was queued but not drawn yet.
+        try:
+            self._requests.get_nowait()
+        except queue.Empty:
+            pass
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self._visible.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    def _run(self) -> None:
         try:
             import tkinter as tk
 
@@ -124,15 +177,6 @@ class OverlayHighlighter:
                 window.attributes("-transparentcolor", background)
             except tk.TclError:
                 background = "black"
-
-            try:
-                window.attributes("-disabled", True)
-            except tk.TclError:
-                pass
-
-            left = x - size // 2
-            top = y - size // 2
-            window.geometry(f"{size}x{size}{left:+d}{top:+d}")
 
             canvas = tk.Canvas(
                 window,
@@ -159,11 +203,81 @@ class OverlayHighlighter:
                 fill="#ff3b30",
                 outline="",
             )
-
-            root.after(max(1, int(duration * 1000)), root.destroy)
-            root.mainloop()
+            window.withdraw()
+            # Create the native window once before the first request.
+            window.geometry(f"{size}x{size}-10000-10000")
+            window.deiconify()
+            window.update_idletasks()
+            window.withdraw()
         except Exception:  # noqa: BLE001 - a failed highlight must not fail an action
-            logger.debug("Cursor highlight overlay failed", exc_info=True)
+            logger.debug("Cursor highlight overlay failed to initialise", exc_info=True)
+            self._broken = True
+            return
+
+        while True:
+            request = self._requests.get()
+            if request is None:
+                break
+            x, y, duration = request
+            try:
+                window.geometry(f"{size}x{size}{x - size // 2:+d}{y - size // 2:+d}")
+                window.deiconify()
+                window.update_idletasks()
+                # Tk re-applies its own window styles on map, so apply the
+                # click-through bits after every deiconify.
+                self._make_click_through(window)
+                self._visible.set()
+                deadline = time.monotonic() + duration
+                while (
+                    time.monotonic() < deadline
+                    and not self._hide_requested.is_set()
+                ):
+                    root.update()
+                    time.sleep(0.01)
+                window.withdraw()
+                self._visible.clear()
+                root.update()
+            except Exception:  # noqa: BLE001 - keep the worker alive
+                logger.debug("Cursor highlight draw failed", exc_info=True)
+                self._visible.clear()
+
+        try:
+            root.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @classmethod
+    def _make_click_through(cls, window: Any) -> None:
+        if os.name != "nt":
+            return
+        try:
+            window.update_idletasks()
+            child = int(window.winfo_id())
+            user32 = ctypes.windll.user32
+            get_style = user32.GetWindowLongW
+            get_style.restype = ctypes.c_long
+            get_style.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            set_style = user32.SetWindowLongW
+            set_style.restype = ctypes.c_long
+            set_style.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+            get_ancestor = user32.GetAncestor
+            get_ancestor.restype = ctypes.c_void_p
+            get_ancestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+
+            # winfo_id() is Tk's child window; the visible top-level wrapper is
+            # its GA_ROOT ancestor. Both need the transparent hit-test bits.
+            top = int(get_ancestor(child, 2) or 0) or child
+            bits = (
+                cls._WS_EX_LAYERED
+                | cls._WS_EX_TRANSPARENT
+                | cls._WS_EX_NOACTIVATE
+                | cls._WS_EX_TOOLWINDOW
+            )
+            for hwnd in {child, top}:
+                style = int(get_style(hwnd, cls._GWL_EXSTYLE))
+                set_style(hwnd, cls._GWL_EXSTYLE, style | bits)
+        except Exception:  # noqa: BLE001 - best effort, highlights still work
+            logger.debug("Could not make the highlight click-through", exc_info=True)
 
 
 class SmoothPointer:
@@ -227,23 +341,30 @@ class SmoothPointer:
         x, y = self._validate_point(int(x), int(y))
         self.guard.check()
 
-        seconds = (
-            self.settings.move_duration_seconds
-            if duration is None
-            else float(duration)
-        )
-        seconds = max(0.15, min(5.0, seconds))
-
-        if highlight:
-            self.highlighter.show(x, y, self.settings.highlight_seconds)
-            self.guard.check()
-
         try:
             start_x, start_y = page.position()
         except Exception:  # noqa: BLE001
             start_x, start_y = x, y
 
-        steps = max(10, min(90, int(seconds * 35)))
+        if duration is None:
+            # Short hops do not need most of the configured budget; long
+            # glides still stay smooth and visible.
+            distance = math.hypot(x - start_x, y - start_y)
+            seconds = min(
+                float(self.settings.move_duration_seconds),
+                0.12 + distance / 3000.0,
+            )
+        else:
+            seconds = float(duration)
+        seconds = max(0.12, min(5.0, seconds))
+
+        if highlight:
+            # The ring is click-through and drawn on a background thread, so it
+            # can overlap the glide instead of delaying it.
+            self.highlighter.show(x, y, self.settings.highlight_seconds)
+            self.guard.check()
+
+        steps = max(8, min(90, int(seconds * 45)))
         for index in range(1, steps + 1):
             self.guard.check()
             fraction = index / steps
@@ -288,6 +409,10 @@ class SmoothPointer:
 
         self.move_to(x, y, duration=duration, highlight=highlight)
         self.guard.check()
+        # Never let the highlight overlay sit between the pointer and the
+        # target when the synthetic click is delivered.
+        self.highlighter.hide()
+        self.guard.check()
         try:
             with self.guard.synthetic():
                 page.click(
@@ -318,9 +443,15 @@ class SmoothPointer:
         )
 
         self.guard.check()
-        if _needs_clipboard(value):
-            # Layout-independent path for @, :, !, umlauts, and long text.
-            self._paste_unicode(page, value)
+        # Long strings are pasted even when every character is layout-safe:
+        # typing 200 characters costs several seconds and risks dropped keys.
+        if _needs_clipboard(value) or len(value) >= 48:
+            if not self._paste_unicode(page, value):
+                if _needs_clipboard(value):
+                    raise ValueError(
+                        "Typing non-ASCII text requires the pyperclip package."
+                    )
+                self._type_ascii(page, value, delay)
         else:
             self._type_ascii(page, value, delay)
 
@@ -346,13 +477,12 @@ class SmoothPointer:
                 if delay:
                     time.sleep(delay)
 
-    def _paste_unicode(self, page: Any, text: str) -> None:
+    def _paste_unicode(self, page: Any, text: str) -> bool:
         try:
             import pyperclip
         except Exception as exc:  # noqa: BLE001
-            raise ValueError(
-                "Typing non-ASCII text requires the pyperclip package."
-            ) from exc
+            logger.debug("pyperclip is unavailable: %s", exc)
+            return False
 
         previous: str | None = None
         try:
@@ -360,7 +490,12 @@ class SmoothPointer:
         except Exception:  # noqa: BLE001
             previous = None
 
-        pyperclip.copy(text)
+        try:
+            pyperclip.copy(text)
+        except Exception:  # noqa: BLE001 - clipboard may be locked
+            logger.debug("Could not copy text for paste", exc_info=True)
+            return False
+
         self.guard.check()
         try:
             with self.guard.synthetic():
@@ -373,6 +508,7 @@ class SmoothPointer:
                     pyperclip.copy(previous)
                 except Exception:  # noqa: BLE001
                     pass
+        return True
 
     def press_keys(
         self,

@@ -10,7 +10,12 @@ from typing import Any
 
 import pytest
 
-from agent.chat import ChatService, ConfirmationRequired
+from agent.chat import (
+    ChatService,
+    ConfirmationRequired,
+    _model_facing_tool_result,
+    _profile_tool_names,
+)
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import AgentSettings, MemorySettings, OllamaSettings, Settings
@@ -904,7 +909,14 @@ def test_screen_analysis_asks_for_a_display_then_uses_the_choice(
     assert vision.calls == [("What is on my screen?", 2)]
     assert vision.contexts[0]["system_prompt"] is not None
     assert "You are Nova" in vision.contexts[0]["system_prompt"]
-    assert vision.contexts[0]["tools"] == TOOL_SCHEMAS
+    # The vision request reuses the chat's focused tool profile (dynamic_tools
+    # is on by default), not the full schema list.
+    tool_names = {
+        schema["function"]["name"]
+        for schema in vision.contexts[0]["tools"]
+    }
+    assert {"analyze_screen", "analyze_screen_ui"} <= tool_names
+    assert len(vision.contexts[0]["tools"]) < len(TOOL_SCHEMAS)
     assert final_event(resumed)["reply"] == (
         "The main display shows a browser."
     )
@@ -1622,12 +1634,14 @@ def test_unlimited_tool_rounds_support_more_than_one_hundred_steps(
 ) -> None:
     note = tmp_path / "note.txt"
     note.write_text("hello", encoding="utf-8")
+    other = tmp_path / "other.txt"
+    other.write_text("hello again", encoding="utf-8")
     rounds = 105
     messages = [
         tool_calls_message(
             tool_call(
                 "read_file_content",
-                {"path": str(note)},
+                {"path": str(note if index % 2 == 0 else other)},
                 f"call_{index}",
             )
         )
@@ -1847,4 +1861,38 @@ def test_read_only_loop_summarizes_at_max_rounds(tmp_path: Path) -> None:
         "assistant",
     ]
     assert len(client.completions.requests) == 3
+    assert client.completions.requests[-1]["tools"] is None
+
+
+def test_repeated_identical_reads_stop_with_a_tool_free_summary(
+    tmp_path: Path,
+) -> None:
+    note = tmp_path / "note.txt"
+    note.write_text("Remember the milk.", encoding="utf-8")
+    call = tool_call("read_file_content", {"path": str(note)})
+    service, store, client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(call),
+            tool_calls_message(call),
+            tool_calls_message(call),
+            content_message("The note says: Remember the milk."),
+        ],
+        max_iterations=0,
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Read the note."))
+
+    results = [event for event in events if event["type"] == "tool_result"]
+    assert len(results) == 3
+    assert results[0]["ok"] is True
+    assert results[1]["ok"] is True
+    assert results[2]["ok"] is False
+    assert results[2]["result"]["repeated"] is True
+    assert final_event(events)["reply"] == (
+        "The note says: Remember the milk."
+    )
+    # The final answer is produced without tools after the third repeat.
+    assert len(client.completions.requests) == 4
     assert client.completions.requests[-1]["tools"] is None

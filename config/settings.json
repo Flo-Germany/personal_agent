@@ -23,7 +23,8 @@
     "max_auto_approved_actions": 0,
     "approval_ttl_seconds": 600,
     "self_improvement_enabled": true,
-    "self_improvement_workflow_min_tools": 3
+    "self_improvement_workflow_min_tools": 3,
+    "dynamic_tools": true
   },
   "memory": {
     "knowledge_base_path": "memory/knowledge_base.md",
@@ -42,13 +43,20 @@
   },
   "automation": {
     "enabled": true,
-    "move_duration_seconds": 0.9,
-    "highlight_seconds": 0.5,
+    "move_duration_seconds": 0.4,
+    "highlight_seconds": 0.3,
     "arm_delay_seconds": 0.4,
     "move_threshold_pixels": 4,
-    "max_elements": 60,
+    "max_elements": 140,
+    "max_annotated_elements": 60,
     "type_interval_seconds": 0.02,
+    "action_settle_seconds": 0.9,
+    "verify_foreground": true,
+    "screenshot_keep": 200,
     "visual_fallback": true,
+    "local_grounding": true,
+    "snapshot_reuse_seconds": 20,
+    "snapshot_reuse_threshold": 0.02,
     "pre_action_validation": true,
     "validation_tolerance_px": 8
   },
@@ -66,6 +74,8 @@
     "min_result_z": 2.4,
     "dedupe_threshold": 0.995,
     "screen_model": "qwen3-vl:8b-instruct",
+    "ground_model": "",
+    "ground_context_window": 8192,
     "screen_timeout_seconds": 180,
     "screen_max_width": 1600,
     "screen_max_tokens": 700

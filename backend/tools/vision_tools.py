@@ -1258,6 +1258,8 @@ class VisionService:
         tools: Sequence[dict[str, Any]] | None = None,
         instruction: str | None = None,
         max_tokens: int | None = None,
+        model: str | None = None,
+        context_window: int | None = None,
     ) -> str:
         base = self.ollama_base_url.rstrip("/")
         if base.endswith("/v1"):
@@ -1292,11 +1294,16 @@ class VisionService:
                 "temperature": 0.2,
                 "num_predict": max_tokens or self.settings.screen_max_tokens,
             }
-            if self.context_window:
-                options["num_ctx"] = int(self.context_window)
+            window = (
+                int(context_window)
+                if context_window
+                else int(self.context_window or 0)
+            )
+            if window:
+                options["num_ctx"] = window
 
             payload: dict[str, Any] = {
-                "model": self.settings.screen_model,
+                "model": model or self.settings.screen_model,
                 "messages": messages,
                 "stream": False,
                 "keep_alive": self.keep_alive_seconds,
@@ -1394,6 +1401,13 @@ class VisionService:
                 "extra text, or chain-of-thought."
             ),
             max_tokens=160,
+            model=self.settings.ground_model or self.settings.screen_model,
+            context_window=(
+                self.settings.ground_context_window
+                if self.settings.ground_model
+                and self.settings.ground_model != self.settings.screen_model
+                else None
+            ),
         )
 
     def analyze_screen(

@@ -87,6 +87,41 @@ _TYPE_COLORS = {
 }
 _DEFAULT_COLOR = (251, 191, 36)
 
+# Which controls get a numbered box in the annotated screenshot. Input fields
+# are the most valuable visual targets; ribbon/toolbar buttons are usually
+# better handled by name (local grounding) or an app shortcut.
+_ANNOTATION_PRIORITY = {
+    "Edit": 0,
+    "Document": 0,
+    "RichEdit": 0,
+    "ComboBox": 0,
+    "CheckBox": 0,
+    "RadioButton": 0,
+    "ListItem": 1,
+    "TreeItem": 1,
+    "DataItem": 1,
+    "TabItem": 1,
+    "Hyperlink": 1,
+    "Slider": 1,
+    "Spinner": 1,
+    "Button": 2,
+    "SplitButton": 2,
+    "MenuItem": 2,
+}
+
+
+def _annotation_order(elements: Iterable[UIElement]) -> tuple[UIElement, ...]:
+    return tuple(
+        sorted(
+            elements,
+            key=lambda item: (
+                _ANNOTATION_PRIORITY.get(item.control_type, 1),
+                item.top,
+                item.left,
+            ),
+        )
+    )
+
 
 @dataclass(frozen=True)
 class DisplayBounds:
@@ -174,6 +209,9 @@ class SOMSnapshot:
     image_width: int
     image_height: int
     created_at: float
+    # IDs that have a numbered box in the annotated screenshot. The full element
+    # list can be larger; those extra controls are still clickable by name/ID.
+    annotated_ids: tuple[int, ...] = ()
     # Live-context anchors used by pre-action validation.
     window_handle: int | None = None
     process_id: int | None = None
@@ -208,6 +246,7 @@ class SOMSnapshot:
             "window_rect": list(self.window_rect) if self.window_rect else None,
             "elements": [item.to_public() for item in self.elements],
             "coordinate_map": self.coordinate_map(),
+            "annotated_ids": list(self.annotated_ids),
         }
 
 
@@ -337,19 +376,71 @@ def _display_for_rect(
 
 
 def _capture_display(monitor: DisplayBounds):
+    return _capture_region(
+        (monitor.left, monitor.top, monitor.right, monitor.bottom)
+    )
+
+
+def _capture_region(rect: tuple[int, int, int, int]):
+    """Capture a screen rectangle as an RGB image (left, top, right, bottom)."""
     import mss
     from PIL import Image
+
+    left, top, right, bottom = (int(value) for value in rect)
+    width = max(1, right - left)
+    height = max(1, bottom - top)
 
     with mss.MSS() as capture:
         shot = capture.grab(
             {
-                "left": monitor.left,
-                "top": monitor.top,
-                "width": monitor.width,
-                "height": monitor.height,
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
             }
         )
         return Image.frombytes("RGB", shot.size, shot.rgb)
+
+
+def _clip_rect(
+    rect: tuple[int, int, int, int],
+    display: DisplayBounds,
+) -> tuple[int, int, int, int]:
+    """Clip a window rectangle to the display it belongs to."""
+    left, top, right, bottom = (int(value) for value in rect)
+    return (
+        max(left, display.left),
+        max(top, display.top),
+        min(right, display.right),
+        min(bottom, display.bottom),
+    )
+
+
+def _screen_fingerprint(image: Any) -> bytes:
+    """Small grayscale thumbnail used to detect an unchanged screen."""
+    from PIL import Image
+
+    return image.convert("L").resize(
+        (64, 36),
+        Image.Resampling.BILINEAR,
+    ).tobytes()
+
+
+def _fingerprint_distance(first: bytes, second: bytes) -> float:
+    """Mean absolute difference of two fingerprints, normalized to 0..1."""
+    if not first or not second or len(first) != len(second):
+        return 1.0
+    total = sum(abs(a - b) for a, b in zip(first, second))
+    return total / (len(first) * 255.0)
+
+
+def _foreground_handle() -> int:
+    if os.name != "nt":
+        return 0
+    try:
+        return int(ctypes.windll.user32.GetForegroundWindow())
+    except Exception:  # noqa: BLE001 - best effort
+        return 0
 
 
 def _visible_windows() -> list[Any]:
@@ -434,6 +525,13 @@ def _find_window(title: str | None) -> Any | None:
 def _activate_window(window: Any) -> None:
     hwnd = getattr(window, "_hWnd", None)
     if hwnd:
+        try:
+            from tools.desktop_context import force_foreground
+
+            if force_foreground(int(hwnd)):
+                return
+        except Exception:  # noqa: BLE001 - fall back below
+            logger.debug("force_foreground failed", exc_info=True)
         try:
             ctypes.windll.user32.ShowWindow(int(hwnd), 9)  # SW_RESTORE
             ctypes.windll.user32.SetForegroundWindow(int(hwnd))
@@ -617,10 +715,13 @@ def _visual_elements(
     settings: AutomationSettings,
     *,
     max_items: int = 15,
+    origin: tuple[int, int] | None = None,
 ) -> list[tuple[str, str, str, int, int, int, int, bool]]:
     """Conservative contour fallback for custom-rendered controls."""
     if not settings.visual_fallback:
         return []
+    origin_left = display.left if origin is None else int(origin[0])
+    origin_top = display.top if origin is None else int(origin[1])
 
     try:
         import cv2
@@ -666,10 +767,10 @@ def _visual_elements(
     candidates.sort(key=lambda item: item[2] * item[3], reverse=True)
     local_existing = [
         (
-            left - display.left,
-            top - display.top,
-            right - display.left,
-            bottom - display.top,
+            left - origin_left,
+            top - origin_top,
+            right - origin_left,
+            bottom - origin_top,
         )
         for left, top, right, bottom in existing
     ]
@@ -691,10 +792,10 @@ def _visual_elements(
             "visual element",
             "Visual",
             "",
-            display.left + x,
-            display.top + y,
-            display.left + x + width,
-            display.top + y + height,
+            origin_left + x,
+            origin_top + y,
+            origin_left + x + width,
+            origin_top + y + height,
             True,
         )
         for x, y, width, height in selected
@@ -723,6 +824,113 @@ class SOMParser:
     def __init__(self, settings: AutomationSettings) -> None:
         self.settings = settings
         self.store = SnapshotStore()
+        # Last snapshot, used to skip a full capture/annotation pass when the
+        # target window pixels did not change.
+        self._cached: SOMSnapshot | None = None
+        self._cache_fingerprint: bytes | None = None
+        self._cache_rect: tuple[int, int, int, int] | None = None
+        self._cache_hwnd: int | None = None
+        self._cache_display: int | None = None
+        self._cache_foreground: int | None = None
+        self._cache_title: str | None = None
+        self._saves_since_prune = 0
+
+    def reset(self) -> None:
+        """Forget the reuse cache (a new user turn starts from a fresh look)."""
+        self._cached = None
+        self._cache_fingerprint = None
+        self._cache_rect = None
+        self._cache_hwnd = None
+        self._cache_display = None
+        self._cache_foreground = None
+        self._cache_title = None
+        self.store.clear()
+
+    def _reusable(
+        self,
+        *,
+        image: Any,
+        hwnd: int | None,
+        display_index: int,
+        rect: tuple[int, int, int, int],
+        foreground: int,
+        title: str,
+    ) -> SOMSnapshot | None:
+        """Return the previous snapshot when the screen is verifiably unchanged."""
+        if self.settings.snapshot_reuse_seconds <= 0:
+            return None
+        cached = self._cached
+        if cached is None or self._cache_fingerprint is None:
+            return None
+        if self._cache_hwnd != hwnd or self._cache_display != display_index:
+            return None
+        if self._cache_rect != rect:
+            return None
+        # A new foreground window usually means a dialog or another app
+        # appeared, even when it does not overlap the captured window.
+        if self._cache_foreground != foreground:
+            return None
+        # A changed title means navigation, a save, a modified document, or a
+        # different page. Never reuse the old element list in that case.
+        if (self._cache_title or "").casefold() != (title or "").casefold():
+            return None
+        if time.time() - cached.created_at > self.settings.snapshot_reuse_seconds:
+            return None
+        if not Path(cached.screenshot).is_file():
+            return None
+
+        distance = _fingerprint_distance(
+            self._cache_fingerprint,
+            _screen_fingerprint(image),
+        )
+        if distance > self.settings.snapshot_reuse_threshold:
+            return None
+
+        refreshed = replace(cached, created_at=time.time())
+        self.store.put(refreshed)
+        self._cached = refreshed
+        return refreshed
+
+    def _remember(
+        self,
+        snapshot: SOMSnapshot,
+        *,
+        fingerprint: bytes,
+        hwnd: int | None,
+        display_index: int,
+        rect: tuple[int, int, int, int],
+        foreground: int,
+        title: str,
+    ) -> None:
+        self._cached = snapshot
+        self._cache_fingerprint = fingerprint
+        self._cache_hwnd = hwnd
+        self._cache_display = display_index
+        self._cache_rect = rect
+        self._cache_foreground = foreground
+        self._cache_title = title
+
+    def _prune_screenshots(self) -> None:
+        """Delete the oldest annotated snapshots beyond ``screenshot_keep``."""
+        self._saves_since_prune += 1
+        if self._saves_since_prune < 20:
+            return
+        self._saves_since_prune = 0
+
+        directory = self.settings.resolved_screenshot_dir()
+        try:
+            files = sorted(
+                directory.glob("som_*.png"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return
+        for stale in files[self.settings.screenshot_keep :]:
+            try:
+                stale.unlink()
+            except OSError:
+                continue
 
     def snapshot(
         self,
@@ -749,8 +957,23 @@ class SOMParser:
             }
 
         if window is not None and activate:
-            _activate_window(window)
-            time.sleep(0.25)
+            target = int(getattr(window, "_hWnd", 0) or 0) or None
+            # Only activate when the window is not already foreground. If
+            # Windows refuses the foreground switch (a background process
+            # cannot always steal focus), do not burn half a second waiting.
+            if target is None:
+                _activate_window(window)
+                time.sleep(0.05)
+            elif _foreground_handle() != target:
+                _activate_window(window)
+                deadline = time.monotonic() + 0.15
+                while (
+                    _foreground_handle() != target
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+
+        hwnd = int(getattr(window, "_hWnd", 0) or 0) or None
 
         monitor: DisplayBounds | None = None
         if display is not None:
@@ -775,7 +998,46 @@ class SOMParser:
                     monitors[0],
                 )
 
-        image = _capture_display(monitor)
+        # Capture only the target window when it fits on the selected display.
+        # A 4K display grab is several times more expensive to capture,
+        # downscale, and encode than the window itself.
+        capture_rect = (
+            monitor.left,
+            monitor.top,
+            monitor.right,
+            monitor.bottom,
+        )
+        window_rect = _window_rect(window) if window is not None else None
+        if window_rect is not None:
+            clipped = _clip_rect(window_rect, monitor)
+            if clipped[2] - clipped[0] >= 40 and clipped[3] - clipped[1] >= 40:
+                capture_rect = clipped
+
+        image = _capture_region(capture_rect)
+        fingerprint = _screen_fingerprint(image)
+        foreground = _foreground_handle()
+
+        reused = self._reusable(
+            image=image,
+            hwnd=hwnd,
+            display_index=monitor.index,
+            rect=capture_rect,
+            foreground=foreground,
+            title=actual_title,
+        )
+        if reused is not None:
+            return {
+                "ok": True,
+                "snapshot": reused,
+                "message": (
+                    f"Detected {len(reused.elements)} interactable element(s) "
+                    f"in {actual_title or 'the active window'}. The window "
+                    "content is unchanged, so the previous snapshot is still "
+                    "valid."
+                ),
+                "files": [reused.screenshot],
+                "reused": True,
+            }
 
         raw_elements: list[
             tuple[str, str, str, int, int, int, int, bool]
@@ -793,6 +1055,7 @@ class SOMParser:
                         for item in raw_elements
                     ],
                     self.settings,
+                    origin=(capture_rect[0], capture_rect[1]),
                 )
             )
 
@@ -816,16 +1079,20 @@ class SOMParser:
             for index, item in enumerate(raw_elements, start=1)
         )
 
+        annotated = _annotation_order(elements)[
+            : self.settings.max_annotated_elements
+        ]
         screenshot, image_width, image_height = self._annotate(
             image,
-            elements,
+            annotated,
             monitor,
+            origin=(capture_rect[0], capture_rect[1]),
         )
+        annotated_ids = tuple(item.id for item in annotated)
 
-        window_handle: int | None = None
         process_id: int | None = None
         process_name = ""
-        window_rect: tuple[int, int, int, int] | None = None
+        window_rect_live: tuple[int, int, int, int] | None = None
         if window is not None:
             try:
                 from tools.desktop_context import (
@@ -834,12 +1101,10 @@ class SOMParser:
                     _window_rect as _live_window_rect,
                 )
 
-                hwnd = int(getattr(window, "_hWnd", 0) or 0) or None
                 if hwnd:
-                    window_handle = hwnd
                     process_id = _process_id(hwnd)
                     process_name = _process_details(process_id).get("name", "")
-                    window_rect = _live_window_rect(hwnd)
+                    window_rect_live = _live_window_rect(hwnd)
             except Exception:  # noqa: BLE001 - context anchors are best effort
                 logger.debug("Could not capture window context", exc_info=True)
 
@@ -852,16 +1117,27 @@ class SOMParser:
             image_width=image_width,
             image_height=image_height,
             created_at=time.time(),
-            window_handle=window_handle,
+            annotated_ids=annotated_ids,
+            window_handle=hwnd,
             process_id=process_id,
             process_name=process_name,
-            window_rect=window_rect,
+            window_rect=window_rect_live,
         )
         self.store.put(snapshot)
+        self._remember(
+            snapshot,
+            fingerprint=fingerprint,
+            hwnd=hwnd,
+            display_index=monitor.index,
+            rect=capture_rect,
+            foreground=foreground,
+            title=actual_title,
+        )
 
         message = (
             f"Detected {len(elements)} interactable element(s) in "
-            f"{actual_title or 'the active display'}."
+            f"{actual_title or 'the active display'}; "
+            f"{len(annotated_ids)} are numbered in the screenshot."
         )
         if not elements:
             message = (
@@ -882,8 +1158,13 @@ class SOMParser:
         image: Any,
         elements: tuple[UIElement, ...],
         display: DisplayBounds,
+        *,
+        origin: tuple[int, int] | None = None,
     ) -> tuple[str, int, int]:
         from PIL import Image, ImageDraw
+
+        origin_left = display.left if origin is None else int(origin[0])
+        origin_top = display.top if origin is None else int(origin[1])
 
         max_width = max(640, int(self.settings.screenshot_max_width))
         scale = min(1.0, max_width / max(1, image.width))
@@ -893,7 +1174,7 @@ class SOMParser:
                     max(1, int(image.width * scale)),
                     max(1, int(image.height * scale)),
                 ),
-                Image.Resampling.LANCZOS,
+                Image.Resampling.BILINEAR,
             )
 
         overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
@@ -901,10 +1182,10 @@ class SOMParser:
         font = _font(max(12, int(image.width / 90)))
 
         for element in elements:
-            left = int((element.left - display.left) * scale)
-            top = int((element.top - display.top) * scale)
-            right = int((element.right - display.left) * scale)
-            bottom = int((element.bottom - display.top) * scale)
+            left = int((element.left - origin_left) * scale)
+            top = int((element.top - origin_top) * scale)
+            right = int((element.right - origin_left) * scale)
+            bottom = int((element.bottom - origin_top) * scale)
             if right <= 0 or bottom <= 0 or left >= image.width or top >= image.height:
                 continue
             left = max(0, min(image.width - 1, left))
@@ -922,10 +1203,10 @@ class SOMParser:
         composed = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
         label_draw = ImageDraw.Draw(composed)
         for element in elements:
-            left = int((element.left - display.left) * scale)
-            top = int((element.top - display.top) * scale)
-            right = int((element.right - display.left) * scale)
-            bottom = int((element.bottom - display.top) * scale)
+            left = int((element.left - origin_left) * scale)
+            top = int((element.top - origin_top) * scale)
+            right = int((element.right - origin_left) * scale)
+            bottom = int((element.bottom - origin_top) * scale)
             if right <= 0 or bottom <= 0 or left >= composed.width or top >= composed.height:
                 continue
             left = max(0, min(composed.width - 1, left))
@@ -959,5 +1240,8 @@ class SOMParser:
         output_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = output_dir / f"som_{stamp}_{os.getpid()}_{uuid.uuid4().hex[:6]}.png"
-        composed.save(path, format="PNG", optimize=True)
+        # compress_level=1 is visually identical for these overlays and about
+        # five times faster than optimize=True.
+        composed.save(path, format="PNG", compress_level=1)
+        self._prune_screenshots()
         return str(path), composed.width, composed.height

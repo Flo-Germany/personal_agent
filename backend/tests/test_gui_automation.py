@@ -59,8 +59,44 @@ class FakeCapture:
 
 
 class FakeContext:
+    def __init__(self) -> None:
+        self._windows: dict[int, dict[str, Any]] = {
+            1: {
+                "handle": 1,
+                "title": "Fake window",
+                "process_id": 0,
+                "rect": [0, 0, 800, 600],
+                "minimized": False,
+                "active": True,
+            }
+        }
+
     def capture(self) -> FakeCapture:
         return FakeCapture()
+
+    def quick_windows(self) -> dict[int, dict[str, Any]]:
+        return {handle: dict(item) for handle, item in self._windows.items()}
+
+    def bump(self, suffix: str = " *") -> None:
+        """Simulate a visible UI change (for example a modified title)."""
+        self._windows[1]["title"] = f"{self._windows[1]['title']}{suffix}"
+
+    def state_signature(self, windows: dict[int, dict[str, Any]]) -> str:
+        return "|".join(
+            f"{handle}:{item.get('title')}:{item.get('active')}"
+            for handle, item in sorted(windows.items())
+        )
+
+    def focused_control(self) -> dict[str, Any] | None:
+        return {
+            "control_type": "Edit",
+            "name": "To",
+            "automation_id": "ToField",
+            "process_id": 1,
+            "window_handle": 1,
+            "rect": [300, 200, 460, 250],
+            "text_capable": True,
+        }
 
     def validate_snapshot(self, snapshot: Any, element: Any, **kwargs: Any):
         return True, None, None, None, self.capture()
@@ -181,6 +217,9 @@ def make_snapshot(
         image_width=800,
         image_height=600,
         created_at=time.time(),
+        window_handle=1,
+        process_id=1,
+        window_rect=(0, 0, 800, 600),
     )
 
 
@@ -195,7 +234,11 @@ def make_service(
     pointer = FakePointer()
     guard = InputFailsafe(enabled=False, arm_delay_seconds=0.0)
     service = GUIAutomationService(
-        AutomationSettings(enabled=True),
+        AutomationSettings(
+            enabled=True,
+            action_settle_seconds=0.0,
+            verify_foreground=False,
+        ),
         parser=parser,  # type: ignore[arg-type]
         store=parser.store,
         guard=guard,
@@ -530,3 +573,57 @@ def test_executor_dispatches_gui_tools(tmp_path: Path) -> None:
         ("keys", ["ctrl", "s"]),
         ("reset",),
     ]
+
+
+def test_click_loop_is_blocked_until_the_app_state_changes(tmp_path: Path) -> None:
+    service, _parser, pointer, _guard = make_service(tmp_path)
+    analysis = service.analyze("the New Email button")
+    snapshot_id = analysis["snapshot_id"]
+
+    first = service.click(snapshot_id, 1, "New Email")
+    assert first["ok"] is True
+    assert first["outcome"]["ui_changed"] is False
+
+    repeated = service.click(snapshot_id, 1, "New Email")
+    assert repeated["ok"] is False
+    assert repeated["loop_detected"] is True
+    assert "already clicked" in repeated["error"]
+    assert len(pointer.clicks) == 1
+
+    # A real UI change makes the same click legitimate again.
+    service.context.bump()
+    allowed = service.click(snapshot_id, 1, "New Email")
+    assert allowed["ok"] is True
+    assert len(pointer.clicks) == 2
+
+
+def test_app_guides_explain_shortcuts_and_detect_open_compose_windows() -> None:
+    from tools.app_knowledge import guide_for
+
+    outlook = guide_for("OUTLOOK.EXE", "Inbox - user@example.com")
+    assert outlook["app"] == "outlook"
+    assert "ctrl+n" in outlook["shortcuts"].values()
+    assert "compose" in outlook["workflow"].casefold()
+
+    with_compose = guide_for(
+        "OUTLOOK.EXE",
+        "Inbox - user@example.com",
+        open_window_titles=[
+            "Inbox - user@example.com",
+            "Untitled - Message (HTML)",
+        ],
+    )
+    assert with_compose["warning"]
+    assert "Untitled - Message (HTML)" in with_compose["open_secondary_windows"]
+
+    browser = guide_for("chrome.exe", "Google")
+    assert browser["app"] == "browser"
+    assert browser["shortcuts"]["address bar"] == "ctrl+l"
+
+    explorer = guide_for("explorer.exe", "Downloads")
+    assert explorer["app"] == "explorer"
+    assert explorer["shortcuts"]["address bar"] == "ctrl+l"
+
+    generic = guide_for("unknown-app.exe", "Whatever")
+    assert generic["app"] == "generic"
+    assert generic["shortcuts"]["next control"] == "tab"
