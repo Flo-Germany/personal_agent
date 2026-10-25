@@ -40,6 +40,7 @@ def test_schemas_use_the_openai_function_format() -> None:
         "read_file_content",
         "search_system",
         "semantic_image_search",
+        "system_diagnosis",
         "get_open_windows",
         "read_window_content",
         "analyze_screen",
@@ -173,6 +174,8 @@ def test_executor_requires_confirmation() -> None:
     assert executor.requires_confirmation("open_file") is True
     assert executor.requires_confirmation("read_file_content") is False
     assert executor.requires_confirmation("search_system") is False
+    assert executor.requires_confirmation("semantic_image_search") is False
+    assert executor.requires_confirmation("system_diagnosis") is False
     assert executor.requires_confirmation("get_open_windows") is False
     assert executor.requires_confirmation("read_window_content") is False
     assert executor.requires_confirmation("analyze_screen") is False

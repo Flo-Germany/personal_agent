@@ -1,4 +1,4 @@
-export type ChatRole = "user" | "assistant" | "status" | "files";
+export type ChatRole = "user" | "assistant" | "status" | "files" | "diagnosis";
 
 export type StatusPhase = "thinking" | "tool_started" | "approval" | "generating";
 
@@ -56,12 +56,144 @@ export type ToolStatusData = {
   finishedAt?: number;
 };
 
+export type DiagnosisFinding = {
+  severity?: "critical" | "warning" | "info" | string;
+  title?: string;
+  detail?: string;
+};
+
+export type DiagnosisChart = {
+  path: string;
+  title?: string;
+  description?: string;
+};
+
+export type DiagnosisReportData = {
+  health_score?: number;
+  findings?: DiagnosisFinding[];
+  charts?: DiagnosisChart[];
+  summary?: {
+    os?: {
+      caption?: string;
+      version?: string;
+      build?: string;
+      last_boot?: string;
+      system_drive?: string;
+    };
+    computer?: { manufacturer?: string; model?: string };
+    cpu?: {
+      name?: string;
+      physical_cores?: number;
+      logical_cores?: number;
+      average_percent?: number;
+      frequency_mhz?: number;
+      per_core?: { min?: number; max?: number; average?: number };
+    };
+    memory?: {
+      total_gb?: number;
+      used_gb?: number;
+      available_gb?: number;
+      percent?: number;
+      swap_percent?: number;
+    };
+    per_core_percent?: number[];
+    timeline?: Array<{
+      seconds?: number;
+      cpu?: number;
+      memory?: number;
+    }>;
+    gpus?: Array<{ name?: string; driver?: string; status?: string }>;
+    volumes?: Array<{
+      device?: string;
+      total_gb?: number;
+      used_gb?: number;
+      free_gb?: number;
+      percent?: number;
+    }>;
+    physical_disks?: Array<{
+      name?: string;
+      media?: string;
+      health?: string;
+      size_gb?: number;
+    }>;
+    smart?: Array<{
+      disk?: string;
+      temperature_c?: number;
+      wear_percent?: number;
+      power_on_hours?: number;
+      read_errors?: number;
+      write_errors?: number;
+    }>;
+    smart_available?: boolean;
+    top_processes?: {
+      by_memory?: Array<{
+        name?: string;
+        memory_gb?: number;
+        cpu_percent?: number;
+      }>;
+      by_cpu?: Array<{
+        name?: string;
+        cpu_percent?: number;
+        memory_gb?: number;
+      }>;
+    };
+    services?: {
+      total?: number;
+      running?: number;
+      stopped?: number;
+      automatic_stopped_count?: number;
+      automatic_stopped?: string[];
+    };
+    startup?: {
+      count?: number;
+      names?: string[];
+    };
+    security?: {
+      defender?: {
+        antivirus?: boolean;
+        realtime?: boolean;
+        signature_last_updated?: string;
+      };
+      firewall_enabled?: number;
+      firewall_profiles?: number;
+      firewall_state?: "enabled" | "partial" | "disabled" | "unknown" | string;
+    };
+    recent_events?: Array<{
+      time?: string;
+      id?: number;
+      level?: string;
+      provider?: string;
+      message?: string;
+    }>;
+    pending_reboot?: boolean;
+    uptime_hours?: number;
+    benchmarks?: {
+      cpu_single_thread_mbps?: number;
+      cpu_multi_thread_mbps?: number;
+      memory_copy_gbps?: number;
+    };
+    gpu_processes?: Array<{ name?: string; utilization?: number }>;
+    network_rate?: { sent_mbps?: number; received_mbps?: number };
+    disk_rate?: { read_mbps?: number; write_mbps?: number };
+    sampling?: {
+      seconds?: number;
+      cpu_min?: number;
+      cpu_max?: number;
+      memory_max?: number;
+    };
+  };
+  report_dir?: string;
+  report_file?: string;
+  message?: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
   content: string;
   status?: ToolStatusData;
   files?: string[];
+  diagnosis?: DiagnosisReportData;
   metrics?: TokenMetrics;
   streaming?: boolean;
 };
@@ -83,6 +215,19 @@ export type ActionItem = {
   arguments?: Record<string, unknown>;
 };
 
+export type DisplayOption = {
+  index: number;
+  name?: string;
+  width: number;
+  height: number;
+  left?: number;
+  top?: number;
+  primary?: boolean;
+  position?: string;
+  /** Optional data URL with a live preview of this display. */
+  preview?: string;
+};
+
 export type PendingAction = {
   approval_id: string;
   conversation_id: string;
@@ -92,6 +237,9 @@ export type PendingAction = {
   plan?: string[];
   expires_in_seconds?: number;
   auto_approve_remaining?: boolean;
+  kind?: "approval" | "display";
+  displays?: DisplayOption[];
+  question?: string;
 };
 
 export type ToolResult = Record<string, unknown>;
@@ -164,6 +312,17 @@ export type AgentActionRequiredEvent = {
   auto_approve_remaining?: boolean;
 };
 
+export type AgentDisplayRequiredEvent = {
+  type: "display_required";
+  conversation_id?: string;
+  approval_id: string;
+  displays: DisplayOption[];
+  message?: string;
+  request?: string;
+  question?: string;
+  expires_in_seconds?: number;
+};
+
 export type AgentFinalEvent = {
   type: "final";
   conversation_id?: string;
@@ -189,6 +348,7 @@ export type AgentEvent =
   | AgentMetricsEvent
   | AgentCancelledEvent
   | AgentActionRequiredEvent
+  | AgentDisplayRequiredEvent
   | AgentFinalEvent
   | AgentErrorEvent;
 

@@ -34,12 +34,16 @@ class PendingAction:
     actions: list[dict[str, Any]]
     assistant_message: str = ""
     plan: list[str] = field(default_factory=list)
+    kind: str = "approval"
+    displays: list[dict[str, Any]] = field(default_factory=list)
+    question: str = ""
     created_at: float = field(default_factory=time.time)
     expires_at: float = 0.0
 
     def to_public(self) -> dict[str, Any]:
-        return {
-            "type": "action_required",
+        payload: dict[str, Any] = {
+            "type": "display_required" if self.kind == "display" else "action_required",
+            "kind": self.kind,
             "approval_id": self.approval_id,
             "conversation_id": self.conversation_id,
             "actions": self.actions,
@@ -47,10 +51,17 @@ class PendingAction:
             "request": self.user_message,
             "message": self.assistant_message,
             "expires_in_seconds": max(0, int(self.expires_at - time.time())),
+        }
+
+        if self.kind == "display":
+            payload["displays"] = self.displays
+            payload["question"] = self.question
+        else:
             # Approving grants this user turn permission to finish the
             # remaining steps without another card per step.
-            "auto_approve_remaining": True,
-        }
+            payload["auto_approve_remaining"] = True
+
+        return payload
 
 
 class PendingActionStore:
@@ -82,6 +93,10 @@ class PendingActionStore:
         actions: list[dict[str, Any]],
         assistant_message: str = "",
         plan: list[str] | None = None,
+        *,
+        kind: str = "approval",
+        displays: list[dict[str, Any]] | None = None,
+        question: str = "",
     ) -> PendingAction:
         with self._lock:
             self._cleanup()
@@ -100,6 +115,9 @@ class PendingActionStore:
                 actions=actions,
                 assistant_message=assistant_message,
                 plan=list(plan or []),
+                kind=kind,
+                displays=list(displays or []),
+                question=question,
                 created_at=now,
                 expires_at=now + self.ttl_seconds,
             )

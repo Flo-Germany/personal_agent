@@ -4,6 +4,7 @@ import { AppHeader } from "./components/AppHeader";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { AttachmentBlock } from "./components/AttachmentBlock";
 import { ChatComposer } from "./components/ChatComposer";
+import { DisplayPickerCard } from "./components/DisplayPickerCard";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem } from "./components/MessageItem";
 import { ToolStatus } from "./components/ToolStatus";
@@ -20,6 +21,7 @@ function App() {
     canSend,
     sendMessage,
     approve,
+    chooseDisplay,
     interrupt,
     clearChat,
     refresh,
@@ -66,6 +68,17 @@ function App() {
   const handleDeny = useCallback(() => {
     void approve(false);
   }, [approve]);
+
+  const handleChooseDisplay = useCallback(
+    (display: number) => {
+      void chooseDisplay(display);
+    },
+    [chooseDisplay],
+  );
+
+  const handleCancelDisplay = useCallback(() => {
+    void chooseDisplay(null);
+  }, [chooseDisplay]);
 
   const handleInterrupt = useCallback(() => {
     void interrupt();
@@ -117,14 +130,21 @@ function App() {
                 ),
               )}
 
-              {pendingAction && (
+              {pendingAction && pendingAction.kind === "display" ? (
+                <DisplayPickerCard
+                  pending={pendingAction}
+                  busy={isStreaming}
+                  onChoose={handleChooseDisplay}
+                  onCancel={handleCancelDisplay}
+                />
+              ) : pendingAction ? (
                 <ApprovalCard
                   pending={pendingAction}
                   busy={isStreaming}
                   onApprove={handleApprove}
                   onDeny={handleDeny}
                 />
-              )}
+              ) : null}
 
               <div ref={messagesEndRef} className="h-px" />
             </div>

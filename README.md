@@ -20,7 +20,11 @@ file system and applications through a Human-in-the-Loop approval flow.
   state-changing command requires explicit approval with a description and the
   exact command shown first
 - Window awareness and UI Automation text reading, plus local screen analysis
-  with `qwen3-vl:8b-instruct`
+  with `qwen3-vl:8b-instruct`; with multiple monitors the agent asks which
+  display to analyze and shows a live preview of each one
+- Comprehensive read-only system diagnosis: hardware, live CPU/memory/GPU,
+  top processes, disk/SSD health, services, startup apps, security, event-log
+  errors, and CPU/memory benchmarks with matplotlib charts
 - Human-in-the-Loop approval once per request: the card lists the first step and
   approving lets the agent finish the remaining steps in order automatically
 - Multi-step and sequence requests ("first do this, then that") run to completion
@@ -69,6 +73,7 @@ backend/             FastAPI backend
   tools/os_tools.py  Full-filesystem Windows operations and safety rules
   tools/window_tools.py Window listing and UI Automation text extraction
   tools/vision_tools.py Global CLIP image crawler, SQLite vector store, screen vision
+  tools/system_diagnosis.py Read-only system health/performance diagnosis and charts
   tools/schemas.py   OpenAI-compatible tool definitions
   tools/executor.py  Validated tool dispatch and confirmation flags
   tests/             pytest suite
@@ -126,11 +131,12 @@ startup, so restart uvicorn after changing it.
     "keep_alive_seconds": 1800,
     "warmup_on_startup": true,
     "model_quantization": "q4_K_M",
-    "context_window": 16384,
+    "context_window": 24576,
     "system_prompt_mode": "auto"
   },
   "agent": {
-    "max_iterations": 5,
+    "max_iterations": 0,
+    "max_auto_approved_actions": 0,
     "approval_ttl_seconds": 600
   },
   "memory": {
@@ -158,8 +164,8 @@ startup, so restart uvicorn after changing it.
     "max_images": 150000,
     "max_file_mb": 50,
     "exclude_paths": [],
-    "min_confidence_z": 3.9,
-    "min_result_z": 3.5,
+    "min_confidence_z": 3.0,
+    "min_result_z": 2.4,
     "dedupe_threshold": 0.995,
     "screen_model": "qwen3-vl:8b-instruct",
     "screen_timeout_seconds": 180,
@@ -189,7 +195,9 @@ missing or empty.
 personality, knowledge base, and tool schemas need far more than Ollama's small
 default context, so lowering this will truncate the prompt and the agent can
 lose its identity or instructions. Raise it for long conversations; lower it if
-the model no longer fits in VRAM. `ollama.system_prompt_mode` controls how the
+the model no longer fits in VRAM. Screen analysis uses the same `num_ctx`, which
+keeps the chat runner loaded and its prompt cache reusable.
+`ollama.system_prompt_mode` controls how the
 system prompt is delivered: `"auto"` (default) folds it into the latest user
 message for Hermes models, `"system"` always uses the system role, and `"user"`
 always folds it.
@@ -200,6 +208,8 @@ while the app is in use, avoiding an 8+ second cold load on every message. Chat
 and screen analysis use the same `qwen3-vl` model, so keeping it loaded does not
 make two different models compete for VRAM. Set `0` if you want strict
 immediate unloading (every request then pays the load and prefill cost again).
+For interactive use, leave it above zero: screen analysis also relies on the
+loaded runner and on Ollama's prompt cache surviving between turns.
 
 `ollama.warmup_on_startup` (enabled in `config/settings.json`) preloads the model
 and the stable system-prompt/tool-schema prefix in a background thread when the
@@ -235,7 +245,13 @@ Two Ollama behaviors break a long identity prompt:
 
 `memory.max_conversations` bounds how many chats are kept in RAM.
 `memory.learn_from_chats` enables automatic knowledge-base updates.
-`agent.max_iterations` bounds tool rounds per segment.
+`agent.max_iterations` bounds tool rounds per segment. The default `0` means no
+hard limit: the agent keeps working until the task is done, however many steps
+that takes. Set a positive value only if you want an explicit safety cap; when a
+cap is reached, the agent summarizes the evidence it already has instead of
+ending with a tool-limit error.
+`agent.max_auto_approved_actions` works the same way for actions that run after
+one approval: `0` means no cap.
 `agent.approval_ttl_seconds` controls how long a pending approval remains valid.
 `tools.*` caps file reads, searches, and zip extraction. `tools.redact_secrets`
 (default `true`) removes high-confidence API keys, tokens, and private keys from
@@ -250,8 +266,10 @@ widen it. `scan_interval_seconds` controls how often the crawler rescans for
 new, changed, and deleted images. `max_images` and `max_file_mb` bound the work.
 `exclude_paths` accepts case-insensitive path fragments to skip folders such as
 game asset packs or build caches. `min_confidence_z` and `min_result_z` control
-when semantic search reports "no confident match" instead of returning weak
-matches; `dedupe_threshold` suppresses near-identical copies.
+when semantic search reports a confident match; when the score gap still shows a
+clear best candidate, the tool returns a few tentative matches labelled
+`low` confidence instead of an empty result. `dedupe_threshold` suppresses
+near-identical copies.
 `screen_model` selects the local Ollama model used by `analyze_screen`;
 `screen_timeout_seconds` and `screen_max_width` bound the screenshot request.
 `screen_max_tokens` caps the model's output so a runaway response cannot hold
@@ -276,10 +294,13 @@ Endpoints:
 - `POST /chat/approve` — `{"approval_id": "...", "approved": true|false}`;
   resumes the paused agent and returns a stream. Approval also covers the
   remaining steps of that request, so the agent does not ask again between steps.
+- `POST /chat/display` — `{"approval_id": "...", "display": 1}`; resumes a paused
+  screen analysis with the chosen 1-based display. Send `display: null` to
+  cancel the analysis.
 - `POST /chat/interrupt` — `{"conversation_id": "..."}`; asks the active turn to
   stop after the current operation and returns 204.
-- `GET /chat/pending/{conversation_id}` — restores a pending approval after a UI
-  reload
+- `GET /chat/pending/{conversation_id}` — restores a pending approval or display
+  choice after a UI reload
 - `POST /chat` — non-streaming compatibility endpoint for simple chats
 - `GET /chat/history/{conversation_id}` — user-visible messages (tool internals
   are hidden)
@@ -348,6 +369,8 @@ status           thinking, generating, tool_started, approval
 tool_result      tool name, ok flag, human-readable summary, raw result
 action_required  approval_id, conversation_id, action descriptions, plan,
                  request, auto_approve_remaining
+display_required approval_id, conversation_id, displays (index, resolution,
+                 primary flag, position, live preview), request, question
 assistant_start  a streamed assistant text block begins
 assistant_delta  incremental text; emitted as soon as tokens arrive
 assistant_end    the full text of the block that just streamed
@@ -358,7 +381,8 @@ final            final natural-language reply (with a streamed flag)
 error            readable error and HTTP-like status
 ```
 
-The SSE stream ends after `final`, `error`, or `action_required`. The backend
+The SSE stream ends after `final`, `error`, `action_required`, or
+`display_required`. The backend
 uses Ollama's native `/api/chat` with `stream: true`, so text is forwarded token
 by token rather than buffered into one message. `metrics` events are emitted
 about twice per second while text streams (`live: true`) and once at the end
@@ -371,9 +395,9 @@ and prompt token counts, prompt evaluation, model load, and total time.
 1. The user message is appended and the system prompt plus the latest 10
    history messages and tool schemas are sent to the local model.
 2. Read-only tools (`search_system`, `read_file_content`,
-   `semantic_image_search`, `get_open_windows`, `read_window_content`,
-   `analyze_screen`) run immediately and stream `tool_started` / `tool_result`
-   events.
+   `semantic_image_search`, `system_diagnosis`, `get_open_windows`,
+   `read_window_content`, `analyze_screen`, `run_powershell_query`) run
+   immediately and stream `tool_started` / `tool_result` events.
 3. The first modifying tool of a request pauses the loop. The assistant tool-call
    message is stored, a pending approval is created, and an `action_required`
    event is streamed. The HTTP stream then closes; no thread waits for a click.
@@ -381,17 +405,24 @@ and prompt token counts, prompt evaluation, model load, and total time.
    (from `propose_plan`, the model's numbered plan, or an explicit sequence such
    as "first … then …", a comma-separated action list, "X and Y", or "X und Y"),
    and is marked `auto_approve_remaining`.
+   An `analyze_screen` call pauses the same way when more than one display is
+   connected: a `display_required` event streams the display list and the UI asks
+   the user to choose before the screenshot is taken.
 4. `POST /chat/approve` either executes the pending actions and appends
    `role: "tool"` results, or appends an “Action cancelled by user” result.
    After an approval, every remaining modifying step of the same request runs
    automatically, in the model's order, until the final answer. A denial does
    not grant that permission. An identical action repeated in one request is
    skipped, and a request is capped at 25 automatic actions.
-5. Pending approvals are one per conversation, expire after the configured TTL,
-   and are consumed exactly once. Unknown or reused IDs return 404.
-6. If the user closes the UI, `GET /chat/pending/{id}` restores the approval card.
-   Tool messages stay internal; the history endpoint returns only user/assistant
-   text.
+   `POST /chat/display` does the same for a display choice: it executes
+   `analyze_screen` with the chosen index and continues the loop.
+5. Pending approvals and display choices are one per conversation, expire after
+   the configured TTL, and are consumed exactly once. Unknown or reused IDs
+   return 404; an unavailable display number returns 400 and keeps the choice
+   pending.
+6. If the user closes the UI, `GET /chat/pending/{id}` restores the approval or
+   display card. Tool messages stay internal; the history endpoint returns only
+   user/assistant text.
 
 If Ollama is not running, streams emit a readable error event; the legacy
 `POST /chat` returns HTTP 503. Timeouts map to 504 and other upstream failures to
@@ -399,7 +430,7 @@ If Ollama is not running, streams emit a readable error event; the legacy
 
 ## Tools and security
 
-The agent can use seventeen tools:
+The agent can use eighteen tools:
 
 | Tool | Confirmation | Purpose |
 |---|---|---|
@@ -408,9 +439,10 @@ The agent can use seventeen tools:
 | `run_powershell_action` | Yes | State-changing PowerShell after approval: kill/stop processes, change services or settings, registry writes, file changes, installs |
 | `search_system` | No | Recursive or direct-child search by name/glob, extension, size, modified time, hidden flag, or all drives; newest/oldest sorting; known-folder aliases |
 | `semantic_image_search` | No | Search the whole PC for images by visual content with a local CLIP index; returns ranked paths and scores |
+| `system_diagnosis` | No | Full read-only health/performance check: hardware, live CPU/memory/GPU, top processes, disk/SSD health, services, startup, security, event errors, benchmarks, and matplotlib charts |
 | `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
-| `analyze_screen` | No | Capture the primary screen in memory and ask the local `qwen3-vl:8b-instruct` model a question |
+| `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
 | `read_file_content` | No | Read text files; binary/image files return metadata only |
 | `create_folder` | Yes | Create a folder anywhere outside protected locations |
 | `create_file` | Yes | Create a UTF-8 text file, without overwriting unless explicitly requested |
@@ -456,8 +488,11 @@ Security boundaries:
   none is named. Its first use in a request requires approval.
 - Window awareness is read-only: it lists windows and reads UI Automation text,
   but does not click, type, or control applications.
-- `analyze_screen` captures the primary monitor in memory, sends it only to the
-  local Ollama endpoint, and never writes a screenshot to disk.
+- `analyze_screen` captures the chosen monitor in memory, sends it only to the
+  local Ollama endpoint, and never writes a screenshot to disk. When several
+  displays are connected, the user must choose one before any capture happens.
+- `system_diagnosis` is read-only. Its only writes are its own PNG charts and
+  `report.json` under `memory/diagnostics`; it does not change system settings.
 - The agent has no shell command, arbitrary write-content, or registry tool.
 
 Search resolves the real Windows known folders for `Documents`, `Downloads`,
@@ -492,11 +527,14 @@ index is local and starts automatically with the FastAPI app when
 - Rescans compare path, size, and modification time, so unchanged files are not
   re-embedded. New files are added, changed files are updated, and deleted files
   are pruned. The thread sleeps for `scan_interval_seconds` between passes.
-- Search queries are compared using several natural-language prompt variants,
-  near-identical images are suppressed, and results must stand out from the
-  index's score distribution. If nothing is confidently related, the tool
-  returns an empty result with a `low` confidence value instead of five
-  unrelated images. The tool result includes `confidence`, `best_score`,
+- Search queries are compared using CLIP text embeddings, near-identical
+  images are suppressed, and results must stand out from the index's score
+  distribution. A confident match needs both a high z-score and a clear gap
+  between the best and second-best image; when only the gap is convincing, the
+  tool returns up to three tentative candidates with a `low` confidence value.
+  The model is told to present those as approximate possibilities and to
+  sanity-check the file names. If nothing stands out at all, the tool returns
+  an empty result. The tool result includes `confidence`, `best_score`,
   `score_gap`, and `z_score` for diagnosis.
 - Filtering paths is available through `exclude_paths`, which is useful for
   large game asset packs, texture dumps, or development caches.
@@ -510,8 +548,10 @@ index is local and starts automatically with the FastAPI app when
   whether the index is still building.
 
 Ask naturally, for example: *"Search my whole computer for a picture of a dog"*
-or *"Find my beach vacation photos."* The tool returns up to 5 confident matches
-by default (up to 10) with absolute paths, similarity scores, and modified times.
+or *"Find my beach vacation photos."* The tool returns up to 5 matches by
+default (up to 10) with absolute paths, similarity scores, confidence, and
+modified times. Low-confidence matches are labelled as tentative rather than
+presented as certain results.
 
 ## Screen awareness
 
@@ -524,13 +564,28 @@ Three read-only tools cover the desktop:
   window's control tree and collect readable text and document values. It tries
   the UIA backend first, then Win32. Some browsers and custom-rendered apps
   expose little text; the result says so and suggests `analyze_screen`.
-- `analyze_screen` uses `mss` to capture the primary monitor, downscales it to
+- `analyze_screen` uses `mss` to capture a display, downscales it to
   `screen_max_width`, encodes it as an in-memory PNG, and sends a base64 image
   URL plus the user's question to the local Ollama
   `/v1/chat/completions` endpoint with the configured `screen_model`
   (`qwen3-vl:8b-instruct` by default). The screenshot is never written to disk, so
   there are no temporary files to clean up. Only the model's text answer is
   returned; the image is not exposed in the tool result.
+- When more than one display is connected, `analyze_screen` does not capture
+  anything immediately. The backend pauses the turn and streams a
+  `display_required` event with every display's index, resolution, position,
+  primary flag, and a small live preview. The UI shows a **Which display should
+  I analyze?** card; choosing one calls `POST /chat/display` and the analysis
+  continues with exactly that monitor. The selection can also be cancelled.
+  This always happens when several displays are present, so a guessed monitor is
+  never captured.
+- The vision request deliberately uses the same `ollama.context_window`, system
+  prompt, and tool schemas as chat. Ollama therefore reuses the loaded runner
+  and the cached chat prefix instead of reloading the model at a different
+  context size and re-evaluating the ~8k-token prompt. Screen analysis now takes
+  a couple of seconds and does not slow down the next answer. If
+  `vision.screen_model` differs from `ollama.model`, the prompt-prefix reuse is
+  skipped because the models cannot share a runner.
 
 Pull the vision model once:
 
@@ -551,6 +606,58 @@ The agent is instructed to use window tools for "which apps are open" and
 questions. It does not click, type, or otherwise control applications. Screen
 captures are only requested for clear screen-related requests and go only to the
 local Ollama instance.
+
+## System diagnosis
+
+`system_diagnosis` is a single read-only tool for broad requests such as
+**“Analyze my computer”**, **“Do a full system diagnosis”**, or **“Check my PC’s
+health and performance.”** It collects:
+
+- OS build, install date, boot time, uptime, and hardware identity
+- CPU model, cores, frequency, per-core utilization, and a sampled timeline
+- Memory total/used/available/swap, plus current memory pressure
+- GPU adapters, drivers, and GPU engine utilization by process
+- Top processes by memory and CPU (the Task Manager view)
+- Volumes, free space, physical disk media/health, and SMART reliability data
+- Automatic services that are stopped, and startup applications
+- Microsoft Defender, firewall, network adapters, and recent hotfixes
+- Recent critical/error System events and pending reboot state
+- Short CPU single/multi-thread and memory-copy benchmarks
+- GPU utilization by process, including a warning when another app is using the
+  GPU and slowing local model responses
+
+It writes matplotlib charts to `memory/diagnostics/<timestamp>/`:
+
+- `01_cpu_cores.png`
+- `02_cpu_memory_timeline.png`
+- `03_top_processes.png`
+- `04_disks.png`
+- `05_benchmarks.png`
+- `06_gpu.png`
+
+The same directory contains `report.json` with the complete structured report.
+The tool returns a compact, model-friendly summary, including the per-core and
+timeline series. The chat renders that data as native SVG/CSS visuals inside an
+inline diagnosis card: health ring, CPU and memory charts, storage bars,
+benchmark bars, findings by severity, top processes, and security chips. The
+PNGs stay available as exported artifacts from the card footer but are not
+posted as an image gallery. The answer itself is a short 250-350 word summary
+(assessment, three priority findings, three actions), because the card already
+carries the hardware, storage, security, process, and benchmark detail. The
+prompt tells the model not to paste image links or call warnings critical, so
+the text and visuals stay consistent.
+
+The tool is read-only and needs no approval; it only writes its own report and
+charts under `memory/diagnostics`. Deep file-integrity scans (`SFC`/`DISM`) are
+not run automatically because they can take several minutes and may require
+administrator rights. Benchmark numbers can be lower while other GPU/CPU-heavy
+workloads are running.
+
+For a broad diagnosis the agent calls this tool **once** instead of issuing many
+individual PowerShell queries. Tool rounds are unlimited by default, so complex
+follow-up diagnoses are not cut off. If you configure a positive
+`agent.max_iterations` cap, the runtime asks the model for a final summary of the
+collected evidence instead of failing with a “max tool steps” error.
 
 ## Memory
 
@@ -598,9 +705,11 @@ behavior, protected paths, Recycle Bin deletion, tool schemas, dispatch,
 HITL pause/approve/deny, one-approval multi-step execution, duplicate-action
 protection, approval TTL/idempotency, SSE frames, rollback, and the
 incremental CLIP image index (crawl, skip rules, updates, pruning, search, search
-confidence), plus window enumeration and screen-analysis routing.
+confidence), plus window enumeration, display enumeration with previews, the
+multi-display choice pause/selection/cancel flow, screen-analysis routing, and
+system diagnosis collection, findings, chart generation, and tool dispatch.
 Ollama is not required for the tests; the vision tests use a fake embedder and
-fake capture/model methods.
+fake capture/model methods, and the diagnosis tests use synthetic system data.
 
 ## Frontend
 
@@ -650,6 +759,11 @@ step of a request, and restores a pending approval after a reload. The card uses
 a compact **Now → Then** timeline: the exact current action(s), followed by every
 planned step. Approving runs the remaining steps without another card.
 
+When screen analysis is requested with more than one display connected, a
+**Which display should I analyze?** card appears instead. It shows a live
+thumbnail, index, resolution, primary badge, and position for each monitor;
+clicking one analyzes exactly that display, and **Cancel** stops the capture.
+
 While a turn runs, a compact task card updates in place with every tool step:
 spinner for the current step, checkmarks for completed tasks, and expandable
 error details for failures. It collapses after completion to a summary such as
@@ -681,9 +795,12 @@ File references are intercepted in Markdown links, `file:///` URLs, raw
   `@tauri-apps/plugin-clipboard-manager`.
 - Canonical files returned by tools are also collected from the structured
   `tool_result` events and rendered as an attachment panel when the model's
-  reply omits them. This keeps paths correct even if the model prints a wrong
-  link or invents an external image URL; external image embeds are stripped on
-  local image-search turns.
+  reply omits them. Tool results can expose a canonical `files` array, which is
+  attached automatically. This keeps paths correct even if the model prints a
+  wrong link or invents an external image URL; external image embeds are
+  stripped on local image-search turns. `system_diagnosis` is the exception:
+  its charts are rendered natively by the diagnosis card, so they are not
+  duplicated as an image attachment gallery.
 - Paths inside inline code and fenced code blocks are left untouched.
 - The system prompt asks the model to emit
   `[name.ext](file:///C:/absolute/path/name.ext)` links with `%20` for spaces.
@@ -692,6 +809,32 @@ The Tauri capabilities grant only `shell:allow-open`,
 `opener:allow-reveal-item-in-dir`, `clipboard-manager:allow-write-text`, and the
 window hide/drag permissions. The asset protocol is enabled in
 `src-tauri/tauri.conf.json` with a local-file read scope.
+
+## Local model throughput
+
+Generation speed depends far more on prompt length and GPU contention than on
+tool schemas or streaming. Measured with `qwen3-vl:8b-instruct` Q4_K_M on the
+RX 9070 XT reference machine:
+
+| Workload | Prompt | Median output speed |
+| --- | --- | --- |
+| Short text prompt | 42 tokens | ~80 tok/s |
+| App prompt + tools, 16k context | 9.4k tokens | ~14.6 tok/s |
+| App prompt + tools, 20k context | 9.4k tokens | ~14.5 tok/s |
+| App prompt + tools, 24k context | 9.4k tokens | ~26-27 tok/s |
+| App prompt + tools, 28k context | 9.4k tokens | ~24.3 tok/s |
+| App prompt + tools, 32k context | 9.4k tokens | ~22.5 tok/s |
+| App prompt + tools, 24k context | 12.9k tokens | ~19.8 tok/s |
+| Same workload with a game at ~98% GPU | 9-13k tokens | 2.6-9.4 tok/s |
+
+`num_ctx=24576` is not just extra headroom: on this ROCm build it is roughly
+75-85% faster than 16384 or 20480 for the same prompt, and faster than 28672 or
+32768 as well. Tools, streaming, thermal throttling, and a stale Ollama runner
+were ruled out. A GPU-heavy game or renderer sharing the GPU is the other major
+cause of single-digit speeds; the diagnosis report detects this and names the
+competing process. Response streaming keeps the perceived latency low while the
+model generates. KV-cache quantization (`OLLAMA_KV_CACHE_TYPE=q8_0`) measured
+the same as the default f16 cache and is not enabled.
 
 ## Known limitation
 

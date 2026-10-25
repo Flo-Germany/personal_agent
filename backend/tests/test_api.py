@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -247,6 +248,76 @@ def test_history_hides_internal_tool_messages(
         ("user", "Visible"),
         ("assistant", "Echo: Visible"),
     ]
+
+
+def _store_diagnosis_turn(
+    store: ConversationStore,
+    conversation_id: str,
+    score: int,
+) -> None:
+    diagnosis = {
+        "ok": True,
+        "health_score": score,
+        "findings": [],
+        "charts": [{"path": "C:\\tmp\\chart.png", "title": "CPU"}],
+        "summary": {"per_core_percent": [10.0, 20.0], "timeline": []},
+        "report_file": "C:\\tmp\\report.json",
+    }
+    store.append(conversation_id, "user", "Diagnose this PC")
+    store.append(
+        conversation_id,
+        "assistant",
+        "",
+        tool_calls=[
+            {
+                "id": "call_diag",
+                "type": "function",
+                "function": {"name": "system_diagnosis", "arguments": "{}"},
+            }
+        ],
+    )
+    store.append(
+        conversation_id,
+        "tool",
+        json.dumps(diagnosis),
+        tool_call_id="call_diag",
+        name="system_diagnosis",
+    )
+    store.append(conversation_id, "assistant", "The system looks healthy.")
+
+
+def test_history_returns_the_latest_turn_diagnosis(
+    client: TestClient,
+    store: ConversationStore,
+) -> None:
+    conversation_id = store.new_conversation_id()
+    _store_diagnosis_turn(store, conversation_id, 88)
+
+    response = client.get(f"/chat/history/{conversation_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["diagnosis"]["health_score"] == 88
+    assert payload["diagnosis"]["summary"]["per_core_percent"] == [10.0, 20.0]
+    assert payload["messages"][-1] == {
+        "role": "assistant",
+        "content": "The system looks healthy.",
+        "created_at": payload["messages"][-1]["created_at"],
+    }
+
+
+def test_history_ignores_a_diagnosis_from_an_older_turn(
+    client: TestClient,
+    store: ConversationStore,
+) -> None:
+    conversation_id = store.new_conversation_id()
+    _store_diagnosis_turn(store, conversation_id, 88)
+    store.append_exchange(conversation_id, "What is 2 + 2?", "Four.")
+
+    response = client.get(f"/chat/history/{conversation_id}")
+
+    assert response.status_code == 200
+    assert response.json()["diagnosis"] is None
 
 
 def test_history_for_unknown_conversation_is_empty(client: TestClient) -> None:

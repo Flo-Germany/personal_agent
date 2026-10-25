@@ -44,14 +44,20 @@ from tools.schemas import TOOL_SCHEMAS
 logger = logging.getLogger(__name__)
 
 CONTEXT_WINDOW_MESSAGES = 10
-# A single user request may auto-run its remaining steps after one approval.
-# This cap stops a runaway model from executing an unbounded action chain.
-MAX_AUTO_APPROVED_ACTIONS = 25
+# Approximate character budget for history messages. System prompt and tool
+# schemas already consume part of the context, so this leaves room for the
+# answer. Long tool loops keep the current request plus the most recent steps.
+CONTEXT_WINDOW_CHARS = 40000
 # Wait for a quiet moment before extracting facts, so the learning call does
 # not compete with a rapid follow-up message.
 LEARNING_IDLE_SECONDS = 3.0
 
 _PLAN_STEP = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+_ACTION_PROMISE = re.compile(
+    r"\b(?:i will|i'll|i am going to|i'm going to|next,?\s+i|"
+    r"let me(?!\s+(?:know|also know)\b)|i can now|i will now)\b",
+    re.IGNORECASE,
+)
 _PERSONAL_CUE = re.compile(
     r"\b(?:i|i'm|i am|i've|i have|my|me|mine|we|our|us|"
     r"ich|bin|mein|meine|meinen|mir|mich|wir|unser|uns|"
@@ -629,7 +635,11 @@ class ChatService:
                     name = call["function"]["name"]
                     arguments = call["function"]["arguments"]
                     if approved:
-                        result = self._tools.execute(name, arguments)
+                        result = self._execute_tool(
+                            name,
+                            arguments,
+                            conversation_id,
+                        )
                     else:
                         result = {
                             "ok": False,
@@ -702,6 +712,181 @@ class ChatService:
                 self._clear_interrupt(conversation_id)
                 self._end_turn(conversation_id)
 
+    # ------------------------------------------------------- display choice
+    def resume_display(
+        self,
+        approval_id: str,
+        display: int | None,
+    ) -> Iterator[dict[str, Any]]:
+        """Continue a paused screen analysis with the display the user chose.
+
+        ``None`` cancels the choice; the model is told that no display was
+        selected and can explain or ask again. Validation happens eagerly so
+        an invalid number leaves the pending choice intact.
+        """
+        pending = self._pending.get(approval_id)
+        if pending.kind != "display":
+            raise ApprovalError(
+                "This request is not waiting for a display choice."
+            )
+
+        if display is not None:
+            try:
+                chosen = int(display)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "The display must be a 1-based display number."
+                ) from exc
+
+            available = {
+                int(item["index"])
+                for item in pending.displays
+                if isinstance(item, dict) and "index" in item
+            }
+            if chosen not in available:
+                numbers = ", ".join(str(index) for index in sorted(available))
+                raise ValueError(
+                    f"Display {chosen} is not available. Choose one of: "
+                    f"{numbers}."
+                )
+            display = chosen
+
+        return self._resume_display_stream(approval_id, display)
+
+    def _resume_display_stream(
+        self,
+        approval_id: str,
+        display: int | None,
+    ) -> Iterator[dict[str, Any]]:
+        pending = self._pending.consume(approval_id)
+        conversation_id = pending.conversation_id
+        lock = self._lock_for(conversation_id)
+
+        with lock:
+            self._clear_interrupt(conversation_id)
+            self._cancel_event(conversation_id)
+            self._begin_turn(conversation_id)
+
+            try:
+                call = dict(pending.calls[0])
+                function = dict(call.get("function") or {})
+                arguments = dict(_parse_arguments(call))
+
+                if display is not None:
+                    arguments["display"] = display
+
+                function["arguments"] = json.dumps(
+                    arguments,
+                    ensure_ascii=False,
+                )
+                call["function"] = function
+                self._store.append(
+                    conversation_id,
+                    "assistant",
+                    pending.assistant_message,
+                    tool_calls=[call],
+                )
+
+                if display is None:
+                    result: dict[str, Any] = {
+                        "ok": False,
+                        "cancelled": True,
+                        "error": (
+                            "The user cancelled the display choice, so the "
+                            "screen was not captured. Do not guess a display."
+                        ),
+                    }
+                else:
+                    # Run before yielding so the chosen analysis is not lost
+                    # if the client disconnects immediately after selecting.
+                    result = self._execute_tool(
+                        "analyze_screen",
+                        arguments,
+                        conversation_id,
+                    )
+
+                self._store.append(
+                    conversation_id,
+                    "tool",
+                    json.dumps(result, ensure_ascii=False, default=str),
+                    tool_call_id=call["id"],
+                    name="analyze_screen",
+                )
+
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "tool_started",
+                    "tool": "analyze_screen",
+                    "arguments": arguments,
+                    "message": (
+                        f"Analyzing display {display}..."
+                        if display is not None
+                        else "Screen analysis cancelled."
+                    ),
+                }
+                yield self._tool_result_event(
+                    conversation_id,
+                    "analyze_screen",
+                    result,
+                )
+
+                yield from self._run_segment(
+                    conversation_id,
+                    screen_already_analyzed=True,
+                )
+            except TurnCancelled:
+                self._finalize_cancelled_turn(conversation_id)
+                yield {
+                    "type": "cancelled",
+                    "conversation_id": conversation_id,
+                }
+            except GeneratorExit:
+                if self._was_interrupted(conversation_id):
+                    self._finalize_cancelled_turn(conversation_id)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                yield self._error_event(conversation_id, exc)
+            finally:
+                self._clear_interrupt(conversation_id)
+                self._end_turn(conversation_id)
+
+    def _screen_context(
+        self,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the chat's stable system/tool prefix for the vision request.
+
+        Sending the exact same prefix lets Ollama reuse its prompt cache and
+        keep the runner at the chat context size. When the model template needs
+        the system prompt folded into the user turn (Hermes), there is no stable
+        prefix to share, so the vision request stays minimal.
+        """
+        if self._system_prompt_in_user_message():
+            return None
+        if self._settings.vision.screen_model != self._settings.ollama.model:
+            return None
+        return {
+            "system_prompt": self._system_prompt(
+                self._store.load(conversation_id)
+            ),
+            "tools": TOOL_SCHEMAS,
+        }
+
+    def _execute_tool(
+        self,
+        name: str,
+        arguments: str | dict[str, Any],
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        if name != "analyze_screen":
+            return self._tools.execute(name, arguments)
+        return self._tools.execute(
+            name,
+            arguments,
+            screen_context=self._screen_context(conversation_id),
+        )
+
     def _record_plan(
         self,
         conversation_id: str,
@@ -721,14 +906,17 @@ class ChatService:
         recover_failed_action: bool = False,
         auto_approve: bool = False,
         executed_signatures: set[tuple[str, str]] | None = None,
+        screen_already_analyzed: bool = False,
     ) -> Iterator[dict[str, Any]]:
         max_tool_rounds = self._settings.agent.max_iterations
-        screen_forced = False
+        max_auto_approved = self._settings.agent.max_auto_approved_actions
+        screen_forced = screen_already_analyzed
         recovery_attempted = False
         executed = set(executed_signatures or ())
         auto_approved_actions = 0
+        round_index = 0
 
-        for round_index in range(max_tool_rounds + 1):
+        while True:
             self._raise_if_cancelled(conversation_id)
             yield {
                 "type": "status",
@@ -858,8 +1046,11 @@ class ChatService:
             # or emits malformed JSON instead of calling the tool. Since
             # modifying tools are still gated by HITL, ask it to choose a tool.
             needs_forced_tool = (
-                self._looks_like_action_promise(content)
-                or self._looks_like_malformed_tool_output(content)
+                len(content.strip()) < 500
+                and (
+                    self._looks_like_action_promise(content)
+                    or self._looks_like_malformed_tool_output(content)
+                )
             )
             if (
                 not tool_calls
@@ -922,7 +1113,10 @@ class ChatService:
                         if forced_content.strip():
                             content = forced_content
                         streamed_content = outcome.streamed_content
-                        if not self._looks_like_action_promise(content):
+                        if (
+                            len(content.strip()) >= 500
+                            or not self._looks_like_action_promise(content)
+                        ):
                             break
                     except LLMError as exc:
                         logger.warning("Forced tool continuation failed: %s", exc)
@@ -1024,7 +1218,66 @@ class ChatService:
                 }
                 return
 
-            if round_index >= max_tool_rounds:
+            if max_tool_rounds > 0 and round_index >= max_tool_rounds:
+                # Do not fail the whole turn just because the model wanted
+                # another tool. Summarize the evidence collected so far without
+                # offering any tools, so the user still gets a final answer.
+                yield {
+                    "type": "status",
+                    "conversation_id": conversation_id,
+                    "phase": "thinking",
+                    "message": (
+                        "Tool limit reached; summarizing the results collected "
+                        "so far..."
+                    ),
+                }
+                try:
+                    outcome = yield from self._stream_completion(
+                        conversation_id,
+                        self._store.load(conversation_id),
+                        nudge=True,
+                        nudge_text=(
+                            "You have reached the tool-call limit. Do not call "
+                            "any more tools. Summarize the findings and results "
+                            "you already have, state clearly what could not be "
+                            "checked or completed, and give the user a useful "
+                            "final answer. Do not claim an action succeeded "
+                            "unless its tool result confirmed it."
+                        ),
+                        include_tools=False,
+                    )
+                except LLMError as exc:
+                    logger.warning("Tool-budget summary failed: %s", exc)
+                    raise LLMError(
+                        "The agent exceeded the maximum number of tool steps.",
+                        status_code=502,
+                    ) from exc
+
+                completion = outcome.completion
+                choices = getattr(completion, "choices", None)
+                summary = ""
+                if choices:
+                    summary = (
+                        getattr(choices[0].message, "content", "") or ""
+                    )
+                reply = self._normalize_reply(summary).strip()
+                if reply and not self._looks_like_raw_tool_call(reply):
+                    self._store.append(conversation_id, "assistant", reply)
+                    self._turn_plans.pop(conversation_id, None)
+                    yield {
+                        "type": "final",
+                        "conversation_id": conversation_id,
+                        "reply": reply,
+                        "streamed": (
+                            outcome.streamed_content is not None
+                            and self._normalize_reply(
+                                outcome.streamed_content
+                            ).strip()
+                            == reply
+                        ),
+                    }
+                    return
+
                 raise LLMError(
                     "The agent exceeded the maximum number of tool steps.",
                     status_code=502,
@@ -1039,12 +1292,6 @@ class ChatService:
                 self._normalize_serialized_call(conversation_id, call)
                 for call in serialized_calls
             ]
-            self._store.append(
-                conversation_id,
-                "assistant",
-                content,
-                tool_calls=serialized_calls,
-            )
 
             confirmation_calls = [
                 call
@@ -1058,6 +1305,47 @@ class ChatService:
             ]
 
             user_message = self._last_user_message(conversation_id)
+
+            # A screen analysis is paused before any tool runs while more than
+            # one display is connected. Capturing first would either guess a
+            # monitor or leave an unresolved tool call in the history.
+            screen_call = next(
+                (
+                    call
+                    for call in read_only_calls
+                    if call["function"]["name"] == "analyze_screen"
+                ),
+                None,
+            )
+
+            if screen_call is not None:
+                displays = self._tools.display_choices()
+                if len(displays) > 1:
+                    pending = self._pending.create(
+                        conversation_id,
+                        user_message,
+                        [screen_call],
+                        [],
+                        assistant_message=content.strip(),
+                        kind="display",
+                        displays=displays,
+                        question=str(
+                            _parse_arguments(screen_call).get(
+                                "user_question",
+                                "",
+                            )
+                        ),
+                    )
+                    yield pending.to_public()
+                    return
+
+            self._store.append(
+                conversation_id,
+                "assistant",
+                content,
+                tool_calls=serialized_calls,
+            )
+
             invalid_open_calls = [
                 call
                 for call in confirmation_calls
@@ -1131,10 +1419,13 @@ class ChatService:
                         else:
                             executed.add(signature)
                             auto_approved_actions += 1
-                            if auto_approved_actions > MAX_AUTO_APPROVED_ACTIONS:
+                            if (
+                                max_auto_approved > 0
+                                and auto_approved_actions > max_auto_approved
+                            ):
                                 raise LLMError(
-                                    "The agent exceeded the maximum number of "
-                                    "automatic actions for one request.",
+                                    "The agent exceeded the configured limit "
+                                    "of automatic actions for one request.",
                                     status_code=502,
                                 )
                             yield {
@@ -1145,7 +1436,11 @@ class ChatService:
                                 "arguments": parsed,
                                 "message": _tool_status_message(name, parsed),
                             }
-                            result = self._tools.execute(name, arguments)
+                            result = self._execute_tool(
+                                name,
+                                arguments,
+                                conversation_id,
+                            )
                     else:
                         yield {
                             "type": "status",
@@ -1155,7 +1450,11 @@ class ChatService:
                             "arguments": parsed,
                             "message": _tool_status_message(name, parsed),
                         }
-                        result = self._tools.execute(name, arguments)
+                        result = self._execute_tool(
+                            name,
+                            arguments,
+                            conversation_id,
+                        )
 
                     if name == "propose_plan":
                         self._record_plan(conversation_id, result)
@@ -1178,6 +1477,7 @@ class ChatService:
                         and not result.get("ok")
                     ):
                         recover_failed_action = True
+                round_index += 1
                 continue
 
             for call in read_only_calls:
@@ -1193,7 +1493,7 @@ class ChatService:
                     "arguments": parsed,
                     "message": _tool_status_message(name, parsed),
                 }
-                result = self._tools.execute(name, arguments)
+                result = self._execute_tool(name, arguments, conversation_id)
                 if name == "propose_plan":
                     self._record_plan(conversation_id, result)
                 self._store.append(
@@ -1244,10 +1544,7 @@ class ChatService:
                 yield pending.to_public()
                 return
 
-        raise LLMError(
-            "The agent exceeded the maximum number of tool steps.",
-            status_code=502,
-        )
+            round_index += 1
 
     def generate_reply(self, conversation_id: str, message: str) -> str:
         """Legacy non-streaming helper.
@@ -1258,7 +1555,7 @@ class ChatService:
         events = list(self.start_turn(conversation_id, message))
 
         for event in events:
-            if event["type"] == "action_required":
+            if event["type"] in {"action_required", "display_required"}:
                 pending = self._pending.get(event["approval_id"])
                 raise ConfirmationRequired(pending)
 
@@ -1499,6 +1796,7 @@ class ChatService:
         nudge: bool = False,
         nudge_text: str | None = None,
         tool_choice: str = "auto",
+        include_tools: bool = True,
     ) -> Iterator[dict[str, Any]]:
         """Stream content deltas/metrics, then return an OpenAI-shaped completion."""
         model, messages = self._completion_messages(
@@ -1514,6 +1812,7 @@ class ChatService:
                 nudge=nudge,
                 nudge_text=nudge_text,
                 tool_choice=tool_choice,
+                include_tools=include_tools,
             )
             self._raise_if_cancelled(conversation_id)
             choices = getattr(completion, "choices", None) or []
@@ -1554,7 +1853,7 @@ class ChatService:
         chunks = stream_chat(
             model=model,
             messages=messages,
-            tools=TOOL_SCHEMAS,
+            tools=TOOL_SCHEMAS if include_tools else None,
             tool_choice=tool_choice,
             temperature=self._settings.ollama.temperature,
         )
@@ -1692,6 +1991,7 @@ class ChatService:
         nudge: bool = False,
         nudge_text: str | None = None,
         tool_choice: str = "auto",
+        include_tools: bool = True,
     ) -> Any:
         model, messages = self._completion_messages(
             history,
@@ -1703,7 +2003,7 @@ class ChatService:
             return self._client.chat.completions.create(
                 model=model,
                 messages=messages,
-                tools=TOOL_SCHEMAS,
+                tools=TOOL_SCHEMAS if include_tools else None,
                 tool_choice=tool_choice,
                 temperature=self._settings.ollama.temperature,
             )
@@ -1830,6 +2130,19 @@ class ChatService:
         if len(steps) <= 1:
             return []
         return cls._normalize_plan_steps(steps)[:8]
+
+    @staticmethod
+    def _model_facing_diagnosis(content: str) -> str:
+        """Remove UI-only artifact paths from a diagnosis tool result."""
+        try:
+            parsed = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            return content
+        if not isinstance(parsed, dict):
+            return content
+        for key in ("charts", "files", "report_dir", "report_file"):
+            parsed.pop(key, None)
+        return json.dumps(parsed, ensure_ascii=False, default=str)
 
     @staticmethod
     def _call_signature(name: str, arguments: Any) -> tuple[str, str]:
@@ -2149,14 +2462,7 @@ class ChatService:
 
     @staticmethod
     def _looks_like_action_promise(text: str) -> bool:
-        return bool(
-            re.search(
-                r"\b(?:i will|i'll|i am going to|i'm going to|next,?\s+i|"
-                r"let me|i can now|i will now)\b",
-                text,
-                re.IGNORECASE,
-            )
-        )
+        return bool(_ACTION_PROMISE.search(text))
 
     def _last_user_requested_action(self, conversation_id: str) -> bool:
         last = self._last_user_message(conversation_id).lower()
@@ -2241,6 +2547,22 @@ class ChatService:
             )
             return
 
+    def _system_prompt(
+        self,
+        history: list[dict[str, Any]],
+        requested_language: str | None = None,
+        now: datetime | None = None,
+    ) -> str:
+        """Build the system prompt exactly as the chat request will send it."""
+        if requested_language is None:
+            requested_language = detect_requested_language(history)
+        return build_system_prompt(
+            self._settings,
+            self._knowledge.read(),
+            requested_language,
+            now=now,
+        )
+
     def _build_messages(
         self,
         history: list[dict[str, Any]],
@@ -2248,12 +2570,7 @@ class ChatService:
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
         requested_language = detect_requested_language(history)
-        system_prompt = build_system_prompt(
-            self._settings,
-            self._knowledge.read(),
-            requested_language,
-            now=now,
-        )
+        system_prompt = self._system_prompt(history, requested_language, now=now)
         fold_system = self._system_prompt_in_user_message()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -2267,9 +2584,15 @@ class ChatService:
         )
 
         for item in window:
+            content = item.get("content") or ""
+            if item["role"] == "tool" and item.get("name") == "system_diagnosis":
+                # The UI needs chart/report paths, but the model does not: the
+                # visuals are already rendered natively in the chat. Hide the
+                # artifact paths so the answer does not paste local file links.
+                content = self._model_facing_diagnosis(content)
             message: dict[str, Any] = {
                 "role": item["role"],
-                "content": item.get("content") or "",
+                "content": content,
             }
             if item.get("tool_calls"):
                 message["tool_calls"] = item["tool_calls"]
@@ -2308,26 +2631,35 @@ class ChatService:
     ) -> list[dict[str, Any]]:
         """Return the latest messages that fit the sliding context window.
 
-        The window is capped at CONTEXT_WINDOW_MESSAGES. It is then advanced to
-        the next user message so the model never receives an orphaned tool
-        result or a tool call whose result was cut off. If a long tool loop
-        leaves no user message in the window, the current turn is kept intact.
+        The window is capped at CONTEXT_WINDOW_MESSAGES and an approximate
+        character budget. The current user request is always kept, even when a
+        long tool loop pushes it out of the recent-message window. The selected
+        slice starts at a complete tool-call boundary so the model never sees an
+        orphaned tool result or a tool call whose result was cut off.
         """
+        if not history:
+            return []
+
         if len(history) <= CONTEXT_WINDOW_MESSAGES:
             window = list(history)
         else:
-            window = list(history[-CONTEXT_WINDOW_MESSAGES:])
-            first_user = next(
+            start = len(history) - CONTEXT_WINDOW_MESSAGES
+            # A user message inside the recent slice is a natural turn
+            # boundary; start there instead of with the previous answer.
+            conversation_start = next(
                 (
                     index
-                    for index, message in enumerate(window)
-                    if message.get("role") == "user"
+                    for index in range(start, len(history))
+                    if history[index].get("role") == "user"
                 ),
                 None,
             )
-            if first_user is not None:
-                window = window[first_user:]
+            if conversation_start is not None:
+                start = conversation_start
+                window = list(history[start:])
             else:
+                start = ChatService._align_window_start(history, start)
+                window = list(history[start:])
                 last_user = next(
                     (
                         index
@@ -2336,10 +2668,73 @@ class ChatService:
                     ),
                     None,
                 )
-                if last_user is not None:
-                    window = list(history[last_user:])
+                if last_user is not None and last_user < start:
+                    window = [history[last_user]] + window
 
-        return ChatService._trim_incomplete_tool_prefix(window)
+        window = ChatService._trim_incomplete_tool_prefix(window)
+        return ChatService._fit_context_budget(window)
+
+    @staticmethod
+    def _align_window_start(
+        history: list[dict[str, Any]],
+        start: int,
+    ) -> int:
+        """Move a window start back so it includes the tool call for a result."""
+        while 0 < start < len(history) and history[start].get("role") == "tool":
+            call_id = history[start].get("tool_call_id")
+            for index in range(start - 1, -1, -1):
+                message = history[index]
+                if message.get("role") != "assistant":
+                    continue
+                call_ids = {
+                    call.get("id")
+                    for call in message.get("tool_calls") or []
+                    if isinstance(call, dict)
+                }
+                if call_id in call_ids:
+                    start = index
+                    break
+            else:
+                # No matching call: skip the orphaned result.
+                start += 1
+                continue
+            if start == len(history):
+                break
+        return start
+
+    @staticmethod
+    def _fit_context_budget(
+        window: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Keep the current request and trim old steps to fit the char budget."""
+        if not window:
+            return []
+
+        total = sum(
+            len(str(message.get("content") or "")) for message in window
+        )
+        if total <= CONTEXT_WINDOW_CHARS:
+            return window
+
+        has_user_head = window[0].get("role") == "user"
+        head = [window[0]] if has_user_head else []
+        rest = ChatService._trim_incomplete_tool_prefix(
+            window[1:] if has_user_head else list(window)
+        )
+        used = len(str(head[0].get("content") or "")) if head else 0
+        kept: list[dict[str, Any]] = []
+
+        for message in reversed(rest):
+            cost = len(str(message.get("content") or "")) + 80
+            if kept and used + cost > CONTEXT_WINDOW_CHARS:
+                break
+            kept.append(message)
+            used += cost
+
+        trimmed = ChatService._trim_incomplete_tool_prefix(
+            list(reversed(kept))
+        )
+        return head + trimmed
 
     @staticmethod
     def _trim_incomplete_tool_prefix(

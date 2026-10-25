@@ -388,3 +388,182 @@ a:focus-visible {
   max-width: none;
   border-radius: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Answer typography                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Section headings read as structure, not decoration. */
+.markdown-body h2:not(:first-child) {
+  margin-top: 1.15rem;
+}
+
+.markdown-body h2 {
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.markdown-body h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.markdown-body h3::before {
+  content: "";
+  width: 3px;
+  height: 0.82em;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #a78bfa, #34d399);
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.markdown-compact h2,
+.markdown-compact h3 {
+  display: block;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.markdown-compact h3::before {
+  display: none;
+}
+
+.markdown-body li::marker {
+  color: rgba(167, 139, 250, 0.55);
+}
+
+.markdown-body blockquote {
+  border-left-color: rgba(167, 139, 250, 0.35);
+  background: rgba(167, 139, 250, 0.035);
+  border-radius: 0 0.5rem 0.5rem 0;
+  padding: 0.45rem 0.75rem;
+}
+
+.markdown-body .md-inline-code {
+  background: rgba(167, 139, 250, 0.1);
+  border-color: rgba(167, 139, 250, 0.14);
+}
+
+.markdown-body th {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.markdown-body tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.markdown-body hr {
+  border-top: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    rgba(167, 139, 250, 0.3),
+    rgba(255, 255, 255, 0.07) 40%,
+    transparent
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Inline diagnosis report                                            */
+/* ------------------------------------------------------------------ */
+
+.diagnosis-report {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 1.1rem;
+  padding: 0.9rem 1rem 0.75rem;
+  background:
+    radial-gradient(
+      120% 140% at 0% 0%,
+      rgba(167, 139, 250, 0.075),
+      transparent 55%
+    ),
+    radial-gradient(
+      100% 120% at 100% 0%,
+      rgba(52, 211, 153, 0.05),
+      transparent 50%
+    ),
+    linear-gradient(
+      165deg,
+      rgba(255, 255, 255, 0.035),
+      rgba(255, 255, 255, 0.012)
+    );
+  box-shadow: 0 20px 55px -38px rgba(0, 0, 0, 0.95);
+}
+
+.diagnosis-metric {
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 0.7rem;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.55rem 0.6rem;
+  min-width: 0;
+}
+
+.diagnosis-metric-label {
+  font-size: 9.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
+.diagnosis-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.12rem 0.45rem;
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: nowrap;
+}
+
+.diagnosis-panel {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 0.8rem;
+  background: rgba(255, 255, 255, 0.018);
+  padding: 0.6rem 0.7rem 0.55rem;
+  min-width: 0;
+}
+
+.diagnosis-finding {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  border-radius: 0.6rem;
+  padding: 0.35rem 0.5rem;
+  margin: 0;
+  list-style: none;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.diagnosis-finding::marker {
+  content: none;
+}
+
+.diagnosis-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 0.45rem;
+  padding: 0.25rem 0.45rem;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.45);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition:
+    color 180ms ease-out,
+    background-color 180ms ease-out;
+}
+
+.diagnosis-link:hover {
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.05);
+}

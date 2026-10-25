@@ -85,6 +85,168 @@ def build_app(tmp_path: Path, messages: list[Any]) -> tuple[TestClient, Conversa
     return TestClient(app), store
 
 
+def build_display_app(
+    tmp_path: Path,
+    messages: list[Any],
+) -> tuple[TestClient, Any]:
+    class DisplayVision:
+        is_loaded = True
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int | None]] = []
+
+        def display_choices(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "index": 1,
+                    "name": "Display 1",
+                    "width": 1920,
+                    "height": 1080,
+                    "left": -1920,
+                    "top": 325,
+                    "primary": False,
+                    "position": "Left of the primary display",
+                    "preview": "data:image/jpeg;base64,AAAA",
+                },
+                {
+                    "index": 2,
+                    "name": "Display 2",
+                    "width": 3840,
+                    "height": 2160,
+                    "left": 0,
+                    "top": 0,
+                    "primary": True,
+                    "position": "Primary display",
+                    "preview": "data:image/jpeg;base64,BBBB",
+                },
+            ]
+
+        def analyze_screen(
+            self,
+            user_question: str,
+            display: int | None = None,
+            *,
+            system_prompt: str | None = None,
+            tools: Any = None,
+        ) -> dict[str, Any]:
+            self.calls.append((user_question, display))
+            return {
+                "ok": True,
+                "question": user_question,
+                "answer": f"Display {display} shows a browser.",
+                "display": {"index": display},
+                "screen": {"width": 1600, "height": 900},
+                "message": f"Analyzed Display {display}.",
+            }
+
+    settings = Settings(
+        ollama=OllamaSettings(model="hermes3", temperature=0.2, max_retries=0),
+        agent=AgentSettings(max_iterations=3),
+        memory=MemorySettings(
+            knowledge_base_path=tmp_path / "knowledge.md",
+            learn_from_chats=False,
+        ),
+    )
+    store = ConversationStore()
+    knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
+    vision = DisplayVision()
+    executor = ToolExecutor(settings.tools, vision=vision)  # type: ignore[arg-type]
+    client = ScriptedClient(messages)
+    service = ChatService(settings, store, knowledge, executor, client=client)
+    app = create_app(settings=settings, store=store, chat_service=service)
+    return TestClient(app), vision
+
+
+def test_display_required_then_chosen_display(tmp_path: Path) -> None:
+    client, vision = build_display_app(
+        tmp_path,
+        [
+            tool_message(
+                "analyze_screen",
+                {"user_question": "What is on my screen?"},
+            ),
+            content_message("Display 2 shows a browser."),
+        ],
+    )
+    conversation_id = str(uuid4())
+
+    with client:
+        response = client.post(
+            "/chat/stream",
+            json={
+                "message": "What is on my screen?",
+                "conversation_id": conversation_id,
+            },
+        )
+        events = parse_sse(response.text)
+        choice = next(
+            event for event in events if event["type"] == "display_required"
+        )
+        assert [item["index"] for item in choice["displays"]] == [1, 2]
+        assert vision.calls == []
+
+        pending = client.get(f"/chat/pending/{conversation_id}")
+        assert pending.json()["pending"]["kind"] == "display"
+
+        resumed = client.post(
+            "/chat/display",
+            json={"approval_id": choice["approval_id"], "display": 2},
+        )
+        assert resumed.status_code == 200
+        resumed_events = parse_sse(resumed.text)
+        assert any(
+            event["type"] == "tool_result"
+            and event["tool"] == "analyze_screen"
+            and event["ok"]
+            for event in resumed_events
+        )
+        final = next(
+            event for event in resumed_events if event["type"] == "final"
+        )
+        assert final["reply"] == "Display 2 shows a browser."
+        assert vision.calls == [("What is on my screen?", 2)]
+
+        cleared = client.get(f"/chat/pending/{conversation_id}")
+        assert cleared.json()["pending"] is None
+
+
+def test_display_choice_rejects_an_unknown_number(tmp_path: Path) -> None:
+    client, _vision = build_display_app(
+        tmp_path,
+        [
+            tool_message(
+                "analyze_screen",
+                {"user_question": "What is on my screen?"},
+            ),
+            content_message("Done."),
+        ],
+    )
+    conversation_id = str(uuid4())
+
+    with client:
+        response = client.post(
+            "/chat/stream",
+            json={
+                "message": "What is on my screen?",
+                "conversation_id": conversation_id,
+            },
+        )
+        choice = next(
+            event
+            for event in parse_sse(response.text)
+            if event["type"] == "display_required"
+        )
+
+        invalid = client.post(
+            "/chat/display",
+            json={"approval_id": choice["approval_id"], "display": 9},
+        )
+        assert invalid.status_code == 400
+
+        still_pending = client.get(f"/chat/pending/{conversation_id}")
+        assert still_pending.json()["pending"] is not None
+
+
 def test_stream_action_required_then_approve(tmp_path: Path) -> None:
     target = tmp_path / "stream-approved"
     client, _store = build_app(

@@ -15,11 +15,12 @@
     "keep_alive_seconds": 1800,
     "warmup_on_startup": true,
     "model_quantization": "q4_K_M",
-    "context_window": 16384,
+    "context_window": 24576,
     "system_prompt_mode": "auto"
   },
   "agent": {
-    "max_iterations": 5,
+    "max_iterations": 0,
+    "max_auto_approved_actions": 0,
     "approval_ttl_seconds": 600
   },
   "memory": {
@@ -47,8 +48,8 @@
     "max_images": 150000,
     "max_file_mb": 50,
     "exclude_paths": [],
-    "min_confidence_z": 3.9,
-    "min_result_z": 3.5,
+    "min_confidence_z": 3.0,
+    "min_result_z": 2.4,
     "dedupe_threshold": 0.995,
     "screen_model": "qwen3-vl:8b-instruct",
     "screen_timeout_seconds": 180,

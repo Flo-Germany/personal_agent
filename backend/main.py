@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
-from agent.approvals import ApprovalNotFound
+from agent.approvals import ApprovalError, ApprovalNotFound
 from agent.chat import ChatService, ConfirmationRequired, LLMError
 from agent.prompt import load_personality
 from memory.knowledge import KnowledgeBase
@@ -65,6 +65,12 @@ class ApprovalRequest(BaseModel):
     approved: bool
 
 
+class DisplayChoiceRequest(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=128)
+    # None cancels the screen analysis.
+    display: int | None = Field(default=None, ge=1, le=64)
+
+
 class InterruptRequest(BaseModel):
     conversation_id: UUID
 
@@ -78,6 +84,7 @@ class HistoryMessage(BaseModel):
 class HistoryResponse(BaseModel):
     conversation_id: str
     messages: list[HistoryMessage]
+    diagnosis: dict[str, Any] | None = None
 
 
 class IdentityResponse(BaseModel):
@@ -109,6 +116,7 @@ def create_app(
         settings.vision,
         ollama_base_url=settings.ollama.base_url,
         keep_alive_seconds=settings.ollama.keep_alive_seconds,
+        context_window=settings.ollama.context_window,
     )
 
     owned_chat_service = chat_service is None
@@ -260,6 +268,30 @@ def create_app(
             learn_message=pending.user_message,
         )
 
+    @app.post("/chat/display")
+    async def chat_display(payload: DisplayChoiceRequest) -> StreamingResponse:
+        """Continue a paused screen analysis with the chosen display."""
+        try:
+            pending = chat_service.get_pending(payload.approval_id)
+        except ApprovalNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        try:
+            events = chat_service.resume_display(
+                payload.approval_id,
+                payload.display,
+            )
+        except ApprovalError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return stream_response(
+            events,
+            pending.conversation_id,
+            learn_message=pending.user_message,
+        )
+
     @app.post("/chat/interrupt", status_code=204)
     async def chat_interrupt(payload: InterruptRequest) -> Response:
         """Ask the active turn to stop after the current operation."""
@@ -325,7 +357,31 @@ def create_app(
             if message.get("role") in {"user", "assistant"}
             and str(message.get("content", "")).strip()
         ]
-        return HistoryResponse(conversation_id=normalized, messages=messages)
+        # Attach the diagnosis card only to the latest turn so an older report
+        # never appears after a newer, unrelated answer.
+        turn_start = 0
+        for index, message in enumerate(stored):
+            if message.get("role") == "user":
+                turn_start = index
+
+        diagnosis: dict[str, Any] | None = None
+        for message in stored[turn_start + 1 :]:
+            if message.get("role") != "tool":
+                continue
+            if message.get("name") != "system_diagnosis":
+                continue
+            try:
+                parsed = json.loads(message.get("content") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict) and parsed.get("ok"):
+                diagnosis = parsed
+                break
+        return HistoryResponse(
+            conversation_id=normalized,
+            messages=messages,
+            diagnosis=diagnosis,
+        )
 
     @app.delete("/chat/history/{conversation_id}", status_code=204)
     async def delete_history(conversation_id: UUID) -> Response:

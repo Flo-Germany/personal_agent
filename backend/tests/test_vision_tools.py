@@ -173,6 +173,59 @@ def test_low_confidence_queries_return_no_unrelated_images(
     assert "No confident visual match" in result["message"]
 
 
+class GradedEmbedder:
+    """Broad score distribution with one clear-but-not-significant winner."""
+
+    is_loaded = True
+
+    def encode_images(self, paths: Sequence[Path]) -> dict[Path, np.ndarray]:
+        vectors: dict[Path, np.ndarray] = {}
+        for path in paths:
+            if path.stem == "target":
+                score = 0.30
+            else:
+                index = int(path.stem.rsplit("_", 1)[-1])
+                score = 0.20 + min(index, 49) * 0.0018
+            vector = [score, np.sqrt(max(0.0, 1.0 - score**2)), 0.0]
+            vectors[path] = np.asarray(vector, dtype=np.float32)
+        return vectors
+
+    def encode_text(self, query: str) -> np.ndarray:
+        return np.asarray([1.0, 0.0, 0.0], dtype=np.float32)
+
+
+def test_low_confidence_with_a_clear_gap_returns_tentative_candidates(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "mixed"
+    make_image(root / "target.png", (200, 40, 40))
+    for index in range(50):
+        make_image(root / f"noise_{index}.png", (20, 20, 20))
+
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(root)],
+        batch_size=8,
+        scan_interval_seconds=3600,
+        max_images=100,
+        max_file_mb=10,
+        min_confidence_z=3.0,
+        min_result_z=2.4,
+        dedupe_threshold=1.0,
+    )
+    service = VisionService(settings, embedder=GradedEmbedder())
+    service.scan_once()
+
+    result = service.search("something")
+
+    assert result["confidence"] == "low"
+    assert result["results"]
+    assert result["results"][0]["name"] == "target.png"
+    assert "tentative" in result["message"]
+
+
 def test_exclude_paths_skips_noisy_subtrees(tmp_path: Path) -> None:
     root = tmp_path / "mix"
     make_image(root / "photos" / "dog_keep.png", (200, 40, 40))
@@ -300,10 +353,21 @@ def test_executor_reports_missing_vision_service() -> None:
 
 class ScreenVision:
     def __init__(self) -> None:
-        self.questions: list[str] = []
+        self.questions: list[tuple[str, int | None]] = []
+        self.contexts: list[dict[str, object]] = []
 
-    def analyze_screen(self, user_question: str) -> dict[str, object]:
-        self.questions.append(user_question)
+    def analyze_screen(
+        self,
+        user_question: str,
+        display: int | None = None,
+        *,
+        system_prompt: str | None = None,
+        tools: object = None,
+    ) -> dict[str, object]:
+        self.questions.append((user_question, display))
+        self.contexts.append(
+            {"system_prompt": system_prompt, "tools": tools}
+        )
         return {"ok": True, "answer": "a browser window"}
 
 
@@ -313,11 +377,246 @@ def test_executor_dispatches_screen_analysis() -> None:
 
     result = executor.execute(
         "analyze_screen",
-        {"user_question": "What is on my screen?"},
+        {"user_question": "What is on my screen?", "display": 2},
     )
 
     assert result["ok"] is True
-    assert vision.questions == ["What is on my screen?"]
+    assert vision.questions == [("What is on my screen?", 2)]
+    assert vision.contexts == [{"system_prompt": None, "tools": None}]
+
+
+def test_executor_forwards_the_chat_prefix_to_screen_analysis() -> None:
+    vision = ScreenVision()
+    executor = ToolExecutor(ToolSettings(), vision=vision)  # type: ignore[arg-type]
+    tools = [{"type": "function", "function": {"name": "demo"}}]
+
+    result = executor.execute(
+        "analyze_screen",
+        {"user_question": "What is on my screen?"},
+        screen_context={"system_prompt": "SYSTEM PREFIX", "tools": tools},
+    )
+
+    assert result["ok"] is True
+    assert vision.contexts == [
+        {"system_prompt": "SYSTEM PREFIX", "tools": tools}
+    ]
+
+
+SINGLE_DISPLAY = {
+    "index": 1,
+    "name": "Display 1",
+    "width": 800,
+    "height": 600,
+    "left": 0,
+    "top": 0,
+    "primary": True,
+    "position": "Primary display",
+}
+
+
+def use_single_display(
+    monkeypatch: pytest.MonkeyPatch,
+    service: VisionService,
+) -> None:
+    monkeypatch.setattr(service, "list_displays", lambda: [dict(SINGLE_DISPLAY)])
+
+
+class FakeShot:
+    def __init__(self, width: int, height: int) -> None:
+        self.size = (width, height)
+        self.rgb = b"\x10\x20\x30" * (width * height)
+
+
+class FakeMSS:
+    """Two physical monitors plus the virtual all-display monitor at index 0."""
+
+    monitors = [
+        {"left": -1920, "top": 0, "width": 5760, "height": 2160},
+        {
+            "left": -1920,
+            "top": 325,
+            "width": 1920,
+            "height": 1080,
+            "is_primary": False,
+            "name": "Left Monitor",
+        },
+        {
+            "left": 0,
+            "top": 0,
+            "width": 3840,
+            "height": 2160,
+            "is_primary": True,
+            "name": "Main Monitor",
+        },
+    ]
+
+    def __enter__(self) -> "FakeMSS":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def grab(self, monitor: dict[str, object]) -> FakeShot:
+        width = int(monitor["width"]) // 16
+        height = int(monitor["height"]) // 16
+        return FakeShot(max(1, width), max(1, height))
+
+
+def test_list_displays_reports_both_monitors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mss.MSS", lambda: FakeMSS())
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+
+    displays = service.list_displays()
+
+    assert [display["index"] for display in displays] == [1, 2]
+    assert displays[0]["primary"] is False
+    assert displays[0]["position"] == "Left of the primary display"
+    assert displays[1]["primary"] is True
+    assert displays[1]["position"] == "Primary display"
+    assert displays[1]["width"] == 3840
+    assert displays[1]["height"] == 2160
+
+
+def test_display_choices_include_previews(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mss.MSS", lambda: FakeMSS())
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+
+    choices = service.display_choices()
+
+    assert len(choices) == 2
+    assert choices[0]["preview"].startswith("data:image/jpeg;base64,")
+    assert choices[1]["preview"].startswith("data:image/jpeg;base64,")
+
+
+def test_analyze_screen_requires_a_choice_with_two_displays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mss.MSS", lambda: FakeMSS())
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+    captured: list[int | None] = []
+    monkeypatch.setattr(
+        service,
+        "_capture_screen",
+        lambda display=None: captured.append(display) or ("BASE64", 800, 600),
+    )
+
+    result = service.analyze_screen("What is on my screen?")
+
+    assert result["ok"] is False
+    assert result["needs_display"] is True
+    assert [item["index"] for item in result["displays"]] == [1, 2]
+    assert captured == []
+
+
+def test_analyze_screen_uses_the_chosen_display(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mss.MSS", lambda: FakeMSS())
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+        screen_model="test-vision",
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+    captured: list[int | None] = []
+    monkeypatch.setattr(
+        service,
+        "_capture_screen",
+        lambda display=None: captured.append(display) or ("BASE64", 800, 600),
+    )
+    monkeypatch.setattr(
+        service,
+        "_ask_vision_model",
+        lambda question, image, **kwargs: "The main monitor shows a browser.",
+    )
+
+    result = service.analyze_screen("What is on my screen?", display=2)
+
+    assert captured == [2]
+    assert result["ok"] is True
+    assert result["display"]["index"] == 2
+    assert result["display"]["width"] == 3840
+    assert "Display 2" in result["message"]
+
+
+def test_analyze_screen_single_display_ignores_a_stray_number(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+        screen_model="test-vision",
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+    use_single_display(monkeypatch, service)
+    captured: list[int | None] = []
+    monkeypatch.setattr(
+        service,
+        "_capture_screen",
+        lambda display=None: captured.append(display) or ("BASE64", 800, 600),
+    )
+    monkeypatch.setattr(
+        service,
+        "_ask_vision_model",
+        lambda question, image, **kwargs: "A single monitor.",
+    )
+
+    result = service.analyze_screen("What is on my screen?", display=7)
+
+    assert captured == [1]
+    assert result["ok"] is True
+    assert result["display"]["index"] == 1
+
+
+def test_analyze_screen_rejects_an_unknown_display(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mss.MSS", lambda: FakeMSS())
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+    )
+    service = VisionService(settings, embedder=FakeEmbedder())
+
+    result = service.analyze_screen("What is on my screen?", display=9)
+
+    assert result["ok"] is False
+    assert result["needs_display"] is True
+    assert "not available" in result["error"]
 
 
 def test_analyze_screen_uses_capture_and_local_model(
@@ -332,15 +631,16 @@ def test_analyze_screen_uses_capture_and_local_model(
         screen_model="test-vision",
     )
     service = VisionService(settings, embedder=FakeEmbedder())
+    use_single_display(monkeypatch, service)
     captured: dict[str, str] = {}
 
     monkeypatch.setattr(
         service,
         "_capture_screen",
-        lambda: ("BASE64IMAGE", 800, 600),
+        lambda display=None: ("BASE64IMAGE", 800, 600),
     )
 
-    def fake_ask(question: str, image: str) -> str:
+    def fake_ask(question: str, image: str, **kwargs: object) -> str:
         captured["question"] = question
         captured["image"] = image
         return "A browser window with a form."
@@ -371,16 +671,17 @@ def test_analyze_screen_explains_mllama_incompatibility(
         screen_model="llama3.2-vision",
     )
     service = VisionService(settings, embedder=FakeEmbedder())
+    use_single_display(monkeypatch, service)
 
     monkeypatch.setattr(
         service,
         "_capture_screen",
-        lambda: ("BASE64IMAGE", 800, 600),
+        lambda display=None: ("BASE64IMAGE", 800, 600),
     )
     monkeypatch.setattr(
         service,
         "_ask_vision_model",
-        lambda question, image: (_ for _ in ()).throw(
+        lambda question, image, **kwargs: (_ for _ in ()).throw(
             RuntimeError("unknown model architecture: 'mllama'")
         ),
     )
@@ -440,10 +741,139 @@ def test_ask_vision_model_sends_concise_bounded_request(
     assert payload["model"] == "test-vision"
     assert payload["keep_alive"] == 0
     assert payload["options"] == {"temperature": 0.2, "num_predict": 321}
-    assert payload["messages"][0]["role"] == "system"
+    assert "tools" not in payload
+    assert len(payload["messages"]) == 1
+    assert payload["messages"][0]["role"] == "user"
+    assert payload["messages"][0]["content"].startswith("What is visible?")
     assert "without chain-of-thought" in payload["messages"][0]["content"]
-    assert payload["messages"][1]["content"] == "What is visible?"
-    assert payload["messages"][1]["images"] == ["BASE64"]
+    assert payload["messages"][0]["images"] == ["BASE64"]
+
+
+def test_ask_vision_model_reuses_the_chat_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+        screen_model="test-vision",
+    )
+    service = VisionService(
+        settings,
+        embedder=FakeEmbedder(),
+        context_window=16384,
+    )
+    requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"message":{"role":"assistant","content":"a window"}}'
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        import json
+
+        requests.append(
+            json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "tools.vision_tools.urllib.request.urlopen",
+        fake_urlopen,
+    )
+    tools = [{"type": "function", "function": {"name": "demo"}}]
+
+    answer = service._ask_vision_model(
+        "What is visible?",
+        "BASE64",
+        system_prompt="SYSTEM PREFIX",
+        tools=tools,
+    )
+
+    assert answer == "a window"
+    payload = requests[0]
+    assert payload["options"]["num_ctx"] == 16384
+    assert payload["tools"] == tools
+    assert payload["messages"][0] == {
+        "role": "system",
+        "content": "SYSTEM PREFIX",
+    }
+    user = payload["messages"][1]
+    assert "What is visible?" in user["content"]
+    assert "Do not call any tools." in user["content"]
+    assert user["images"] == ["BASE64"]
+
+
+def test_ask_vision_model_retries_without_tools_on_a_tool_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = VisionSettings(
+        enabled=False,
+        embed_model="fake-clip",
+        index_path=tmp_path / "vision.sqlite3",
+        scan_roots=[str(tmp_path)],
+        screen_model="test-vision",
+    )
+    service = VisionService(
+        settings,
+        embedder=FakeEmbedder(),
+        context_window=16384,
+    )
+    payloads: list[dict[str, object]] = []
+    responses = [
+        b'{"message":{"role":"assistant","content":"","tool_calls":'
+        b'[{"function":{"name":"analyze_screen","arguments":{}}}]}}',
+        b'{"message":{"role":"assistant","content":"The screen shows a browser."}}',
+    ]
+
+    class FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self.body = body
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.body
+
+    def fake_urlopen(request: object, timeout: float) -> FakeResponse:
+        import json
+
+        payloads.append(
+            json.loads(request.data.decode("utf-8"))  # type: ignore[attr-defined]
+        )
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr(
+        "tools.vision_tools.urllib.request.urlopen",
+        fake_urlopen,
+    )
+    tools = [{"type": "function", "function": {"name": "demo"}}]
+
+    answer = service._ask_vision_model(
+        "What is visible?",
+        "BASE64",
+        system_prompt="SYSTEM PREFIX",
+        tools=tools,
+    )
+
+    assert answer == "The screen shows a browser."
+    assert len(payloads) == 2
+    assert payloads[0]["tools"] == tools
+    assert "tools" not in payloads[1]
+    assert payloads[1]["options"]["num_ctx"] == 16384
 
 
 def test_analyze_screen_explains_timeout(
@@ -458,16 +888,17 @@ def test_analyze_screen_explains_timeout(
         screen_model="qwen3-vl:8b",
     )
     service = VisionService(settings, embedder=FakeEmbedder())
+    use_single_display(monkeypatch, service)
 
     monkeypatch.setattr(
         service,
         "_capture_screen",
-        lambda: ("BASE64IMAGE", 800, 600),
+        lambda display=None: ("BASE64IMAGE", 800, 600),
     )
     monkeypatch.setattr(
         service,
         "_ask_vision_model",
-        lambda question, image: (_ for _ in ()).throw(
+        lambda question, image, **kwargs: (_ for _ in ()).throw(
             RuntimeError("Ollama vision request timed out after 120 seconds")
         ),
     )

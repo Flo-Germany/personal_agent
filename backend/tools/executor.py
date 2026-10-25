@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from settings import ToolSettings
-from tools import os_tools, system_tools, window_tools
+from tools import os_tools, system_diagnosis, system_tools, window_tools
 from tools.schemas import TOOL_SCHEMAS
 
 if TYPE_CHECKING:
@@ -97,6 +97,8 @@ class ToolExecutor:
 
         def analyze_screen(
             user_question: str,
+            display: int | None = None,
+            _screen_context: dict[str, Any] | None = None,
             **_ignored: Any,
         ) -> dict[str, Any]:
             if vision is None:
@@ -104,7 +106,13 @@ class ToolExecutor:
                     "ok": False,
                     "error": "Screen analysis is not available.",
                 }
-            return vision.analyze_screen(user_question)
+            context = _screen_context or {}
+            return vision.analyze_screen(
+                user_question,
+                display=display,
+                system_prompt=context.get("system_prompt"),
+                tools=context.get("tools"),
+            )
 
         def propose_plan(
             steps: list[str] | None = None,
@@ -181,15 +189,48 @@ class ToolExecutor:
             ),
             "search_system": search,
             "semantic_image_search": semantic_image_search,
+            "system_diagnosis": (
+                lambda sample_seconds=4.0, include_benchmark=True: (
+                    system_diagnosis.run_diagnosis(
+                        sample_seconds=sample_seconds,
+                        include_benchmark=include_benchmark,
+                    )
+                )
+            ),
         }
 
     def requires_confirmation(self, name: str) -> bool:
         return os_tools.requires_confirmation(name)
 
-    def execute(self, name: str, arguments: str | dict[str, Any]) -> dict[str, Any]:
+    def display_choices(self) -> list[dict[str, Any]]:
+        """Return displays with previews, or an empty list without a vision service."""
+        if self.vision is None:
+            return []
+
+        choices = getattr(self.vision, "display_choices", None)
+        if choices is None:
+            return []
+
+        try:
+            return list(choices())
+        except Exception:  # noqa: BLE001 - display probing must not fail a turn
+            logger.debug("Display enumeration failed", exc_info=True)
+            return []
+
+    def execute(
+        self,
+        name: str,
+        arguments: str | dict[str, Any],
+        *,
+        screen_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Run one tool call, log it, and return a JSON-serializable result."""
         started = time.perf_counter()
-        result = self._dispatch(name, arguments)
+        result = self._dispatch(
+            name,
+            arguments,
+            screen_context=screen_context,
+        )
         duration_ms = (time.perf_counter() - started) * 1000
         ok = bool(result.get("ok"))
         log = logger.info if ok else logger.warning
@@ -210,6 +251,8 @@ class ToolExecutor:
         self,
         name: str,
         arguments: str | dict[str, Any],
+        *,
+        screen_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         handler = self._handlers.get(name)
         if handler is None:
@@ -243,6 +286,8 @@ class ToolExecutor:
                 }
 
         try:
+            if name == "analyze_screen":
+                return handler(**parsed, _screen_context=screen_context)
             return handler(**parsed)
         except TypeError as exc:
             return {"ok": False, "error": f"Invalid arguments for {name}: {exc}"}

@@ -515,9 +515,12 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                 "drive, or all_drives argument. Returns up to "
                 "10 absolute paths ranked by visual similarity, with scores, "
                 "modified times, and a confidence value. If confidence is low, "
-                "results is empty: do not invent or present unrelated images; "
-                "tell the user no confident visual match was found and ask for a "
-                "more specific English description. English descriptions work "
+                "the best few candidates are still returned as tentative matches: "
+                "present them as possible matches, state that visual similarity is "
+                "approximate, sanity-check the file names, and never claim "
+                "certainty. If results is empty, say "
+                "no visual match was found and ask for a more specific English "
+                "description; do not invent images. English descriptions work "
                 "best. If the index is still building, the result says so; retry "
                 "a little later or tell the user how many images are indexed so "
                 "far. Use search_system instead when the user asks by filename, "
@@ -543,6 +546,48 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     },
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "system_diagnosis",
+            "description": (
+                "Run a comprehensive, read-only Windows system diagnosis and "
+                "generate charts. Use this ONCE for broad requests such as 'analyze "
+                "my computer', 'do a system diagnosis', 'check my PC health and "
+                "performance', or 'why is my computer slow?'. It collects OS and "
+                "hardware facts, live CPU/memory/GPU usage, top processes, disk and "
+                "SSD health, services, startup apps, Defender/firewall state, recent "
+                "system errors, pending reboot, and small CPU/memory benchmarks, then "
+                "writes PNG charts under memory/diagnostics and returns their paths. "
+                "Prefer this over many individual PowerShell queries for a general "
+                "diagnosis. Read-only; no approval is needed. After it returns, "
+                "summarize the findings and include the chart links; do not repeat "
+                "the collection with more queries."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sample_seconds": {
+                        "type": "number",
+                        "minimum": 2,
+                        "maximum": 10,
+                        "description": (
+                            "Live sampling window in seconds. Defaults to 4."
+                        ),
+                    },
+                    "include_benchmark": {
+                        "type": "boolean",
+                        "description": (
+                            "Run short in-memory CPU and memory benchmarks. "
+                            "Defaults to true."
+                        ),
+                    },
+                },
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -602,15 +647,18 @@ TOOL_SCHEMAS: list[ToolSchema] = [
         "function": {
             "name": "analyze_screen",
             "description": (
-                "Look at the user's current primary screen and answer a question "
-                "about what is visible. Read-only and local: captures one screenshot "
-                "in memory, sends it only to the locally configured vision model "
-                "in Ollama, and returns its text answer. No file is left on disk. "
-                "Use this for questions such as 'What is on my screen?', "
-                "'Look at my screen', 'What does this error say?', or any question "
-                "about visual layout. Do not use it when the user asks about a "
-                "specific open document that read_window_content can read, and do "
-                "not capture the screen without a clear screen-related request."
+                "Look at the user's screen and answer a question about what is "
+                "visible. Read-only and local: captures one display in memory, "
+                "sends it only to the locally configured vision model in Ollama, "
+                "and returns its text answer. No file is left on disk. Use this "
+                "for questions such as 'What is on my screen?', 'Look at my "
+                "screen', 'What does this error say?', or any question about "
+                "visual layout. When several displays are connected, the app "
+                "always asks the user which display to analyze before capturing; "
+                "call this tool normally and do not ask which display in a text "
+                "reply. Do not use this when the user asks about a specific open "
+                "document that read_window_content can read, and do not capture "
+                "the screen without a clear screen-related request."
             ),
             "parameters": {
                 "type": "object",
@@ -621,7 +669,16 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                             "The user's question about the screen, including any "
                             "specific visual details to look for."
                         ),
-                    }
+                    },
+                    "display": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Internal: 1-based display number. Do not pass this "
+                            "yourself. The app sets it after the user chooses a "
+                            "display when more than one is connected."
+                        ),
+                    },
                 },
                 "required": ["user_question"],
                 "additionalProperties": False,

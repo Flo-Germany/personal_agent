@@ -136,6 +136,12 @@ export function extractToolFiles(
     return [];
   }
 
+  // Diagnosis charts are drawn natively inside the chat report; do not also
+  // show them as a separate image attachment gallery.
+  if (tool === "system_diagnosis") {
+    return [];
+  }
+
   const candidates: string[] = [];
   const results = result.results;
 
@@ -146,6 +152,16 @@ export function extractToolFiles(
         if (typeof path === "string") {
           candidates.push(path);
         }
+      }
+    }
+  }
+
+  // Tools such as system_diagnosis return a canonical file list.
+  const fileList = result.files;
+  if (Array.isArray(fileList)) {
+    for (const item of fileList) {
+      if (typeof item === "string") {
+        candidates.push(item);
       }
     }
   }

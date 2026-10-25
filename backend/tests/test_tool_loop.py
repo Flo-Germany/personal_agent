@@ -15,6 +15,7 @@ from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import AgentSettings, MemorySettings, OllamaSettings, Settings
 from tools.executor import ToolExecutor
+from tools.schemas import TOOL_SCHEMAS
 
 
 class ScriptedCompletions:
@@ -784,6 +785,266 @@ def test_screen_question_forces_analyze_screen(tmp_path: Path) -> None:
     assert final_event(events)["reply"] == "The screen shows a test."
 
 
+class DisplayVision:
+    """Fake vision service with two displays and a recording analyze call."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int | None]] = []
+        self.contexts: list[dict[str, Any]] = []
+        self.is_loaded = True
+
+    def display_choices(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "index": 1,
+                "name": "Display 1",
+                "width": 1920,
+                "height": 1080,
+                "left": -1920,
+                "top": 325,
+                "primary": False,
+                "position": "Left of the primary display",
+                "preview": "data:image/jpeg;base64,AAAA",
+            },
+            {
+                "index": 2,
+                "name": "Display 2",
+                "width": 3840,
+                "height": 2160,
+                "left": 0,
+                "top": 0,
+                "primary": True,
+                "position": "Primary display",
+                "preview": "data:image/jpeg;base64,BBBB",
+            },
+        ]
+
+    def analyze_screen(
+        self,
+        user_question: str,
+        display: int | None = None,
+        *,
+        system_prompt: str | None = None,
+        tools: Any = None,
+    ) -> dict[str, Any]:
+        self.calls.append((user_question, display))
+        self.contexts.append(
+            {"system_prompt": system_prompt, "tools": tools}
+        )
+        return {
+            "ok": True,
+            "question": user_question,
+            "answer": f"Display {display} shows a browser.",
+            "display": {"index": display, "width": 3840, "height": 2160},
+            "screen": {"width": 1600, "height": 900},
+            "message": f"Analyzed Display {display}.",
+        }
+
+
+def make_screen_service(
+    tmp_path: Path,
+    messages: list[Any],
+) -> tuple[ChatService, ConversationStore, DisplayVision]:
+    settings = Settings(
+        ollama=OllamaSettings(
+            model="qwen3-vl:8b-instruct",
+            temperature=0.2,
+            max_retries=0,
+        ),
+        agent=AgentSettings(max_iterations=3),
+        memory=MemorySettings(
+            knowledge_base_path=tmp_path / "knowledge.md",
+            learn_from_chats=False,
+        ),
+    )
+    store = ConversationStore()
+    knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
+    vision = DisplayVision()
+    executor = ToolExecutor(settings.tools, vision=vision)  # type: ignore[arg-type]
+    client = ScriptedClient(messages)
+    service = ChatService(settings, store, knowledge, executor, client=client)
+    return service, store, vision
+
+
+def test_screen_analysis_asks_for_a_display_then_uses_the_choice(
+    tmp_path: Path,
+) -> None:
+    service, store, vision = make_screen_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "What is on my screen?"},
+                )
+            ),
+            content_message("The main display shows a browser."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(
+        service.start_turn(conversation_id, "What is on my screen?")
+    )
+
+    choice = next(
+        event for event in events if event["type"] == "display_required"
+    )
+    assert [display["index"] for display in choice["displays"]] == [1, 2]
+    assert choice["displays"][1]["primary"] is True
+    assert choice["question"] == "What is on my screen?"
+    assert vision.calls == []
+    assert [message["role"] for message in store.load(conversation_id)] == [
+        "user"
+    ]
+    assert service.get_pending_for_conversation(conversation_id) is not None
+
+    resumed = list(service.resume_display(choice["approval_id"], 2))
+
+    assert vision.calls == [("What is on my screen?", 2)]
+    assert vision.contexts[0]["system_prompt"] is not None
+    assert "You are Nova" in vision.contexts[0]["system_prompt"]
+    assert vision.contexts[0]["tools"] == TOOL_SCHEMAS
+    assert final_event(resumed)["reply"] == (
+        "The main display shows a browser."
+    )
+    history = store.load(conversation_id)
+    assert [message["role"] for message in history] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    arguments = json.loads(
+        history[1]["tool_calls"][0]["function"]["arguments"]
+    )
+    assert arguments["display"] == 2
+    assert json.loads(history[2]["content"])["ok"] is True
+    assert service.get_pending_for_conversation(conversation_id) is None
+
+
+def test_display_choice_rejects_an_unknown_display(
+    tmp_path: Path,
+) -> None:
+    service, store, vision = make_screen_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "What is on my screen?"},
+                )
+            ),
+            content_message("The left display shows a browser."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+    events = list(
+        service.start_turn(conversation_id, "What is on my screen?")
+    )
+    choice = next(
+        event for event in events if event["type"] == "display_required"
+    )
+
+    with pytest.raises(ValueError):
+        service.resume_display(choice["approval_id"], 9)
+
+    assert service.get_pending_for_conversation(conversation_id) is not None
+    assert vision.calls == []
+
+    resumed = list(service.resume_display(choice["approval_id"], 1))
+
+    assert vision.calls == [("What is on my screen?", 1)]
+    assert final_event(resumed)["reply"] == "The left display shows a browser."
+
+
+def test_display_choice_can_be_cancelled(tmp_path: Path) -> None:
+    service, store, vision = make_screen_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "What is on my screen?"},
+                )
+            ),
+            content_message("I did not look at a display."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+    events = list(
+        service.start_turn(conversation_id, "What is on my screen?")
+    )
+    choice = next(
+        event for event in events if event["type"] == "display_required"
+    )
+
+    resumed = list(service.resume_display(choice["approval_id"], None))
+
+    assert vision.calls == []
+    tool_result = next(
+        event for event in resumed if event["type"] == "tool_result"
+    )
+    assert tool_result["result"]["cancelled"] is True
+    assert final_event(resumed)["reply"] == "I did not look at a display."
+
+
+def test_explicit_display_still_lets_the_user_choose(tmp_path: Path) -> None:
+    service, store, vision = make_screen_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {
+                        "user_question": "What is on my screen?",
+                        "display": 2,
+                    },
+                )
+            ),
+            content_message("Display 1 shows a browser."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(
+        service.start_turn(conversation_id, "Look at my second display.")
+    )
+
+    choice = next(
+        event for event in events if event["type"] == "display_required"
+    )
+    assert [display["index"] for display in choice["displays"]] == [1, 2]
+    assert vision.calls == []
+
+    resumed = list(service.resume_display(choice["approval_id"], 1))
+
+    assert vision.calls == [("What is on my screen?", 1)]
+    assert final_event(resumed)["reply"] == "Display 1 shows a browser."
+
+
+def test_generate_reply_surfaces_a_display_choice(tmp_path: Path) -> None:
+    service, store, _vision = make_screen_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "analyze_screen",
+                    {"user_question": "What is on my screen?"},
+                )
+            ),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    with pytest.raises(ConfirmationRequired) as error:
+        service.generate_reply(conversation_id, "What is on my screen?")
+
+    assert error.value.pending.kind == "display"
+    assert len(error.value.pending.displays) == 2
+    assert service.get_pending_for_conversation(conversation_id) is not None
+
+
 def test_powershell_query_runs_without_approval(tmp_path: Path) -> None:
     service, store, _client = make_service(
         tmp_path,
@@ -960,6 +1221,53 @@ def test_action_promise_forces_a_tool_call(tmp_path: Path) -> None:
     resumed = list(service.resume(action["approval_id"], True))
     assert final_event(resumed)["reply"] == "Created it."
     assert target.is_dir()
+
+
+def test_long_answer_with_a_promise_is_not_forced(tmp_path: Path) -> None:
+    long_answer = (
+        "I will explain the results. " + "The system is healthy. " * 40
+    ).strip()
+    service, store, client = make_service(
+        tmp_path,
+        [content_message(long_answer)],
+    )
+
+    events = list(
+        service.start_turn(
+            store.new_conversation_id(),
+            "Create a diagnosis report and explain it.",
+        )
+    )
+
+    assert final_event(events)["reply"] == long_answer
+    assert len(client.completions.requests) == 1
+
+
+def test_action_promise_detection() -> None:
+    from agent.chat import ChatService
+
+    assert (
+        ChatService._looks_like_action_promise(
+            "Let me know if you need anything."
+        )
+        is False
+    )
+    assert (
+        ChatService._looks_like_action_promise(
+            "Let me also know if that helps."
+        )
+        is False
+    )
+    assert (
+        ChatService._looks_like_action_promise("Let me check the process list.")
+        is True
+    )
+    assert (
+        ChatService._looks_like_action_promise(
+            "Next, I will create the folder."
+        )
+        is True
+    )
 
 
 def test_text_tool_call_is_executed_without_leaking_json(tmp_path: Path) -> None:
@@ -1309,7 +1617,63 @@ def test_malformed_output_never_reaches_the_user(tmp_path: Path) -> None:
     assert store.load(conversation_id) == []
 
 
-def test_read_only_loop_hits_max_rounds_and_rolls_back(tmp_path: Path) -> None:
+def test_unlimited_tool_rounds_support_more_than_one_hundred_steps(
+    tmp_path: Path,
+) -> None:
+    note = tmp_path / "note.txt"
+    note.write_text("hello", encoding="utf-8")
+    rounds = 105
+    messages = [
+        tool_calls_message(
+            tool_call(
+                "read_file_content",
+                {"path": str(note)},
+                f"call_{index}",
+            )
+        )
+        for index in range(rounds)
+    ]
+    messages.append(content_message(f"All {rounds} reads completed."))
+    service, store, client = make_service(
+        tmp_path,
+        messages,
+        max_iterations=0,
+    )
+
+    events = list(
+        service.start_turn(store.new_conversation_id(), "Keep reading.")
+    )
+
+    assert final_event(events)["reply"] == f"All {rounds} reads completed."
+    assert len(client.completions.requests) == rounds + 1
+
+
+def test_diagnosis_artifact_paths_are_hidden_from_the_model(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = make_service(tmp_path, [content_message("ok")])
+    raw = json.dumps(
+        {
+            "ok": True,
+            "health_score": 80,
+            "charts": [{"path": "C:\\tmp\\01_cpu.png", "title": "CPU"}],
+            "files": ["C:\\tmp\\01_cpu.png"],
+            "report_dir": "C:\\tmp",
+            "report_file": "C:\\tmp\\report.json",
+            "summary": {"cpu": {"name": "Test CPU"}},
+        }
+    )
+
+    filtered = json.loads(service._model_facing_diagnosis(raw))
+
+    assert "charts" not in filtered
+    assert "files" not in filtered
+    assert "report_dir" not in filtered
+    assert "report_file" not in filtered
+    assert filtered["summary"]["cpu"]["name"] == "Test CPU"
+
+
+def test_read_only_loop_summarizes_at_max_rounds(tmp_path: Path) -> None:
     note = tmp_path / "note.txt"
     note.write_text("hello", encoding="utf-8")
     service, store, client = make_service(
@@ -1321,6 +1685,9 @@ def test_read_only_loop_hits_max_rounds_and_rolls_back(tmp_path: Path) -> None:
             tool_calls_message(
                 tool_call("read_file_content", {"path": str(note)}, "call_2")
             ),
+            content_message(
+                "I reached the tool limit. I verified the note exists and read it."
+            ),
         ],
         max_iterations=1,
     )
@@ -1328,6 +1695,16 @@ def test_read_only_loop_hits_max_rounds_and_rolls_back(tmp_path: Path) -> None:
 
     events = list(service.start_turn(conversation_id, "Keep reading."))
 
-    assert any(event["type"] == "error" for event in events)
-    assert store.load(conversation_id) == []
-    assert len(client.completions.requests) == 2
+    assert not any(event["type"] == "error" for event in events)
+    assert final_event(events)["reply"] == (
+        "I reached the tool limit. I verified the note exists and read it."
+    )
+    history = store.load(conversation_id)
+    assert [message["role"] for message in history] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert len(client.completions.requests) == 3
+    assert client.completions.requests[-1]["tools"] is None

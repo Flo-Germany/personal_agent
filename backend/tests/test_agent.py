@@ -12,7 +12,7 @@ import pytest
 from httpx2 import Request
 from openai import APIConnectionError, APITimeoutError
 
-from agent.chat import ChatService, LLMError
+from agent.chat import CONTEXT_WINDOW_CHARS, ChatService, LLMError
 from agent.learning import infer_deletions, parse_facts, should_apply_deletion
 from agent.language import detect_language_request, detect_requested_language
 from agent.prompt import build_knowledge_block, build_system_prompt
@@ -683,6 +683,80 @@ def test_generate_reply_uses_a_ten_message_context_window(tmp_path) -> None:
     assert len(stored) == 32
     assert stored[0]["content"] == "u1"
     assert stored[-2]["content"] == "u16"
+
+
+def test_context_window_keeps_the_request_in_a_long_tool_loop() -> None:
+    history: list[dict[str, object]] = [
+        {"role": "user", "content": "diagnose the whole machine"}
+    ]
+    for index in range(30):
+        history.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{index}",
+                        "type": "function",
+                        "function": {"name": "run_powershell_query"},
+                    }
+                ],
+            }
+        )
+        history.append(
+            {
+                "role": "tool",
+                "content": f"result {index}",
+                "tool_call_id": f"call_{index}",
+            }
+        )
+
+    window = ChatService._context_window(history)
+
+    assert window[0] == history[0]
+    assert len(window) <= 11
+    seen_calls: set[str] = set()
+    for message in window:
+        if message.get("role") == "assistant":
+            seen_calls.update(
+                call["id"] for call in message.get("tool_calls") or []
+            )
+        if message.get("role") == "tool":
+            assert message["tool_call_id"] in seen_calls
+
+
+def test_context_window_respects_the_character_budget() -> None:
+    history: list[dict[str, object]] = [
+        {"role": "user", "content": "keep this request"}
+    ]
+    for index in range(8):
+        history.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call_{index}",
+                        "type": "function",
+                        "function": {"name": "read_file_content"},
+                    }
+                ],
+            }
+        )
+        history.append(
+            {
+                "role": "tool",
+                "content": "x" * 12000,
+                "tool_call_id": f"call_{index}",
+            }
+        )
+
+    window = ChatService._context_window(history)
+
+    assert window[0] == history[0]
+    assert len(window) < len(history)
+    total = sum(len(str(message.get("content") or "")) for message in window)
+    assert total <= CONTEXT_WINDOW_CHARS + len("keep this request")
 
 
 def test_context_window_drops_orphaned_tool_messages() -> None:

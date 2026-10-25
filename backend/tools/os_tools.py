@@ -47,6 +47,7 @@ TOOL_REQUIRES_CONFIRMATION: dict[str, bool] = {
     "read_file_content": False,
     "search_system": False,
     "semantic_image_search": False,
+    "system_diagnosis": False,
     "get_open_windows": False,
     "read_window_content": False,
     "analyze_screen": False,

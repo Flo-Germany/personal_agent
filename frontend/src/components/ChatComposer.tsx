@@ -178,7 +178,7 @@ export const ChatComposer = memo(function ChatComposer({
   };
 
   const placeholder = pending
-    ? "Approve or deny above…"
+    ? "Respond to the card above…"
     : isLoadingHistory
       ? "Loading conversation…"
       : isStreaming

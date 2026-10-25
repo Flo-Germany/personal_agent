@@ -107,6 +107,34 @@ def _normalize(vector: Any) -> np.ndarray | None:
     return array / norm
 
 
+def _relative_display_position(
+    monitor: dict[str, Any],
+    primary: dict[str, Any],
+) -> str:
+    """Describe where a display sits relative to the primary one."""
+    if monitor is primary:
+        return "Primary display"
+
+    left = int(monitor.get("left", 0))
+    top = int(monitor.get("top", 0))
+    width = int(monitor.get("width", 0))
+    height = int(monitor.get("height", 0))
+    primary_left = int(primary.get("left", 0))
+    primary_top = int(primary.get("top", 0))
+    primary_width = int(primary.get("width", 0))
+    primary_height = int(primary.get("height", 0))
+
+    if left + width <= primary_left:
+        return "Left of the primary display"
+    if left >= primary_left + primary_width:
+        return "Right of the primary display"
+    if top + height <= primary_top:
+        return "Above the primary display"
+    if top >= primary_top + primary_height:
+        return "Below the primary display"
+    return "Next to the primary display"
+
+
 class Embedder(Protocol):
     def encode_images(self, paths: Sequence[Path]) -> dict[Path, np.ndarray]:
         """Return a normalized vector for each readable image."""
@@ -547,11 +575,15 @@ class VisionService:
         embedder: Embedder | None = None,
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
         keep_alive_seconds: int = 0,
+        context_window: int | None = None,
     ) -> None:
         self.settings = settings
         self.embedder = embedder or ClipEmbedder(settings.embed_model)
         self.ollama_base_url = ollama_base_url
         self.keep_alive_seconds = keep_alive_seconds
+        # Using the same context size as chat keeps Ollama from unloading and
+        # reloading the runner for every screen analysis.
+        self.context_window = context_window
         self.store = ImageVectorStore(
             settings.resolved_index_path(),
             settings.embed_model,
@@ -960,15 +992,26 @@ class VisionService:
             if std_score > 0
             else 0.0
         )
-        confident = (
-            indexed < 50
-            or z_score >= self.settings.min_confidence_z
+        # CLIP similarity spreads are narrow, so a high z-score alone is rare.
+        # A clear gap between the best and second-best match is just as useful
+        # a signal that the query actually discriminates between images.
+        discriminating = std_score > 0 and score_gap >= 0.008
+        confident = indexed < 50 or (
+            z_score >= self.settings.min_confidence_z and discriminating
+        )
+        tentative = (
+            not confident
+            and std_score > 0
+            and score_gap >= 0.0035
+            and best_score >= 0.24
+            and bool(matches)
         )
         confidence = (
             "none"
             if not matches
             else "high"
-            if z_score >= max(4.2, self.settings.min_confidence_z)
+            if confident
+            and z_score >= max(4.2, self.settings.min_confidence_z)
             else "medium"
             if confident
             else "low"
@@ -976,16 +1019,20 @@ class VisionService:
 
         results: list[dict[str, Any]] = []
 
-        if confident:
+        if confident or tentative:
             for path_value, score in matches:
                 item_z = (
                     (float(score) - mean_score) / std_score
                     if std_score > 0
                     else 0.0
                 )
-                if indexed >= 50 and (
-                    std_score <= 0
-                    or item_z < self.settings.min_result_z
+                if (
+                    confident
+                    and indexed >= 50
+                    and (
+                        std_score <= 0
+                        or item_z < self.settings.min_result_z
+                    )
                 ):
                     continue
 
@@ -1011,14 +1058,22 @@ class VisionService:
                     }
                 )
 
-                if len(results) >= effective_limit:
+                limit_for_mode = effective_limit if confident else min(3, effective_limit)
+                if len(results) >= limit_for_mode:
                     break
 
         if results:
-            message = (
-                f'Found {len(results)} image(s) matching "{text}" '
-                f"({confidence} confidence)."
-            )
+            if tentative:
+                message = (
+                    f'Found {len(results)} tentative visual candidate(s) for '
+                    f'"{text}" (low confidence). Present them as possible '
+                    "matches and say the visual similarity is approximate."
+                )
+            else:
+                message = (
+                    f'Found {len(results)} image(s) matching "{text}" '
+                    f"({confidence} confidence)."
+                )
         elif matches and not confident:
             message = (
                 f'No confident visual match for "{text}". The best candidate '
@@ -1051,16 +1106,131 @@ class VisionService:
             "message": message,
         }
 
-    def _capture_screen(self) -> tuple[str, int, int]:
-        """Capture the primary screen to an in-memory PNG (never a temp file)."""
+    def list_displays(self) -> list[dict[str, Any]]:
+        """Return the connected physical displays in mss order (1-based index).
+
+        ``mss`` exposes a virtual monitor at index 0 that spans every display;
+        it is not a display a user can pick. Only physical monitors are listed.
+        """
+        try:
+            import mss
+
+            with mss.MSS() as capture:
+                monitors = [dict(monitor) for monitor in list(capture.monitors)[1:]]
+        except Exception:  # noqa: BLE001 - display probing must never break chat
+            logger.debug("Could not enumerate displays", exc_info=True)
+            return []
+
+        if not monitors:
+            return []
+
+        primary = next(
+            (monitor for monitor in monitors if monitor.get("is_primary")),
+            None,
+        )
+        if primary is None:
+            primary = next(
+                (
+                    monitor
+                    for monitor in monitors
+                    if int(monitor.get("left", 0)) == 0
+                    and int(monitor.get("top", 0)) == 0
+                ),
+                monitors[0],
+            )
+
+        displays: list[dict[str, Any]] = []
+
+        for index, monitor in enumerate(monitors, start=1):
+            width = int(monitor.get("width", 0))
+            height = int(monitor.get("height", 0))
+            if width <= 0 or height <= 0:
+                continue
+
+            displays.append(
+                {
+                    "index": index,
+                    "name": str(monitor.get("name") or f"Display {index}"),
+                    "width": width,
+                    "height": height,
+                    "left": int(monitor.get("left", 0)),
+                    "top": int(monitor.get("top", 0)),
+                    "primary": monitor is primary,
+                    "position": _relative_display_position(monitor, primary),
+                }
+            )
+
+        return displays
+
+    def display_choices(self) -> list[dict[str, Any]]:
+        """Return displays with a small live preview for the selection card.
+
+        Previews are only captured when there is an actual choice to make, so
+        the common single-monitor path never pays for extra screenshots.
+        """
+        displays = self.list_displays()
+        if len(displays) < 2:
+            return displays
+
+        try:
+            import mss
+            from PIL import Image
+
+            with mss.MSS() as capture:
+                monitors = list(capture.monitors)[1:]
+
+                for display in displays:
+                    monitor = monitors[display["index"] - 1]
+                    try:
+                        shot = capture.grab(monitor)
+                        image = Image.frombytes("RGB", shot.size, shot.rgb)
+                        image.thumbnail((480, 480), Image.Resampling.LANCZOS)
+                        buffer = io.BytesIO()
+                        image.save(
+                            buffer,
+                            format="JPEG",
+                            quality=60,
+                            optimize=True,
+                        )
+                        display["preview"] = (
+                            "data:image/jpeg;base64,"
+                            + base64.b64encode(buffer.getvalue()).decode("ascii")
+                        )
+                    except Exception:  # noqa: BLE001 - preview is best effort
+                        logger.debug(
+                            "Could not capture a preview of display %s",
+                            display["index"],
+                            exc_info=True,
+                        )
+        except Exception:  # noqa: BLE001 - previews must never block the choice
+            logger.debug("Could not capture display previews", exc_info=True)
+
+        return displays
+
+    def _capture_screen(self, display: int | None = None) -> tuple[str, int, int]:
+        """Capture one display to an in-memory PNG (never a temp file)."""
         import mss
         from PIL import Image
 
-        with mss.mss() as capture:
-            monitors = capture.monitors
+        with mss.MSS() as capture:
+            monitors = list(capture.monitors)[1:]
             if not monitors:
                 raise RuntimeError("No screen monitor is available.")
-            monitor = monitors[1] if len(monitors) > 1 else monitors[0]
+
+            if display is None:
+                monitor = next(
+                    (
+                        item
+                        for item in monitors
+                        if item.get("is_primary")
+                    ),
+                    monitors[0],
+                )
+            else:
+                if display < 1 or display > len(monitors):
+                    raise RuntimeError(f"Display {display} is not available.")
+                monitor = monitors[display - 1]
+
             shot = capture.grab(monitor)
             image = Image.frombytes("RGB", shot.size, shot.rgb)
 
@@ -1079,86 +1249,134 @@ class VisionService:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return encoded, image.width, image.height
 
-    def _ask_vision_model(self, question: str, image_b64: str) -> str:
+    def _ask_vision_model(
+        self,
+        question: str,
+        image_b64: str,
+        *,
+        system_prompt: str | None = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+    ) -> str:
         base = self.ollama_base_url.rstrip("/")
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
         endpoint = f"{base}/api/chat"
-        payload = {
-            "model": self.settings.screen_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a concise screen-analysis assistant. Answer in "
-                        "the language of the user's question. Give only the final "
-                        "answer, without chain-of-thought or reasoning text."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": question,
-                    "images": [image_b64],
-                },
-            ],
-            "stream": False,
-            "keep_alive": self.keep_alive_seconds,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": self.settings.screen_max_tokens,
-            },
-        }
 
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/json"},
+        # The system prompt and tool schemas are the same ones the chat uses.
+        # Ollama then reuses the cached chat prefix and keeps the runner at the
+        # chat context size, so a screen analysis neither reloads the model nor
+        # invalidates the next chat turn.
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+        instruction = (
+            "Answer in the language of the user's question, directly from the "
+            "screenshot. Give only the final answer, without chain-of-thought "
+            "or reasoning text."
+        )
+        if tools:
+            instruction += " Do not call any tools."
+        messages.append(
+            {
+                "role": "user",
+                "content": f"{question}\n\n{instruction}",
+                "images": [image_b64],
+            }
         )
 
-        try:
-            with urllib.request.urlopen(
-                request,
-                timeout=self.settings.screen_timeout_seconds,
-            ) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except TimeoutError as exc:
-            raise RuntimeError(
-                "Ollama vision request timed out after "
-                f"{self.settings.screen_timeout_seconds:.0f} seconds"
-            ) from exc
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")[:500]
-            except Exception:  # noqa: BLE001
-                pass
-            raise RuntimeError(
-                f"Ollama vision request failed with HTTP {exc.code}: {detail}"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(
-                "Could not reach the local Ollama vision endpoint at "
-                f"{endpoint}: {exc.reason}"
-            ) from exc
+        def send(use_tools: bool) -> dict[str, Any]:
+            options: dict[str, Any] = {
+                "temperature": 0.2,
+                "num_predict": self.settings.screen_max_tokens,
+            }
+            if self.context_window:
+                options["num_ctx"] = int(self.context_window)
 
-        message = body.get("message") or {}
-        content = message.get("content")
+            payload: dict[str, Any] = {
+                "model": self.settings.screen_model,
+                "messages": messages,
+                "stream": False,
+                "keep_alive": self.keep_alive_seconds,
+                "options": options,
+            }
+            if use_tools and tools:
+                payload["tools"] = list(tools)
 
-        if isinstance(content, list):
-            content = "\n".join(
-                str(part.get("text", ""))
-                for part in content
-                if isinstance(part, dict)
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
             )
 
-        text = str(content or "").strip()
-        if not text:
-            raise RuntimeError("Ollama returned an empty vision response.")
-        return text
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=self.settings.screen_timeout_seconds,
+                ) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    "Ollama vision request timed out after "
+                    f"{self.settings.screen_timeout_seconds:.0f} seconds"
+                ) from exc
+            except urllib.error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:  # noqa: BLE001
+                    pass
+                raise RuntimeError(
+                    f"Ollama vision request failed with HTTP {exc.code}: {detail}"
+                ) from exc
+            except urllib.error.URLError as exc:
+                raise RuntimeError(
+                    "Could not reach the local Ollama vision endpoint at "
+                    f"{endpoint}: {exc.reason}"
+                ) from exc
 
-    def analyze_screen(self, user_question: str) -> dict[str, Any]:
-        """Capture the primary screen and ask the local vision model about it."""
+        # Offering the chat's tools makes the prompt cache reusable but can make
+        # a model emit a tool call instead of a vision answer. Retry once
+        # without tools if that happens.
+        attempts = (True, False) if tools else (False,)
+        for use_tools in attempts:
+            body = send(use_tools)
+            message = body.get("message") or {}
+            content = message.get("content")
+
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict)
+                )
+
+            text = str(content or "").strip()
+            tool_calls = message.get("tool_calls") or []
+            if text and not (use_tools and tool_calls):
+                return text
+
+        raise RuntimeError("Ollama returned an empty vision response.")
+
+    def analyze_screen(
+        self,
+        user_question: str,
+        display: int | None = None,
+        *,
+        system_prompt: str | None = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Capture one display and ask the local vision model about it.
+
+        When more than one display is connected and no display was chosen yet,
+        no screenshot is taken: the caller receives ``needs_display`` so the
+        user can pick one first.
+
+        ``system_prompt`` and ``tools`` should be the exact chat prefix. They
+        let Ollama reuse its cached prompt and the already-loaded runner instead
+        of reloading the model at a different context size.
+        """
         question = str(user_question or "").strip()
         if not question:
             return {
@@ -1166,8 +1384,54 @@ class VisionService:
                 "error": "A question about the screen is required.",
             }
 
+        displays = self.list_displays()
+        chosen: int | None = None
+
+        if display is not None:
+            try:
+                chosen = int(display)
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "error": "The display must be a 1-based display number.",
+                    "displays": displays,
+                }
+
+        if chosen is None:
+            if len(displays) > 1:
+                return {
+                    "ok": False,
+                    "needs_display": True,
+                    "displays": displays,
+                    "error": (
+                        "Multiple displays are connected. The user must choose "
+                        "which display to analyze; do not guess."
+                    ),
+                }
+            if displays:
+                chosen = int(displays[0]["index"])
+
+        if len(displays) == 1:
+            # There is no choice to make on a single-monitor system; ignore a
+            # stray display number instead of failing the analysis.
+            chosen = int(displays[0]["index"])
+
+        if chosen is not None and displays and not any(
+            int(item["index"]) == chosen for item in displays
+        ):
+            numbers = ", ".join(str(item["index"]) for item in displays)
+            return {
+                "ok": False,
+                "needs_display": True,
+                "displays": displays,
+                "error": (
+                    f"Display {chosen} is not available. Available displays: "
+                    f"{numbers}."
+                ),
+            }
+
         try:
-            image_b64, width, height = self._capture_screen()
+            image_b64, width, height = self._capture_screen(chosen)
         except Exception as exc:  # noqa: BLE001 - desktop capture failures
             logger.exception("Could not capture the screen")
             return {
@@ -1176,7 +1440,12 @@ class VisionService:
             }
 
         try:
-            answer = self._ask_vision_model(question, image_b64)
+            answer = self._ask_vision_model(
+                question,
+                image_b64,
+                system_prompt=system_prompt,
+                tools=tools,
+            )
         except Exception as exc:  # noqa: BLE001 - model/network failures
             logger.exception("Screen vision request failed")
             detail = str(exc)
@@ -1215,13 +1484,31 @@ class VisionService:
                 "error": f"Screen analysis failed: {detail[:500]}. {hint}",
             }
 
+        selected = next(
+            (
+                item
+                for item in displays
+                if chosen is not None and int(item["index"]) == chosen
+            ),
+            None,
+        )
+        if selected is not None:
+            label = f"Display {selected['index']}"
+            message = (
+                f"Analyzed {label} ({selected['width']}x{selected['height']}) "
+                "with the local vision model."
+            )
+        else:
+            message = "Analyzed the screen with the local vision model."
+
         return {
             "ok": True,
             "question": question,
             "answer": answer,
             "model": self.settings.screen_model,
+            "display": selected,
             "screen": {"width": width, "height": height},
-            "message": "Analyzed the primary screen with the local vision model.",
+            "message": message,
         }
 
     def status(self) -> dict[str, Any]:

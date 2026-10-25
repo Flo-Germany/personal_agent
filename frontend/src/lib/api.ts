@@ -1,6 +1,7 @@
 import type {
   ActionItem,
   AgentEvent,
+  DiagnosisReportData,
   HistoryMessage,
   Identity,
   PendingAction,
@@ -117,6 +118,15 @@ function isActionItem(value: unknown): value is ActionItem {
   );
 }
 
+function isDisplayOption(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.index === "number" &&
+    typeof value.width === "number" &&
+    typeof value.height === "number"
+  );
+}
+
 function isAgentEvent(value: unknown): value is AgentEvent {
   if (!isRecord(value) || typeof value.type !== "string") {
     return false;
@@ -149,6 +159,12 @@ function isAgentEvent(value: unknown): value is AgentEvent {
         typeof value.approval_id === "string" &&
         Array.isArray(value.actions) &&
         value.actions.every(isActionItem)
+      );
+    case "display_required":
+      return (
+        typeof value.approval_id === "string" &&
+        Array.isArray(value.displays) &&
+        value.displays.every(isDisplayOption)
       );
     case "final":
       return (
@@ -206,6 +222,19 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
         plan: event.plan,
         expires_in_seconds: event.expires_in_seconds,
         auto_approve_remaining: event.auto_approve_remaining,
+      });
+      return true;
+    case "display_required":
+      callbacks.onActionRequired({
+        kind: "display",
+        approval_id: event.approval_id,
+        conversation_id: event.conversation_id ?? "",
+        actions: [],
+        displays: event.displays,
+        message: event.message,
+        request: event.request,
+        question: event.question,
+        expires_in_seconds: event.expires_in_seconds,
       });
       return true;
     case "final":
@@ -340,24 +369,33 @@ export async function waitForBackend(
   return false;
 }
 
+export type HistorySnapshot = {
+  messages: HistoryMessage[];
+  diagnosis: DiagnosisReportData | null;
+};
+
 export async function fetchHistory(
   conversationId: string,
   signal?: AbortSignal,
-): Promise<HistoryMessage[]> {
+): Promise<HistorySnapshot> {
   try {
     const response = await fetch(
       `${API_BASE_URL}/chat/history/${conversationId}`,
       { signal },
     );
     if (!response.ok) {
-      return [];
+      return { messages: [], diagnosis: null };
     }
     const data = (await response.json()) as {
       messages?: HistoryMessage[];
+      diagnosis?: DiagnosisReportData | null;
     };
-    return data.messages ?? [];
+    return {
+      messages: data.messages ?? [],
+      diagnosis: data.diagnosis ?? null,
+    };
   } catch {
-    return [];
+    return { messages: [], diagnosis: null };
   }
 }
 
@@ -421,6 +459,22 @@ export function postApproval(
     body: JSON.stringify({
       approval_id: approvalId,
       approved,
+    }),
+    signal,
+  });
+}
+
+export function postDisplayChoice(
+  approvalId: string,
+  display: number | null,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return fetch(`${API_BASE_URL}/chat/display`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      approval_id: approvalId,
+      display,
     }),
     signal,
   });

@@ -98,7 +98,11 @@ class OllamaSettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    max_iterations: int = Field(default=5, ge=1)
+    # 0 means no hard limit: the agent may take as many steps as the task
+    # requires. A positive value is an optional safety cap.
+    max_iterations: int = Field(default=0, ge=0)
+    # 0 means no hard limit on actions after one approval.
+    max_auto_approved_actions: int = Field(default=0, ge=0)
     approval_ttl_seconds: float = Field(default=600.0, gt=0)
 
 
@@ -142,8 +146,8 @@ class VisionSettings(BaseModel):
     scan_interval_seconds: float = Field(default=900.0, ge=30, le=86_400)
     max_images: int = Field(default=100_000, ge=100, le=1_000_000)
     max_file_mb: int = Field(default=50, ge=1, le=500)
-    min_confidence_z: float = Field(default=3.9, ge=0.0, le=10.0)
-    min_result_z: float = Field(default=3.5, ge=0.0, le=10.0)
+    min_confidence_z: float = Field(default=3.0, ge=0.0, le=10.0)
+    min_result_z: float = Field(default=2.4, ge=0.0, le=10.0)
     dedupe_threshold: float = Field(default=0.995, ge=0.0, le=1.0)
     screen_model: str = "qwen3-vl:8b-instruct"
     screen_timeout_seconds: float = Field(default=180.0, gt=0.0, le=600.0)

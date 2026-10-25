@@ -12,6 +12,7 @@ import {
   isAbortError,
   postApproval,
   postChatStream,
+  postDisplayChoice,
   postInterrupt,
   readStoredConversationId,
   storeConversationId,
@@ -25,6 +26,7 @@ import {
 import type {
   ChatMessage,
   ChatRole,
+  DiagnosisReportData,
   Identity,
   PendingAction,
   StreamCallbacks,
@@ -52,17 +54,40 @@ async function loadSnapshot(
   }
 
   const [history, pending] = await Promise.all([
-    storedId ? fetchHistory(storedId, signal) : Promise.resolve([]),
+    storedId ? fetchHistory(storedId, signal) : Promise.resolve({ messages: [], diagnosis: null }),
     storedId ? fetchPending(storedId, signal) : Promise.resolve(null),
   ]);
 
+  const messages: ChatMessage[] = history.messages.map((message) => ({
+    id: crypto.randomUUID(),
+    role: message.role,
+    content: message.content,
+  }));
+
+  if (history.diagnosis) {
+    const diagnosisMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "diagnosis",
+      content: "",
+      diagnosis: history.diagnosis,
+    };
+    let lastAssistant = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "assistant") {
+        lastAssistant = index;
+        break;
+      }
+    }
+    if (lastAssistant >= 0) {
+      messages.splice(lastAssistant, 0, diagnosisMessage);
+    } else {
+      messages.push(diagnosisMessage);
+    }
+  }
+
   return {
     identity,
-    messages: history.map((message) => ({
-      id: crypto.randomUUID(),
-      role: message.role,
-      content: message.content,
-    })),
+    messages,
     pending,
   };
 }
@@ -354,6 +379,31 @@ export function useAgentChat() {
     [addMessage],
   );
 
+  const addDiagnosis = useCallback((diagnosis: DiagnosisReportData) => {
+    if (!mountedRef.current) {
+      return;
+    }
+    setMessages((current) => {
+      const exists = current.some(
+        (message) =>
+          message.role === "diagnosis" &&
+          message.diagnosis?.report_file === diagnosis.report_file,
+      );
+      if (exists) {
+        return current;
+      }
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "diagnosis",
+          content: "",
+          diagnosis,
+        },
+      ];
+    });
+  }, []);
+
   const rememberConversation = useCallback((id?: string) => {
     if (!id) {
       return;
@@ -500,6 +550,16 @@ export function useAgentChat() {
           }
           if (tool === "propose_plan") {
             return;
+          }
+          if (
+            tool === "system_diagnosis" &&
+            ok &&
+            result &&
+            typeof result.health_score === "number"
+          ) {
+            // Render the diagnosis as a native visual report directly in the
+            // chat instead of a separate image gallery.
+            addDiagnosis(result as unknown as DiagnosisReportData);
           }
           const files = extractToolFiles(tool, result);
           files.forEach((file) => pendingFilesRef.current.add(file));
@@ -669,6 +729,7 @@ export function useAgentChat() {
           if (!mountedRef.current) {
             return;
           }
+          const isDisplay = action.kind === "display";
           setPendingAction(action);
           rememberConversation(action.conversation_id);
           plannedTotalRef.current = Math.max(
@@ -676,16 +737,20 @@ export function useAgentChat() {
             action.actions.length,
           );
 
+          const waitingLabel = isDisplay
+            ? "Waiting for display selection"
+            : "Waiting for approval";
+
           if (statusTasksRef.current.length > 0) {
             syncTaskStatus({
               state: "waiting",
-              label: "Waiting for approval",
+              label: waitingLabel,
             });
           } else {
             updateStatus({
               state: "waiting",
-              label: "Waiting for approval",
-              tool: action.actions[0]?.tool,
+              label: waitingLabel,
+              tool: action.actions[0]?.tool ?? (isDisplay ? "analyze_screen" : undefined),
               tasks: [],
               plannedTotal: plannedTotalRef.current || undefined,
               startedAt: statusStartedAtRef.current ?? undefined,
@@ -840,6 +905,7 @@ export function useAgentChat() {
     [
       addAssistant,
       addAttachments,
+      addDiagnosis,
       applyMetrics,
       failRunningTasks,
       finalizeStreaming,
@@ -1016,6 +1082,89 @@ export function useAgentChat() {
     ],
   );
 
+  const chooseDisplay = useCallback(
+    async (display: number | null) => {
+      const action = pendingAction;
+      if (!action || streamingRef.current) {
+        return;
+      }
+
+      setPendingAction(null);
+      resetStreamingRefs();
+      syncTaskStatus({
+        state: display === null ? "cancelled" : "executing",
+        label:
+          display === null
+            ? "Display choice cancelled"
+            : `Analyzing display ${display}...`,
+      });
+      streamingRef.current = true;
+      setIsStreaming(true);
+
+      const controller = new AbortController();
+      activeStreamRef.current = controller;
+
+      try {
+        const response = await postDisplayChoice(
+          action.approval_id,
+          display,
+          controller.signal,
+        );
+        const streamConversationId = response.headers.get(
+          "X-Conversation-ID",
+        );
+        if (streamConversationId) {
+          activeConversationIdRef.current = streamConversationId;
+          rememberConversation(streamConversationId);
+        }
+        await handleStreamResponse(response, controller.signal);
+      } catch (error) {
+        if (interruptingRef.current) {
+          handleInterrupted();
+        } else if (!isAbortError(error) && mountedRef.current) {
+          finalizeStreaming();
+          if (!failRunningTasks(NETWORK_ERROR_MESSAGE, "Connection failed")) {
+            updateStatus({
+              state: "error",
+              label: "Connection failed",
+              detail: NETWORK_ERROR_MESSAGE,
+              tasks: [],
+              startedAt: statusStartedAtRef.current ?? undefined,
+              finishedAt: Date.now(),
+            });
+          }
+          activeStatusIdRef.current = null;
+          lastStatusStateRef.current = null;
+          lastStatusRef.current = null;
+          resetTaskRefs();
+          addAssistant(NETWORK_ERROR_MESSAGE);
+        }
+      } finally {
+        if (activeStreamRef.current === controller) {
+          activeStreamRef.current = null;
+        }
+        interruptingRef.current = false;
+        streamingRef.current = false;
+        if (mountedRef.current) {
+          setIsStreaming(false);
+        }
+      }
+    },
+    [
+      addAssistant,
+      failRunningTasks,
+      finalizeStreaming,
+      handleInterrupted,
+      handleStreamResponse,
+      pendingAction,
+      rememberConversation,
+      resetStreamingRefs,
+      resetTaskRefs,
+      syncTaskStatus,
+      updateStatus,
+    ],
+  );
+
   const interrupt = useCallback(async () => {
     if (!streamingRef.current || interruptingRef.current) {
       return;
@@ -1123,12 +1272,14 @@ export function useAgentChat() {
       canSend: !isStreaming && !isLoadingHistory && pendingAction === null,
       sendMessage,
       approve,
+      chooseDisplay,
       interrupt,
       clearChat,
       refresh,
     }),
     [
       approve,
+      chooseDisplay,
       clearChat,
       conversationId,
       identity,
