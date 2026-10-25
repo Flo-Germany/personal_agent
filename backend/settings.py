@@ -223,6 +223,13 @@ class AutomationSettings(BaseModel):
     # accumulate hundreds of megabytes in memory/screenshots.
     screenshot_keep: int = Field(default=200, ge=10, le=5000)
     visual_fallback: bool = True
+    # If UIA exposes fewer than this many verified controls, use the strict OCR
+    # fallback. The default of 1 means "only when UIA exposes nothing usable";
+    # raise it for custom apps that expose a partial tree.
+    uia_min_elements: int = Field(default=1, ge=1, le=40)
+    ocr_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    ocr_max_words: int = Field(default=4, ge=1, le=12)
+    ocr_max_height: int = Field(default=80, ge=20, le=300)
     # Skip the grounding model when an element name already matches the intent
     # unambiguously. This saves a VLM round per GUI step and avoids wrong picks
     # on well-labeled native controls.

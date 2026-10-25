@@ -877,6 +877,12 @@ class GUIAutomationService:
             "process_id": snapshot.process_id,
             "process_name": snapshot.process_name,
             "window_foreground": window_foreground,
+            "detection": snapshot.detection,
+            "uia_scanned": snapshot.uia_scanned,
+            "uia_verified": snapshot.uia_accepted,
+            "ocr_elements": sum(
+                1 for item in snapshot.elements if item.source == "ocr"
+            ),
             "app": guide,
             "app_windows": app_windows[:8],
             "preferred_window_title": self._preferred_window_title,

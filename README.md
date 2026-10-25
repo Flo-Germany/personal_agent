@@ -108,7 +108,8 @@ different system-prompt delivery, which the backend handles automatically.
 The first semantic image search downloads the `clip-ViT-B-32` model (about
 600 MB) into the Hugging Face cache. After that, indexing and search run fully
 offline. Screen awareness uses the local `qwen3-vl:8b-instruct` model in Ollama; no
-screenshot leaves the machine.
+screenshot leaves the machine. The UIA fallback uses RapidOCR with bundled
+ONNX models, so it also runs offline and does not need Tesseract.
 
 > **Vision model compatibility:** Ollama 0.30 and newer no longer load the
 > `mllama` architecture used by `llama3.2-vision`, even when the model is
@@ -467,7 +468,7 @@ The agent can use eighteen tools:
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
 | `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
 | `get_desktop_context` | No | Foreground window, process/parent chain, visible/minimized windows, dialogs, and the focused UI control |
-| `analyze_screen_ui` | No | Set-of-Mark UI map: element IDs/names/centers, app guide and shortcuts, numbered screenshot, local name match or vision suggestion, focused-control and window state |
+| `analyze_screen_ui` | No | UIA-verified Set-of-Mark map: element IDs/names/centers, verification source, app guide and shortcuts, numbered screenshot, local name match or vision suggestion, focused-control and window state |
 | `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element |
 | `click_element` | Yes | Highlight, glide, and click a detected element; physical input aborts instantly |
 | `keyboard_type_text` | Yes | Type into the focused field with synthetic keys or layout-safe clipboard paste |
@@ -644,19 +645,35 @@ approval-gated GUI tools described below.
 
 ## GUI automation
 
-The GUI layer is deliberately **UI-Automation-first, vision-assisted**:
+The GUI layer is **UIA-grounded**, with a strict OCR fallback for apps that
+block accessibility:
 
-- `analyze_screen_ui` captures the target window's display and walks the Windows
-  UI Automation tree with `pywinauto`. It keeps visible, enabled interactable
-  controls (buttons, edits, menus, tabs, list items, and similar), exposes only
-  the on-screen part of each rectangle, and numbers them row by row. The full
-  list holds up to `automation.max_elements` (140) controls; the screenshot
-  labels at most `automation.max_annotated_elements` (60), prioritizing input
-  fields, lists, and tabs. A control without a numbered box is still clickable
-  by name or ID.
-- If UIA exposes fewer than three controls, an OpenCV contour fallback adds
-  conservative visual regions. This helps icon-only and custom-rendered apps
-  where accessibility is poor. The fallback is optional (`automation.visual_fallback`).
+> **Phase 20:** pixel-only contour guessing was removed from the primary path.
+> Every box in the normal path is a verified Windows UIAutomation control; the
+> OCR fallback is used only when the accessibility tree exposes nothing usable.
+
+- `analyze_screen_ui` walks the target window's Windows UI Automation tree with
+  `pywinauto`. Every marked element is a real accessibility node: a definitive
+  control type (Button, SplitButton, MenuItem, Hyperlink, Edit, ComboBox,
+  CheckBox, RadioButton, TabItem, ListItem, TreeItem, DataItem, Slider, Spinner,
+  Document, RichEdit), or a custom node that exposes the UIA **Invoke** pattern
+  or is **keyboard focusable** and has a plausible control-sized rectangle.
+  Plain `Text`/`Image` nodes are accepted only with Invoke; structural
+  containers (`ToolBar`, `Tree`, `Tab`, `MenuBar`, editor panes, separators) are
+  rejected. Nested duplicates are removed, keeping the more semantic control.
+  Nothing is guessed from pixels in UIA mode.
+- Each result reports `detection`: `uia`, `ocr`, `uia+ocr`, or `none`, plus
+  `uia_verified` and `uia_scanned`. The full list holds up to
+  `automation.max_elements` (140) controls; the screenshot labels at most
+  `automation.max_annotated_elements` (60), prioritizing input fields, lists,
+  and tabs. A control without a numbered box is still clickable by name or ID.
+- If UIA exposes no usable controls (`automation.uia_min_elements`, default 1),
+  the fallback runs **RapidOCR** on the raw window image and keeps only short
+  labels: 1-4 words, confidence >= `ocr_min_confidence`, height <=
+  `ocr_max_height`, and a natural aspect ratio (0.5-7.5). Paragraphs, long
+  lines, banners, and oversized regions are discarded. OCR is skipped when the
+  target window is not foreground, because the screen capture would show a
+  different app. Disable the fallback with `automation.visual_fallback: false`.
 - Each snapshot writes an annotated PNG under `memory/screenshots/` with a
   semi-transparent colored box and a numbered chip over every element. The tool
   returns the screenshot path (shown in the chat), the full element list, a
@@ -710,8 +727,9 @@ Configuration lives under `automation` in `config/settings.json`:
 `max_annotated_elements` (60), `type_interval_seconds`,
 `action_settle_seconds` (0.9), `verify_foreground`, `screenshot_max_width`,
 `screenshot_keep`, `local_grounding`, `snapshot_reuse_seconds`,
-`snapshot_reuse_threshold`, `visual_fallback`, `pre_action_validation`, and
-`validation_tolerance_px`.
+`snapshot_reuse_threshold`, `visual_fallback`, `uia_min_elements`,
+`ocr_min_confidence`, `ocr_max_words`, `ocr_max_height`, `pre_action_validation`,
+and `validation_tolerance_px`.
 
 ### Context-aware pre-action validation
 
@@ -743,8 +761,9 @@ agent is told to re-run `analyze_screen_ui` and never retry the stale ID.
 ### GUI step latency
 
 A GUI step used to cost several serialized passes: a full-display capture,
-UIA/OpenCV discovery, an annotated PNG, a `qwen3-vl` grounding call, then a 0.5 s
-highlight plus a 0.9 s glide. The current pipeline removes most of that:
+UIA discovery (OCR only when needed), an annotated PNG, a `qwen3-vl` grounding
+call, then a 0.5 s highlight plus a 0.9 s glide. The current pipeline removes
+most of that:
 
 - the capture is cropped to the target window and the PNG uses
   `compress_level=1` instead of `optimize=True`
@@ -817,6 +836,7 @@ Measured on the reference machine with `qwen3-vl:8b-instruct`:
 
 | Scenario | What it proves | Result |
 | --- | --- | --- |
+| `uia` | real Explorer UIA scan: 50 verified targets, no plain-text false positives | PASS |
 | `outlook` | one compose window, To/Subject/Body filled exactly, no send, no loop | PASS (~60–120 s) |
 | `browser` | isolated Chrome profile, Ctrl+L navigation, reads the real page heading | PASS (~11–16 s) |
 | `explorer` | Ctrl+L navigation in a real Explorer window, then reads the new folder | PASS (~23–32 s) |

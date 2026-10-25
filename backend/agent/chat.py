@@ -250,6 +250,8 @@ def _compact_som_result(result: dict[str, Any]) -> dict[str, Any]:
         "display": result.get("display"),
         "process_name": result.get("process_name"),
         "window_foreground": result.get("window_foreground"),
+        "detection": result.get("detection"),
+        "uia_verified": result.get("uia_verified"),
         "app": result.get("app"),
         "app_windows": result.get("app_windows"),
         "preferred_window_title": result.get("preferred_window_title"),

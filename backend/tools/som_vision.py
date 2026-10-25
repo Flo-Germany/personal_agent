@@ -1,14 +1,19 @@
-"""Set-of-Mark UI parsing for desktop automation.
+"""UIA-grounded Set-of-Mark UI parsing for desktop automation.
 
-The primary detector is Windows UI Automation via ``pywinauto``: it is fast,
-gives real control names and exact rectangles, and covers native apps such as
-Outlook, Explorer, dialogs, and VS Code. A light OpenCV contour fallback adds
-numbered regions for icon-only or custom-rendered controls when UIA exposes
-almost nothing.
+Every marked element comes from one of two auditable sources:
+
+* **UIA** (primary): a real node in the Windows accessibility tree with a
+  verified rectangle. Only definitively interactive control types, or elements
+  exposing the UIA Invoke pattern / keyboard focus, are kept. Plain text
+  blocks and structural containers are rejected.
+* **OCR** (fallback, only when UIA exposes almost nothing): text lines found by
+  RapidOCR and passed through strict filters (at most four words, natural
+  aspect ratio, plausible control size). Pixel-only contour guessing is gone.
 
 Every snapshot produces:
   * an annotated screenshot with a unique number over each element,
-  * a numbered element list with control type and absolute screen rectangle,
+  * a numbered element list with control type, verification source and absolute
+    screen rectangle,
   * a compact coordinate map (ID -> center x/y),
   * a short-lived ``snapshot_id`` used by click/move tools.
 """
@@ -19,6 +24,7 @@ import ctypes
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -48,24 +54,149 @@ def _enable_dpi_awareness() -> None:
 
 _enable_dpi_awareness()
 
-_INTERACTABLE = {
+# Control types whose semantics are unambiguously interactive. These are
+# accepted without extra COM pattern queries.
+_DEFINITELY_INTERACTIVE = {
     "Button",
-    "Edit",
-    "ComboBox",
+    "SplitButton",
+    "MenuItem",
+    "Hyperlink",
     "CheckBox",
     "RadioButton",
-    "Hyperlink",
-    "MenuItem",
+    "Edit",
+    "ComboBox",
     "TabItem",
     "ListItem",
     "TreeItem",
+    "DataItem",
     "Slider",
     "Spinner",
-    "SplitButton",
-    "DataItem",
     "Document",
     "RichEdit",
 }
+
+# Structural containers and decorations. They may be keyboard focusable, but
+# clicking them targets the container, not a control.
+_NEVER_INTERACTABLE = {
+    "Window",
+    "Dialog",
+    "TitleBar",
+    "StatusBar",
+    "ScrollBar",
+    "Separator",
+    "Thumb",
+    "ProgressBar",
+    "Header",
+    "HeaderItem",
+    "ToolBar",
+    "MenuBar",
+    "Menu",
+    "List",
+    "Tree",
+    "Tab",
+    "Table",
+    "GroupBox",
+}
+
+# Types that are only accepted when they expose Invoke (text links, custom
+# image buttons) or, for generic custom surfaces, keyboard focus.
+_CONDITIONAL_INTERACTABLE = {
+    "Text",
+    "Image",
+    "Group",
+    "Pane",
+    "Custom",
+    "DataGrid",
+    "TableItem",
+}
+
+# Plausible geometry for conditional controls (pixels). This is what keeps
+# large editor panes, separators, and status-bar containers out.
+_CONDITIONAL_MIN_SIDE = 8
+_CONDITIONAL_MAX_WIDTH = 700
+_CONDITIONAL_MAX_HEIGHT = 220
+_CONDITIONAL_MIN_ASPECT = 0.15
+_CONDITIONAL_MAX_ASPECT = 14.0
+
+_SEMANTIC_PRIORITY = {
+    "Button": 0,
+    "SplitButton": 0,
+    "Hyperlink": 0,
+    "MenuItem": 0,
+    "CheckBox": 0,
+    "RadioButton": 0,
+    "Edit": 0,
+    "Document": 0,
+    "RichEdit": 0,
+    "ComboBox": 0,
+    "TabItem": 0,
+    "TreeItem": 0,
+    "ListItem": 0,
+    "DataItem": 0,
+    "Slider": 0,
+    "Spinner": 0,
+    "OcrText": 1,
+    "Text": 2,
+    "Image": 2,
+    "Group": 3,
+    "Pane": 3,
+    "Custom": 3,
+}
+
+
+def _is_verified_interactable(
+    control_type: str,
+    *,
+    invoke: bool,
+    focusable: bool,
+    width: int,
+    height: int,
+) -> tuple[bool, str]:
+    """Return ``(accepted, verified_by)`` for one UIA node.
+
+    The allowlist covers well-known controls. Other nodes are accepted only
+    with a real Invoke pattern (or, for generic custom surfaces, keyboard
+    focus) and a plausible control-sized rectangle. This rejects plain text
+    blocks, editor panes, separators, and other containers.
+    """
+    kind = str(control_type or "").strip()
+    if not kind or kind in _NEVER_INTERACTABLE:
+        return False, ""
+    if kind in _DEFINITELY_INTERACTIVE:
+        return True, "type"
+    if kind not in _CONDITIONAL_INTERACTABLE:
+        # Unknown custom UIA types are treated like custom surfaces.
+        if not (invoke or focusable):
+            return False, ""
+    if kind in {"Text", "Image"} and not invoke:
+        return False, ""
+    if not (invoke or focusable):
+        return False, ""
+    if width < _CONDITIONAL_MIN_SIDE or height < _CONDITIONAL_MIN_SIDE:
+        return False, ""
+    if width > _CONDITIONAL_MAX_WIDTH or height > _CONDITIONAL_MAX_HEIGHT:
+        return False, ""
+    aspect = width / max(1, height)
+    if aspect < _CONDITIONAL_MIN_ASPECT or aspect > _CONDITIONAL_MAX_ASPECT:
+        return False, ""
+    return True, ("invoke" if invoke else "focus")
+
+
+@dataclass(frozen=True)
+class DetectedElement:
+    """A verified candidate before it is numbered and persisted."""
+
+    name: str
+    control_type: str
+    automation_id: str
+    left: int
+    top: int
+    right: int
+    bottom: int
+    enabled: bool = True
+    source: str = "uia"
+    verified_by: str = "type"
+
 
 _TYPE_COLORS = {
     "Button": (255, 99, 71),
@@ -84,6 +215,7 @@ _TYPE_COLORS = {
     "Spinner": (244, 114, 182),
     "Document": (64, 156, 255),
     "RichEdit": (64, 156, 255),
+    "OcrText": (251, 146, 60),
 }
 _DEFAULT_COLOR = (251, 191, 36)
 
@@ -97,6 +229,7 @@ _ANNOTATION_PRIORITY = {
     "ComboBox": 0,
     "CheckBox": 0,
     "RadioButton": 0,
+    "OcrText": 0,
     "ListItem": 1,
     "TreeItem": 1,
     "DataItem": 1,
@@ -174,6 +307,7 @@ class UIElement:
     bottom: int
     source: str = "uia"
     enabled: bool = True
+    verified_by: str = "type"
 
     @property
     def center(self) -> tuple[int, int]:
@@ -196,6 +330,7 @@ class UIElement:
             "rect": [self.left, self.top, self.right, self.bottom],
             "source": self.source,
             "enabled": self.enabled,
+            "verified_by": self.verified_by,
         }
 
 
@@ -212,6 +347,10 @@ class SOMSnapshot:
     # IDs that have a numbered box in the annotated screenshot. The full element
     # list can be larger; those extra controls are still clickable by name/ID.
     annotated_ids: tuple[int, ...] = ()
+    # "uia", "ocr", "uia+ocr", or "none".
+    detection: str = "uia"
+    uia_scanned: int = 0
+    uia_accepted: int = 0
     # Live-context anchors used by pre-action validation.
     window_handle: int | None = None
     process_id: int | None = None
@@ -247,6 +386,9 @@ class SOMSnapshot:
             "elements": [item.to_public() for item in self.elements],
             "coordinate_map": self.coordinate_map(),
             "annotated_ids": list(self.annotated_ids),
+            "detection": self.detection,
+            "uia_scanned": self.uia_scanned,
+            "uia_accepted": self.uia_accepted,
         }
 
 
@@ -571,10 +713,24 @@ def _uia_elements(
     window: Any,
     display: DisplayBounds,
     settings: AutomationSettings,
-) -> list[tuple[str, str, str, int, int, int, int, bool]]:
+) -> tuple[list[DetectedElement], dict[str, Any]]:
+    """Scan a window's UIA tree for verified interactive controls.
+
+    Returns ``(elements, stats)``. Nothing here guesses from pixels: every
+    returned rectangle belongs to a real accessibility node.
+    """
+    stats: dict[str, Any] = {
+        "scanned": 0,
+        "accepted": 0,
+        "offscreen": 0,
+        "disabled": 0,
+        "rejected": 0,
+        "error": "",
+    }
     hwnd = getattr(window, "_hWnd", None)
     if not hwnd:
-        return []
+        stats["error"] = "The target window has no native handle."
+        return [], stats
 
     try:
         from pywinauto import Desktop
@@ -586,40 +742,49 @@ def _uia_elements(
         )
     except Exception as exc:  # noqa: BLE001 - UIA may be unavailable
         logger.debug("Could not open UIA wrapper for %r: %s", window.title, exc)
-        return []
+        stats["error"] = f"UIA wrapper failed: {exc}"
+        return [], stats
 
     queue: deque[tuple[Any, int]] = deque([(wrapper, 0)])
-    scanned = 0
-    found: list[tuple[str, str, str, int, int, int, int, bool]] = []
+    found: list[DetectedElement] = []
     seen_rects: set[tuple[str, int, int, int, int]] = set()
 
-    while (
-        queue
-        and scanned < settings.max_element_scan
-        and len(found) < settings.max_elements
-    ):
+    while queue and stats["scanned"] < settings.max_element_scan:
         control, depth = queue.popleft()
-        scanned += 1
+        stats["scanned"] += 1
 
         try:
-            visible = bool(control.is_visible())
-        except Exception:  # noqa: BLE001 - some wrappers lack visibility
-            visible = True
+            info = control.element_info
+        except Exception:  # noqa: BLE001 - a control can disappear
+            continue
 
-        if visible and depth < settings.max_element_depth:
+        control_type = str(getattr(info, "control_type", "") or "").strip()
+
+        # UIA's offscreen flag is the authoritative visibility signal.
+        offscreen = False
+        try:
+            raw = info.element
+            offscreen = bool(int(getattr(raw, "CurrentIsOffscreen", 0) or 0))
+        except Exception:  # noqa: BLE001 - fall back to the wrapper
+            try:
+                offscreen = not bool(control.is_visible())
+            except Exception:
+                offscreen = False
+
+        if offscreen:
+            stats["offscreen"] += 1
+            # Children of an offscreen subtree are offscreen as well.
+            continue
+
+        if depth < settings.max_element_depth:
             try:
                 for child in control.children():
                     queue.append((child, depth + 1))
             except Exception:  # noqa: BLE001 - a child can disappear
                 pass
 
-        try:
-            info = control.element_info
-            control_type = str(getattr(info, "control_type", "") or "")
-        except Exception:  # noqa: BLE001
-            continue
-
-        if control_type not in _INTERACTABLE:
+        if control_type in _NEVER_INTERACTABLE:
+            stats["rejected"] += 1
             continue
 
         try:
@@ -631,14 +796,17 @@ def _uia_elements(
                 int(rect.bottom),
             )
         except Exception:  # noqa: BLE001
+            stats["rejected"] += 1
             continue
 
         if (
             right - left < settings.min_element_size
             or bottom - top < settings.min_element_size
         ):
+            stats["rejected"] += 1
             continue
         if not _rect_intersects(display, left, top, right, bottom):
+            stats["rejected"] += 1
             continue
 
         # Only expose the visible part so the center is always clickable.
@@ -650,12 +818,42 @@ def _uia_elements(
             right - left < settings.min_element_size
             or bottom - top < settings.min_element_size
         ):
+            stats["rejected"] += 1
             continue
 
         try:
             enabled = bool(control.is_enabled())
         except Exception:  # noqa: BLE001
             enabled = True
+        if not enabled:
+            stats["disabled"] += 1
+            continue
+
+        # Pattern probes are only needed when the control type is not already
+        # definitive. This keeps the scan fast on large trees.
+        invoke = False
+        focusable = False
+        if control_type not in _DEFINITELY_INTERACTIVE:
+            try:
+                control.iface_invoke
+                invoke = True
+            except Exception:  # noqa: BLE001 - no Invoke pattern
+                invoke = False
+            try:
+                focusable = bool(control.is_keyboard_focusable())
+            except Exception:  # noqa: BLE001
+                focusable = False
+
+        accepted, verified_by = _is_verified_interactable(
+            control_type,
+            invoke=invoke,
+            focusable=focusable,
+            width=right - left,
+            height=bottom - top,
+        )
+        if not accepted:
+            stats["rejected"] += 1
+            continue
 
         try:
             name = str(getattr(info, "name", "") or "").strip()
@@ -677,20 +875,26 @@ def _uia_elements(
         if key in seen_rects:
             continue
         seen_rects.add(key)
+
         found.append(
-            (
-                name[:120],
-                control_type,
-                automation_id[:120],
-                left,
-                top,
-                right,
-                bottom,
-                enabled,
+            DetectedElement(
+                name=name[:120],
+                control_type=control_type,
+                automation_id=automation_id[:120],
+                left=left,
+                top=top,
+                right=right,
+                bottom=bottom,
+                enabled=enabled,
+                source="uia",
+                verified_by=verified_by,
             )
         )
+        stats["accepted"] += 1
+        if len(found) >= settings.max_elements:
+            break
 
-    return found
+    return found, stats
 
 
 def _overlap_ratio(
@@ -708,98 +912,217 @@ def _overlap_ratio(
     return intersection / area
 
 
-def _visual_elements(
+def _containment_ratio(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    """Intersection over the smaller area, for nested duplicate controls."""
+    left = max(first[0], second[0])
+    top = max(first[1], second[1])
+    right = min(first[2], second[2])
+    bottom = min(first[3], second[3])
+    if right <= left or bottom <= top:
+        return 0.0
+    intersection = (right - left) * (bottom - top)
+    smaller = min(
+        max(1, (first[2] - first[0]) * (first[3] - first[1])),
+        max(1, (second[2] - second[0]) * (second[3] - second[1])),
+    )
+    return intersection / smaller
+
+
+def _dedupe_detected(
+    elements: Iterable[DetectedElement],
+) -> list[DetectedElement]:
+    """Remove nested/duplicate hits, keeping the more semantic control.
+
+    Only similarly sized rectangles are compared. A large document pane must
+    not suppress the buttons inside it; a Group row and its TreeItem do count
+    as the same target.
+    """
+    ordered = sorted(
+        elements,
+        key=lambda item: (
+            _SEMANTIC_PRIORITY.get(item.control_type, 4),
+            (item.right - item.left) * (item.bottom - item.top),
+        ),
+    )
+    kept: list[DetectedElement] = []
+    for element in ordered:
+        rect = (element.left, element.top, element.right, element.bottom)
+        area = max(1, (element.right - element.left) * (element.bottom - element.top))
+        duplicate = False
+        for existing in kept:
+            other = (
+                existing.left,
+                existing.top,
+                existing.right,
+                existing.bottom,
+            )
+            other_area = max(
+                1,
+                (existing.right - existing.left)
+                * (existing.bottom - existing.top),
+            )
+            size_ratio = max(area, other_area) / max(1, min(area, other_area))
+            if size_ratio > 8.0:
+                continue
+            if _containment_ratio(rect, other) >= 0.60:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(element)
+
+    kept.sort(key=lambda item: (item.top, item.left))
+    return kept
+
+
+_OCR_LOCK = threading.Lock()
+_OCR_ENGINE: Any | None = None
+
+
+def _ocr_engine() -> Any:
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _OCR_ENGINE = RapidOCR()
+    return _OCR_ENGINE
+
+
+def _ocr_text_ok(
+    text: str,
+    width: int,
+    height: int,
+    confidence: float,
+    settings: AutomationSettings,
+) -> bool:
+    """Strict filter for OCR fallback labels.
+
+    A plain paragraph line has many words, a long/narrow box, or an
+    implausible size. Buttons and labels are short and compact.
+    """
+    words = [word for word in str(text or "").split() if word]
+    if not words or len(words) > settings.ocr_max_words:
+        return False
+    if confidence < settings.ocr_min_confidence:
+        return False
+    if len(str(text).strip()) > 60:
+        return False
+    if width < 16 or width > 520:
+        return False
+    if height < 10 or height > settings.ocr_max_height:
+        return False
+    aspect = width / max(1, height)
+    return 0.5 <= aspect <= 7.5
+
+
+def _ocr_elements(
     image: Any,
-    display: DisplayBounds,
-    existing: Iterable[tuple[int, int, int, int]],
     settings: AutomationSettings,
     *,
-    max_items: int = 15,
     origin: tuple[int, int] | None = None,
-) -> list[tuple[str, str, str, int, int, int, int, bool]]:
-    """Conservative contour fallback for custom-rendered controls."""
+    max_items: int = 60,
+) -> tuple[list[DetectedElement], dict[str, Any]]:
+    """OCR fallback for windows that expose no usable UIA tree.
+
+    Only short, compact text labels are kept. There is no contour guessing:
+    a box must contain recognizable text (1-4 words) and pass the geometry
+    filters, otherwise it is dropped.
+    """
+    stats: dict[str, Any] = {"engine": "rapidocr", "lines": 0, "accepted": 0, "error": ""}
     if not settings.visual_fallback:
-        return []
-    origin_left = display.left if origin is None else int(origin[0])
-    origin_top = display.top if origin is None else int(origin[1])
+        stats["error"] = "OCR fallback is disabled."
+        return [], stats
 
     try:
-        import cv2
         import numpy as np
-    except Exception:  # noqa: BLE001 - optional fallback
-        return []
+    except Exception as exc:  # noqa: BLE001 - optional fallback
+        stats["error"] = f"OCR dependencies unavailable: {exc}"
+        return [], stats
+
+    origin_left = 0 if origin is None else int(origin[0])
+    origin_top = 0 if origin is None else int(origin[1])
+
+    max_width = max(640, int(settings.screenshot_max_width))
+    scale = min(1.0, max_width / max(1, image.width))
+    working = image
+    if scale < 1.0:
+        from PIL import Image
+
+        working = image.resize(
+            (
+                max(1, int(image.width * scale)),
+                max(1, int(image.height * scale)),
+            ),
+            Image.Resampling.BILINEAR,
+        )
 
     try:
-        pixels = np.asarray(image.convert("RGB"))
-        gray = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 45, 135)
-        edges = cv2.dilate(
-            edges,
-            np.ones((3, 3), dtype=np.uint8),
-            iterations=1,
-        )
-        contours, _hierarchy = cv2.findContours(
-            edges,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE,
-        )
-    except Exception:  # noqa: BLE001
-        logger.debug("Visual element fallback failed", exc_info=True)
-        return []
+        pixels = np.asarray(working.convert("RGB"))
+        # RapidOCR's ndarray path expects OpenCV's BGR order.
+        array = pixels[:, :, ::-1].copy()
+        with _OCR_LOCK:
+            engine = _ocr_engine()
+            result, _elapsed = engine(array)
+    except Exception as exc:  # noqa: BLE001 - OCR must not break a snapshot
+        logger.warning("OCR fallback failed: %s", exc)
+        stats["error"] = f"OCR failed: {exc}"
+        return [], stats
 
-    image_area = max(1, image.width * image.height)
-    candidates: list[tuple[int, int, int, int]] = []
-    for contour in contours:
-        x, y, width, height = cv2.boundingRect(contour)
-        if width < max(18, settings.min_element_size * 2):
+    candidates: list[tuple[float, str, int, int, int, int]] = []
+    for item in result or []:
+        try:
+            box, text, score = item
+            points = [(float(point[0]), float(point[1])) for point in box]
+            confidence = float(score)
+        except (TypeError, ValueError, IndexError):
             continue
-        if height < max(14, settings.min_element_size * 2):
-            continue
-        if width > image.width * 0.55 or height > image.height * 0.65:
-            continue
-        if (width * height) < image_area * 0.00015:
-            continue
-        aspect = width / max(1, height)
-        if aspect < 0.25 or aspect > 6.0:
-            continue
-        candidates.append((x, y, width, height))
+        stats["lines"] += 1
 
-    candidates.sort(key=lambda item: item[2] * item[3], reverse=True)
-    local_existing = [
-        (
-            left - origin_left,
-            top - origin_top,
-            right - origin_left,
-            bottom - origin_top,
+        x0 = min(point[0] for point in points) / scale
+        y0 = min(point[1] for point in points) / scale
+        x1 = max(point[0] for point in points) / scale
+        y1 = max(point[1] for point in points) / scale
+        left = origin_left + int(round(x0))
+        top = origin_top + int(round(y0))
+        right = origin_left + int(round(x1))
+        bottom = origin_top + int(round(y1))
+        width = right - left
+        height = bottom - top
+        label = " ".join(str(text or "").split())
+        if not _ocr_text_ok(label, width, height, confidence, settings):
+            continue
+        candidates.append((confidence, label, left, top, right, bottom))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected: list[DetectedElement] = []
+    kept_rects: list[tuple[int, int, int, int]] = []
+    for confidence, label, left, top, right, bottom in candidates:
+        rect = (left, top, right, bottom)
+        if any(_containment_ratio(rect, other) >= 0.35 for other in kept_rects):
+            continue
+        kept_rects.append(rect)
+        selected.append(
+            DetectedElement(
+                name=label[:120],
+                control_type="OcrText",
+                automation_id="",
+                left=left,
+                top=top,
+                right=right,
+                bottom=bottom,
+                enabled=True,
+                source="ocr",
+                verified_by="ocr",
+            )
         )
-        for left, top, right, bottom in existing
-    ]
-
-    selected: list[tuple[int, int, int, int]] = []
-    for x, y, width, height in candidates:
-        rect = (x, y, x + width, y + height)
-        if any(_overlap_ratio(rect, other) > 0.55 for other in local_existing):
-            continue
-        if any(_overlap_ratio(rect, other) > 0.55 for other in selected):
-            continue
-        selected.append(rect)
         if len(selected) >= max_items:
             break
 
-    selected.sort(key=lambda item: (item[1], item[0]))
-    return [
-        (
-            "visual element",
-            "Visual",
-            "",
-            origin_left + x,
-            origin_top + y,
-            origin_left + x + width,
-            origin_top + y + height,
-            True,
-        )
-        for x, y, width, height in selected
-    ]
+    selected.sort(key=lambda item: (item.top, item.left))
+    stats["accepted"] = len(selected)
+    return selected, stats
 
 
 def _font(size: int):
@@ -974,6 +1297,7 @@ class SOMParser:
                     time.sleep(0.02)
 
         hwnd = int(getattr(window, "_hWnd", 0) or 0) or None
+        target_foreground = bool(hwnd) and _foreground_handle() == hwnd
 
         monitor: DisplayBounds | None = None
         if display is not None:
@@ -1030,51 +1354,78 @@ class SOMParser:
                 "ok": True,
                 "snapshot": reused,
                 "message": (
-                    f"Detected {len(reused.elements)} interactable element(s) "
-                    f"in {actual_title or 'the active window'}. The window "
+                    f"Detected {len(reused.elements)} "
+                    f"{reused.detection.replace('uia', 'UIA-verified').replace('ocr', 'OCR-filtered')} "
+                    f"interactable element(s) in "
+                    f"{actual_title or 'the active window'}. The window "
                     "content is unchanged, so the previous snapshot is still "
                     "valid."
                 ),
                 "files": [reused.screenshot],
                 "reused": True,
+                "detection": reused.detection,
+                "foreground": target_foreground,
+                "uia_stats": {"scanned": reused.uia_scanned, "accepted": reused.uia_accepted},
+                "ocr_stats": {},
             }
 
-        raw_elements: list[
-            tuple[str, str, str, int, int, int, int, bool]
-        ] = []
+        uia_elements: list[DetectedElement] = []
+        uia_stats: dict[str, Any] = {}
         if window is not None:
-            raw_elements = _uia_elements(window, monitor, self.settings)
+            uia_elements, uia_stats = _uia_elements(
+                window,
+                monitor,
+                self.settings,
+            )
+        if uia_stats.get("error"):
+            logger.info("UIA scan for %r: %s", actual_title, uia_stats["error"])
 
-        if len(raw_elements) < 3:
-            raw_elements.extend(
-                _visual_elements(
+        # UIA is authoritative. Only when it exposes almost nothing do we fall
+        # back to strict OCR labels for otherwise inaccessible custom windows.
+        detection = "uia" if len(uia_elements) >= self.settings.uia_min_elements else "none"
+        combined: list[DetectedElement] = list(uia_elements)
+        ocr_stats: dict[str, Any] = {}
+        if len(uia_elements) < self.settings.uia_min_elements:
+            if target_foreground:
+                ocr_elements, ocr_stats = _ocr_elements(
                     image,
-                    monitor,
-                    [
-                        (item[3], item[4], item[5], item[6])
-                        for item in raw_elements
-                    ],
                     self.settings,
                     origin=(capture_rect[0], capture_rect[1]),
                 )
-            )
+                if ocr_elements:
+                    combined.extend(ocr_elements)
+                    detection = "uia+ocr" if uia_elements else "ocr"
+                elif uia_elements:
+                    detection = "uia"
+            else:
+                # A screen capture of a background/occluded window can show a
+                # different app. Never OCR those pixels: that is exactly how
+                # false positives get introduced.
+                ocr_stats = {
+                    "engine": "rapidocr",
+                    "lines": 0,
+                    "accepted": 0,
+                    "error": (
+                        "Target window is not foreground; OCR fallback skipped "
+                        "to avoid reading another application."
+                    ),
+                }
 
-        raw_elements.sort(key=lambda item: (item[4], item[3]))
-        if len(raw_elements) > self.settings.max_elements:
-            raw_elements = raw_elements[: self.settings.max_elements]
+        raw_elements = _dedupe_detected(combined)[: self.settings.max_elements]
 
         elements = tuple(
             UIElement(
                 id=index,
-                name=item[0],
-                control_type=item[1],
-                automation_id=item[2],
-                left=item[3],
-                top=item[4],
-                right=item[5],
-                bottom=item[6],
-                source="uia" if item[1] != "Visual" else "visual",
-                enabled=item[7],
+                name=item.name,
+                control_type=item.control_type,
+                automation_id=item.automation_id,
+                left=item.left,
+                top=item.top,
+                right=item.right,
+                bottom=item.bottom,
+                source=item.source,
+                enabled=item.enabled,
+                verified_by=item.verified_by,
             )
             for index, item in enumerate(raw_elements, start=1)
         )
@@ -1118,6 +1469,9 @@ class SOMParser:
             image_height=image_height,
             created_at=time.time(),
             annotated_ids=annotated_ids,
+            detection=detection,
+            uia_scanned=int(uia_stats.get("scanned") or 0),
+            uia_accepted=len(uia_elements),
             window_handle=hwnd,
             process_id=process_id,
             process_name=process_name,
@@ -1134,16 +1488,32 @@ class SOMParser:
             title=actual_title,
         )
 
+        source_label = {
+            "uia": "UIA-verified",
+            "ocr": "OCR-filtered",
+            "uia+ocr": "UIA + OCR-filtered",
+            "none": "",
+        }[detection]
+        prefix = f"{source_label} " if source_label else ""
         message = (
-            f"Detected {len(elements)} interactable element(s) in "
+            f"Detected {len(elements)} {prefix}interactable element(s) in "
             f"{actual_title or 'the active display'}; "
             f"{len(annotated_ids)} are numbered in the screenshot."
         )
         if not elements:
             message = (
-                f"No interactable elements were detected in "
-                f"{actual_title or 'the active display'}. Bring the target "
+                f"No {prefix}interactable elements were detected in "
+                f"{actual_title or 'the active display'}. UIA scan: "
+                f"{uia_stats.get('scanned', 0)} nodes, "
+                f"{uia_stats.get('accepted', 0)} verified. "
+                f"OCR: {ocr_stats.get('accepted', 0)} labels. Bring the target "
                 "window to the front or pass its exact window_title."
+            )
+        if not target_foreground:
+            message += (
+                " The target window is not foreground, so the screenshot may "
+                "show another window; bring it to the front before relying on "
+                "the image."
             )
 
         return {
@@ -1151,6 +1521,10 @@ class SOMParser:
             "snapshot": snapshot,
             "message": message,
             "files": [screenshot],
+            "detection": detection,
+            "foreground": target_foreground,
+            "uia_stats": uia_stats,
+            "ocr_stats": ocr_stats,
         }
 
     def _annotate(

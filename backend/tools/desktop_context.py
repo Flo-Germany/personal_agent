@@ -598,7 +598,9 @@ class DesktopContextService:
             logger.debug("Could not read the target window enabled state")
 
         source = str(getattr(element, "source", "") or "")
-        if source == "visual":
+        if source != "uia":
+            # OCR/visual boxes have no accessibility node to relocate; the
+            # window/process/rect checks above still apply.
             return True, None, None, None, context
 
         fresh = self._relocate_element(hwnd, element)

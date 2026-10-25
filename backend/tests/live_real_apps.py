@@ -491,7 +491,64 @@ def explorer_test(runner: LiveRunner) -> bool:
     return ok
 
 
+def uia_test(runner: LiveRunner) -> bool:
+    print("\n=== UIA: verified clickable targets in a real Explorer window")
+    from tools.som_vision import SOMParser
+
+    folder = TEMP / f"compa_uia_{STAMP}"
+    folder.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(["explorer.exe", f"/n,{folder}"])
+    title = wait_for_title(folder.name, timeout=20)
+    print("  explorer window:", title)
+    if not title:
+        print("  no Explorer window, skipped")
+        return False
+
+    parser = SOMParser(runner.settings.automation)
+    result = parser.snapshot(window_title=title)
+    if not result.get("ok"):
+        print("  snapshot failed:", result)
+        close_windows_matching(folder.name, require="file explorer")
+        return False
+
+    snapshot = result["snapshot"]
+    elements = snapshot.elements
+    plain_text = [
+        item
+        for item in elements
+        if item.control_type == "Text" and item.verified_by != "invoke"
+    ]
+    invalid_source = [item for item in elements if item.source != "uia"]
+    invalid_verification = [
+        item
+        for item in elements
+        if item.verified_by not in {"type", "invoke", "focus"}
+    ]
+
+    print(
+        f"  detection={snapshot.detection} elements={len(elements)} "
+        f"uia_scanned={snapshot.uia_scanned} uia_verified={snapshot.uia_accepted}"
+    )
+    print("  sample:", [(item.control_type, item.name[:35]) for item in elements[:8]])
+    print(
+        f"  verify: plain_text={len(plain_text)} "
+        f"invalid_source={len(invalid_source)} "
+        f"invalid_verification={len(invalid_verification)}"
+    )
+
+    ok = (
+        snapshot.detection == "uia"
+        and len(elements) >= 5
+        and not plain_text
+        and not invalid_source
+        and not invalid_verification
+    )
+    close_windows_matching(folder.name, require="file explorer")
+    return ok
+
+
 SCENARIOS: dict[str, Callable[[LiveRunner], bool]] = {
+    "uia": uia_test,
     "outlook": outlook_test,
     "browser": browser_test,
     "explorer": explorer_test,
