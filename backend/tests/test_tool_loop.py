@@ -1673,6 +1673,78 @@ def test_diagnosis_artifact_paths_are_hidden_from_the_model(
     assert filtered["summary"]["cpu"]["name"] == "Test CPU"
 
 
+def test_gui_click_pauses_with_the_exact_hands_off_message(
+    tmp_path: Path,
+) -> None:
+    class FakeAutomation:
+        def __init__(self) -> None:
+            self.clicks: list[tuple[str, int, str]] = []
+
+        def click(
+            self,
+            snapshot_id: str,
+            element_id: int,
+            element_name: str,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            self.clicks.append((snapshot_id, element_id, element_name))
+            return {"ok": True, "message": "Clicked."}
+
+        def reset(self) -> None:
+            return None
+
+        def status(self) -> dict[str, Any]:
+            return {}
+
+    automation = FakeAutomation()
+    settings = Settings(
+        ollama=OllamaSettings(model="hermes3", temperature=0.2, max_retries=0),
+        agent=AgentSettings(max_iterations=3),
+        memory=MemorySettings(
+            knowledge_base_path=tmp_path / "knowledge.md",
+            learn_from_chats=False,
+        ),
+    )
+    store = ConversationStore()
+    knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
+    executor = ToolExecutor(
+        settings.tools,
+        automation_service=automation,  # type: ignore[arg-type]
+    )
+    client = ScriptedClient(
+        [
+            tool_calls_message(
+                tool_call(
+                    "click_element",
+                    {
+                        "snapshot_id": "som_1",
+                        "element_id": 7,
+                        "element_name": "New Email",
+                    },
+                )
+            ),
+            content_message("The New Email button was clicked."),
+        ]
+    )
+    service = ChatService(settings, store, knowledge, executor, client=client)
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Click New Email."))
+    action = action_event(events)
+
+    assert action["actions"][0]["tool"] == "click_element"
+    assert (
+        "take your hands off the mouse and keyboard"
+        in action["actions"][0]["description"]
+    )
+    assert automation.clicks == []
+
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert final_event(resumed)["reply"] == "The New Email button was clicked."
+    assert automation.clicks == [("som_1", 7, "New Email")]
+
+
 def test_read_only_loop_summarizes_at_max_rounds(tmp_path: Path) -> None:
     note = tmp_path / "note.txt"
     note.write_text("hello", encoding="utf-8")

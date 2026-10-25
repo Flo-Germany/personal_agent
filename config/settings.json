@@ -38,6 +38,16 @@
     "powershell_timeout_seconds": 15,
     "powershell_max_output_chars": 12000
   },
+  "automation": {
+    "enabled": true,
+    "move_duration_seconds": 0.9,
+    "highlight_seconds": 0.5,
+    "arm_delay_seconds": 0.4,
+    "move_threshold_pixels": 4,
+    "max_elements": 60,
+    "type_interval_seconds": 0.02,
+    "visual_fallback": true
+  },
   "vision": {
     "enabled": true,
     "embed_model": "clip-ViT-B-32",

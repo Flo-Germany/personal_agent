@@ -179,6 +179,29 @@ class VisionSettings(BaseModel):
         return roots
 
 
+class AutomationSettings(BaseModel):
+    """GUI control: Set-of-Mark detection, smooth pointer, physical killswitch."""
+
+    enabled: bool = True
+    move_duration_seconds: float = Field(default=0.9, ge=0.1, le=5.0)
+    highlight_seconds: float = Field(default=0.5, ge=0.0, le=2.0)
+    arm_delay_seconds: float = Field(default=0.4, ge=0.0, le=2.0)
+    move_threshold_pixels: int = Field(default=4, ge=1, le=50)
+    max_elements: int = Field(default=60, ge=5, le=200)
+    min_element_size: int = Field(default=8, ge=2, le=100)
+    max_element_scan: int = Field(default=3000, ge=100, le=20000)
+    max_element_depth: int = Field(default=20, ge=2, le=60)
+    type_interval_seconds: float = Field(default=0.02, ge=0.0, le=0.2)
+    screenshot_dir: Path = Path("memory/screenshots")
+    screenshot_max_width: int = Field(default=1600, ge=640, le=3840)
+    visual_fallback: bool = True
+
+    def resolved_screenshot_dir(self) -> Path:
+        if self.screenshot_dir.is_absolute():
+            return self.screenshot_dir
+        return PROJECT_ROOT / self.screenshot_dir
+
+
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
     # Personality lives in a dedicated, user-editable Markdown file. The inline
@@ -193,6 +216,7 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
+    automation: AutomationSettings = Field(default_factory=AutomationSettings)
 
     def resolved_personality_path(self) -> Path:
         if self.personality_file.is_absolute():

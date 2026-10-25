@@ -44,6 +44,11 @@ def test_schemas_use_the_openai_function_format() -> None:
         "get_open_windows",
         "read_window_content",
         "analyze_screen",
+        "analyze_screen_ui",
+        "move_cursor_to",
+        "click_element",
+        "keyboard_type_text",
+        "keyboard_press_keys",
     }
 
 

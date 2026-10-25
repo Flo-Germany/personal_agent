@@ -51,6 +51,11 @@ TOOL_REQUIRES_CONFIRMATION: dict[str, bool] = {
     "get_open_windows": False,
     "read_window_content": False,
     "analyze_screen": False,
+    "analyze_screen_ui": False,
+    "move_cursor_to": True,
+    "click_element": True,
+    "keyboard_type_text": True,
+    "keyboard_press_keys": True,
 }
 _PROGRAM_NAMES = {"calculator", "calc", "notepad", "explorer", "paint", "mspaint"}
 
@@ -414,6 +419,11 @@ def open_file(path: str, program: str) -> dict[str, Any]:
         raise ToolError(f"File not found: {target}")
     if not target.is_file():
         raise ToolError(f"Not a file: {target}")
+    if target.suffix.casefold() in _PROGRAM_SUFFIXES:
+        raise ToolError(
+            "open_file opens documents, not executables or shortcuts. Use "
+            f"start_program to launch {target.name}."
+        )
 
     raw_program = str(program or "").strip()
     if not raw_program:

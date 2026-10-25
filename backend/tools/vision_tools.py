@@ -1256,6 +1256,8 @@ class VisionService:
         *,
         system_prompt: str | None = None,
         tools: Sequence[dict[str, Any]] | None = None,
+        instruction: str | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         base = self.ollama_base_url.rstrip("/")
         if base.endswith("/v1"):
@@ -1270,7 +1272,7 @@ class VisionService:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        instruction = (
+        instruction = instruction or (
             "Answer in the language of the user's question, directly from the "
             "screenshot. Give only the final answer, without chain-of-thought "
             "or reasoning text."
@@ -1288,7 +1290,7 @@ class VisionService:
         def send(use_tools: bool) -> dict[str, Any]:
             options: dict[str, Any] = {
                 "temperature": 0.2,
-                "num_predict": self.settings.screen_max_tokens,
+                "num_predict": max_tokens or self.settings.screen_max_tokens,
             }
             if self.context_window:
                 options["num_ctx"] = int(self.context_window)
@@ -1358,6 +1360,41 @@ class VisionService:
                 return text
 
         raise RuntimeError("Ollama returned an empty vision response.")
+
+    def ground_ui(
+        self,
+        question: str,
+        image_b64: str,
+        elements: Sequence[Any],
+    ) -> str:
+        """Ask the vision model to pick one numbered Set-of-Mark element."""
+        lines: list[str] = []
+        for element in elements:
+            element_id = getattr(element, "id", None)
+            control_type = getattr(element, "control_type", "element")
+            name = getattr(element, "name", "") or "unnamed"
+            lines.append(f"#{element_id} {control_type}: {name}")
+
+        prompt = (
+            "The screenshot has numbered colored boxes around interactive "
+            "UI elements.\n"
+            f"User intent: {question}\n"
+            "Detected elements:\n"
+            + "\n".join(lines)
+            + "\n\nChoose the single element ID that best matches the intent. "
+            'Return only JSON: {"id": <number>, "reason": "<short reason>", '
+            '"confidence": <number between 0 and 1>}. '
+            "Use id 0 if no element matches."
+        )
+        return self._ask_vision_model(
+            prompt,
+            image_b64,
+            instruction=(
+                "Return only the JSON object. Do not use markdown fences, "
+                "extra text, or chain-of-thought."
+            ),
+            max_tokens=160,
+        )
 
     def analyze_screen(
         self,

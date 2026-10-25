@@ -267,6 +267,19 @@ def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
         if count:
             return f"Planning {count} step{'s' if count != 1 else ''}..."
         return "Planning the steps..."
+    if name == "analyze_screen_ui":
+        return "Mapping interactive UI elements..."
+    if name == "move_cursor_to":
+        return "Requesting cursor control..."
+    if name == "click_element":
+        element = str(arguments.get("element_name") or "element")
+        return f"Requesting cursor control to click {element}..."
+    if name == "keyboard_type_text":
+        return "Requesting keyboard control to type..."
+    if name == "keyboard_press_keys":
+        keys = arguments.get("keys")
+        joined = "+".join(str(key) for key in keys) if isinstance(keys, list) else ""
+        return f"Pressing {joined}..." if joined else "Pressing keys..."
     if name == "run_powershell_query":
         return (
             "Running PowerShell query: "
@@ -332,6 +345,38 @@ def _action_description(name: str, arguments: dict[str, Any]) -> str:
             f"Open {arguments.get('path', '')} with "
             f"{arguments.get('program', 'a program')}"
         )
+    if name == "click_element":
+        element = str(arguments.get("element_name") or "the selected element")
+        element_id = arguments.get("element_id", "?")
+        return (
+            f"Requesting cursor control to click #{element_id} '{element}'. "
+            "Please take your hands off the mouse and keyboard."
+        )
+    if name == "move_cursor_to":
+        element = str(arguments.get("element_name") or "the selected element")
+        element_id = arguments.get("element_id", "?")
+        return (
+            f"Requesting cursor control to move to #{element_id} '{element}'. "
+            "Please take your hands off the mouse and keyboard."
+        )
+    if name == "keyboard_type_text":
+        text = str(arguments.get("text") or "")
+        preview = " ".join(text.split())
+        if len(preview) > 200:
+            preview = preview[:197] + "..."
+        return (
+            "Requesting keyboard control to type into the focused field. "
+            "Please take your hands off the mouse and keyboard.\n"
+            f"Text: {preview}"
+        )
+    if name == "keyboard_press_keys":
+        keys = arguments.get("keys")
+        joined = "+".join(str(key) for key in keys) if isinstance(keys, list) else ""
+        return (
+            "Requesting keyboard control to press "
+            f"{joined or 'the requested keys'}. "
+            "Please take your hands off the mouse and keyboard."
+        )
     if name == "create_folder":
         return f"Create folder {arguments.get('path', '')}"
     if name == "create_file":
@@ -382,7 +427,10 @@ class ChatService:
         self._settings = settings
         self._store = store
         self._knowledge = knowledge
-        self._tools = tools or ToolExecutor(settings.tools)
+        self._tools = tools or ToolExecutor(
+            settings.tools,
+            automation=settings.automation,
+        )
         self._client = client or NativeOllamaClient(
             settings.ollama.base_url,
             timeout=settings.ollama.timeout_seconds,
@@ -580,6 +628,12 @@ class ChatService:
             if existing is not None:
                 yield existing.to_public()
                 return
+
+            # A new user message is the only thing that clears a physical-input
+            # automation halt. In-turn approval resumes must keep the halt.
+            reset_automation = getattr(self._tools, "reset_automation", None)
+            if callable(reset_automation):
+                reset_automation()
 
             start_length = len(self._store.load(conversation_id))
             self._store.append(conversation_id, "user", message)
@@ -799,8 +853,12 @@ class ChatService:
                 else:
                     # Run before yielding so the chosen analysis is not lost
                     # if the client disconnects immediately after selecting.
+                    tool_name = str(
+                        call.get("function", {}).get("name")
+                        or "analyze_screen"
+                    )
                     result = self._execute_tool(
-                        "analyze_screen",
+                        tool_name,
                         arguments,
                         conversation_id,
                     )
@@ -1313,31 +1371,35 @@ class ChatService:
                 (
                     call
                     for call in read_only_calls
-                    if call["function"]["name"] == "analyze_screen"
+                    if call["function"]["name"]
+                    in {"analyze_screen", "analyze_screen_ui"}
                 ),
                 None,
             )
 
             if screen_call is not None:
-                displays = self._tools.display_choices()
-                if len(displays) > 1:
-                    pending = self._pending.create(
-                        conversation_id,
-                        user_message,
-                        [screen_call],
-                        [],
-                        assistant_message=content.strip(),
-                        kind="display",
-                        displays=displays,
-                        question=str(
-                            _parse_arguments(screen_call).get(
-                                "user_question",
-                                "",
-                            )
-                        ),
-                    )
-                    yield pending.to_public()
-                    return
+                screen_arguments = _parse_arguments(screen_call)
+                # A named window determines its own display; only the generic
+                # screen question needs the multi-display chooser.
+                if not screen_arguments.get("window_title"):
+                    displays = self._tools.display_choices()
+                    if len(displays) > 1:
+                        pending = self._pending.create(
+                            conversation_id,
+                            user_message,
+                            [screen_call],
+                            [],
+                            assistant_message=content.strip(),
+                            kind="display",
+                            displays=displays,
+                            question=str(
+                                screen_arguments.get("user_question")
+                                or screen_arguments.get("question")
+                                or ""
+                            ),
+                        )
+                        yield pending.to_public()
+                        return
 
             self._store.append(
                 conversation_id,

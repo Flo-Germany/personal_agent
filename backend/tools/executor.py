@@ -8,8 +8,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from settings import ToolSettings
+from settings import AutomationSettings, ToolSettings
 from tools import os_tools, system_diagnosis, system_tools, window_tools
+from tools.gui_automation import GUIAutomationService
 from tools.schemas import TOOL_SCHEMAS
 
 if TYPE_CHECKING:
@@ -25,9 +26,15 @@ class ToolExecutor:
         self,
         settings: ToolSettings,
         vision: VisionService | None = None,
+        automation: AutomationSettings | None = None,
+        automation_service: GUIAutomationService | None = None,
     ) -> None:
         self.settings = settings
         self.vision = vision
+        self.automation = automation_service or GUIAutomationService(
+            automation or AutomationSettings(),
+            vision=vision,
+        )
         self._parameters: dict[str, dict[str, Any]] = {
             schema["function"]["name"]: schema["function"].get("parameters", {})
             for schema in TOOL_SCHEMAS
@@ -114,6 +121,95 @@ class ToolExecutor:
                 tools=context.get("tools"),
             )
 
+        def analyze_screen_ui(
+            question: str,
+            display: int | None = None,
+            window_title: str | None = None,
+            _screen_context: dict[str, Any] | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            # The screen context is accepted for parity with analyze_screen;
+            # SoM grounding uses its own short JSON instruction.
+            return self.automation.analyze(
+                question,
+                display=display,
+                window_title=window_title,
+            )
+
+        def move_cursor_to(
+            snapshot_id: str,
+            element_id: int,
+            element_name: str,
+            duration_seconds: float | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.automation.move(
+                snapshot_id,
+                element_id,
+                element_name,
+                duration_seconds=duration_seconds,
+            )
+
+        def click_element(
+            snapshot_id: str,
+            element_id: int,
+            element_name: str,
+            button: str = "left",
+            clicks: int = 1,
+            duration_seconds: float | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.automation.click(
+                snapshot_id,
+                element_id,
+                element_name,
+                button=button,
+                clicks=clicks,
+                duration_seconds=duration_seconds,
+            )
+
+        def keyboard_type_text(
+            text: str,
+            press_enter: bool = False,
+            interval_seconds: float | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.automation.type_text(
+                text,
+                press_enter=press_enter,
+                interval_seconds=interval_seconds,
+            )
+
+        def keyboard_press_keys(
+            keys: list[str],
+            interval_seconds: float | None = None,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.automation.press_keys(
+                keys,
+                interval_seconds=interval_seconds,
+            )
+
+        def start_program(program_name: str) -> dict[str, Any]:
+            before: set[str] = set()
+            titles = getattr(self.automation, "visible_window_titles", None)
+            if callable(titles):
+                try:
+                    before = set(titles())
+                except Exception:  # noqa: BLE001 - hint is best effort
+                    before = set()
+
+            result = os_tools.start_program(program_name)
+            if result.get("ok"):
+                note = getattr(self.automation, "note_launched_program", None)
+                if callable(note):
+                    note(
+                        program_name,
+                        result.get("program"),
+                        before_titles=before,
+                    )
+            return result
+
         def propose_plan(
             steps: list[str] | None = None,
             **_ignored: Any,
@@ -149,9 +245,7 @@ class ToolExecutor:
                     max_output_chars=tool_settings.powershell_max_output_chars,
                 )
             ),
-            "start_program": lambda program_name, **_ignored: os_tools.start_program(
-                program_name
-            ),
+            "start_program": start_program,
             "open_file": lambda path, program, **_ignored: os_tools.open_file(
                 path,
                 program,
@@ -163,6 +257,11 @@ class ToolExecutor:
                 )
             ),
             "analyze_screen": analyze_screen,
+            "analyze_screen_ui": analyze_screen_ui,
+            "move_cursor_to": move_cursor_to,
+            "click_element": click_element,
+            "keyboard_type_text": keyboard_type_text,
+            "keyboard_press_keys": keyboard_press_keys,
             "create_folder": lambda path: os_tools.create_folder(path),
             "create_file": lambda path, content, overwrite=False: os_tools.create_file(
                 path,
@@ -201,6 +300,13 @@ class ToolExecutor:
 
     def requires_confirmation(self, name: str) -> bool:
         return os_tools.requires_confirmation(name)
+
+    def reset_automation(self) -> None:
+        """Clear the killswitch halt and stale SoM snapshots for a new turn."""
+        self.automation.reset()
+
+    def automation_status(self) -> dict[str, Any]:
+        return self.automation.status()
 
     def display_choices(self) -> list[dict[str, Any]]:
         """Return displays with previews, or an empty list without a vision service."""
@@ -286,7 +392,7 @@ class ToolExecutor:
                 }
 
         try:
-            if name == "analyze_screen":
+            if name in {"analyze_screen", "analyze_screen_ui"}:
                 return handler(**parsed, _screen_context=screen_context)
             return handler(**parsed)
         except TypeError as exc:

@@ -125,7 +125,11 @@ def create_app(
             settings,
             store,
             knowledge,
-            ToolExecutor(settings.tools, vision=vision),
+            ToolExecutor(
+                settings.tools,
+                vision=vision,
+                automation=settings.automation,
+            ),
         )
 
     @asynccontextmanager

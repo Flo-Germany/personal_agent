@@ -469,6 +469,14 @@ def test_open_file_launches_selected_editor(
     assert launches == [[str(editor.resolve()), str(document)]]
 
 
+def test_open_file_rejects_executables(tmp_path: Path) -> None:
+    executable = tmp_path / "notepad.exe"
+    executable.write_bytes(b"MZ")
+
+    with pytest.raises(os_tools.ToolError, match="start_program"):
+        os_tools.open_file(str(executable), "notepad")
+
+
 def test_open_file_rejects_missing_file(tmp_path: Path) -> None:
     editor = tmp_path / "editor.exe"
     editor.write_bytes(b"")

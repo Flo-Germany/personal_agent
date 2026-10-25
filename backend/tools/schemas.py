@@ -658,7 +658,8 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                 "call this tool normally and do not ask which display in a text "
                 "reply. Do not use this when the user asks about a specific open "
                 "document that read_window_content can read, and do not capture "
-                "the screen without a clear screen-related request."
+                "the screen without a clear screen-related request. For clicking "
+                "or typing into an app, use analyze_screen_ui instead."
             ),
             "parameters": {
                 "type": "object",
@@ -681,6 +682,228 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     },
                 },
                 "required": ["user_question"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_screen_ui",
+            "description": (
+                "Set-of-Mark UI analysis for GUI control. Captures the target "
+                "window or display, detects interactable controls with Windows "
+                "UI Automation (plus a visual fallback), draws a numbered "
+                "colored box over each element, and asks the local vision model "
+                "which element matches the intent. Read-only: it does not move "
+                "the mouse or click. Returns a snapshot_id, a compact element "
+                "list, a coordinate map (ID -> screen x/y), the annotated "
+                "screenshot, and a suggested_id. Pass window_title when the "
+                "target app is known; call get_open_windows first if unsure. "
+                "After the UI changes, call this again: element IDs belong to "
+                "one snapshot only. When several displays are connected and no "
+                "window_title is given, the app asks the user which display to "
+                "capture."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "What to find, for example 'the New Email button' or "
+                            "'the To field in the compose window'."
+                        ),
+                    },
+                    "window_title": {
+                        "type": "string",
+                        "description": (
+                            "Exact or partial title of the target window, for "
+                            "example 'Outlook' or 'Untitled - Notepad'."
+                        ),
+                    },
+                    "display": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Internal: 1-based display number. Do not pass this "
+                            "yourself; the app sets it after the user chooses a "
+                            "display when several are connected."
+                        ),
+                    },
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "move_cursor_to",
+            "description": (
+                "Move the physical cursor smoothly and visibly to an element "
+                "from a fresh analyze_screen_ui snapshot. Shows a brief red "
+                "highlight first, then glides linearly. This only moves the "
+                "pointer: it does not click or focus a field. Requires user "
+                "approval. The user must take their hands off the mouse and "
+                "keyboard; any physical input aborts immediately. Never guess "
+                "coordinates or reuse a stale snapshot."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "snapshot_id": {
+                        "type": "string",
+                        "description": "snapshot_id returned by analyze_screen_ui.",
+                    },
+                    "element_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Element number from that snapshot.",
+                    },
+                    "element_name": {
+                        "type": "string",
+                        "description": (
+                            "The element name exactly as shown in the snapshot; "
+                            "used in the approval card and as a safety check."
+                        ),
+                    },
+                    "duration_seconds": {
+                        "type": "number",
+                        "minimum": 0.15,
+                        "maximum": 5,
+                        "description": "Glide duration; default is configured.",
+                    },
+                },
+                "required": ["snapshot_id", "element_id", "element_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_element",
+            "description": (
+                "Click an element from a fresh analyze_screen_ui snapshot. "
+                "Requires user approval. The backend shows a red highlight, "
+                "glides the cursor, and clicks. Physical mouse or keyboard "
+                "input aborts instantly and halts all GUI tools for the turn. "
+                "Never click Send, Delete, Buy, or another irreversible button "
+                "unless the user explicitly asked for that exact action."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "snapshot_id": {
+                        "type": "string",
+                        "description": "snapshot_id returned by analyze_screen_ui.",
+                    },
+                    "element_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Element number from that snapshot.",
+                    },
+                    "element_name": {
+                        "type": "string",
+                        "description": (
+                            "The element name exactly as shown in the snapshot; "
+                            "used in the approval card and as a safety check."
+                        ),
+                    },
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "description": "Mouse button; defaults to left.",
+                    },
+                    "clicks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2,
+                        "description": "1 for a click, 2 for a double-click.",
+                    },
+                    "duration_seconds": {
+                        "type": "number",
+                        "minimum": 0.15,
+                        "maximum": 5,
+                        "description": "Glide duration; default is configured.",
+                    },
+                },
+                "required": ["snapshot_id", "element_id", "element_name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "keyboard_type_text",
+            "description": (
+                "Type text into the currently focused field with synthetic "
+                "keystrokes. Requires user approval and a preceding "
+                "click_element on the target Edit/Document field; moving the "
+                "cursor is not enough and typing is refused until a field was "
+                "clicked. Physical keyboard or mouse input aborts immediately. "
+                "Non-ASCII text uses the clipboard paste fallback. Use "
+                "keyboard_press_keys for Tab/Enter and shortcuts. Do not type "
+                "into password fields or send messages without explicit user "
+                "intent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The exact text to type.",
+                    },
+                    "press_enter": {
+                        "type": "boolean",
+                        "description": "Press Enter after typing.",
+                    },
+                    "interval_seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 0.2,
+                        "description": "Delay per character; default is configured.",
+                    },
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "keyboard_press_keys",
+            "description": (
+                "Press one key or a key combination such as ['ctrl','s'] or "
+                "['tab'] after an approved GUI action. Requires user approval. "
+                "Physical input aborts immediately. Use this for Enter, Tab, "
+                "Escape, arrows, and application shortcuts; do not use it to "
+                "submit irreversible actions without explicit user intent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 5,
+                        "description": (
+                            "Key names, for example ['ctrl','s'] or ['enter']."
+                        ),
+                    },
+                    "interval_seconds": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 0.2,
+                        "description": "Delay after the key press.",
+                    },
+                },
+                "required": ["keys"],
                 "additionalProperties": False,
             },
         },

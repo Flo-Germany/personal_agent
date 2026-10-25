@@ -443,6 +443,11 @@ The agent can use eighteen tools:
 | `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
 | `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
+| `analyze_screen_ui` | No | Set-of-Mark UI map: numbered bounding boxes, element IDs, coordinate map, annotated screenshot, and a vision-model suggestion |
+| `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element |
+| `click_element` | Yes | Highlight, glide, and click a detected element; physical input aborts instantly |
+| `keyboard_type_text` | Yes | Type into the focused field with synthetic keys or layout-safe clipboard paste |
+| `keyboard_press_keys` | Yes | Press Enter, Tab, Escape, arrows, or a key combination such as Ctrl+S |
 | `read_file_content` | No | Read text files; binary/image files return metadata only |
 | `create_folder` | Yes | Create a folder anywhere outside protected locations |
 | `create_file` | Yes | Create a UTF-8 text file, without overwriting unless explicitly requested |
@@ -603,9 +608,97 @@ If a thinking model times out, switch to its `-instruct` variant (for example
 
 The agent is instructed to use window tools for "which apps are open" and
 "read this document", and `analyze_screen` for "what is on my screen" or visual
-questions. It does not click, type, or otherwise control applications. Screen
-captures are only requested for clear screen-related requests and go only to the
-local Ollama instance.
+questions. Screen captures are only requested for clear screen-related requests
+and go only to the local Ollama instance. Clicking and typing are separate,
+approval-gated GUI tools described below.
+
+## GUI automation
+
+The GUI layer is deliberately **UI-Automation-first, vision-assisted**:
+
+- `analyze_screen_ui` captures the target window's display and walks the Windows
+  UI Automation tree with `pywinauto`. It keeps visible, enabled interactable
+  controls (buttons, edits, menus, tabs, list items, and similar), exposes only
+  the on-screen part of each rectangle, and numbers them row by row.
+- If UIA exposes fewer than three controls, an OpenCV contour fallback adds
+  conservative visual regions. This helps icon-only and custom-rendered apps
+  where accessibility is poor. The fallback is optional (`automation.visual_fallback`).
+- Each snapshot writes an annotated PNG under `memory/screenshots/` with a
+  semi-transparent colored box and a numbered chip over every element. The tool
+  returns the screenshot path (shown in the chat), the full element list, a
+  compact `coordinate_map` of `ID -> {x, y, name, type}`, a `snapshot_id`, and a
+  `suggested_id` from `qwen3-vl`. IDs are only valid for that snapshot. The
+  parser stores a short-lived snapshot in memory; stale IDs are rejected.
+- `move_cursor_to` and `click_element` accept `snapshot_id`, `element_id`, and
+  `element_name`. The name is checked against the snapshot, so a stale or
+  hallucinated ID cannot silently click the wrong control. The pointer shows a
+  red highlight for `highlight_seconds`, then glides linearly over
+  `move_duration_seconds` while checking the killswitch between steps.
+- `keyboard_type_text` types into the already-focused field. Simple layout-safe
+  text uses synthetic key events; text containing `@`, `:`, `!`, umlauts, or
+  other layout-sensitive characters uses a clipboard paste and restores the
+  previous clipboard text. `keyboard_press_keys` handles Enter, Tab, Escape,
+  arrows, and combinations such as Ctrl+S.
+- Every input tool requires explicit HITL approval. The approval card says:
+  *"Requesting cursor control to click #7 'New Email'. Please take your hands
+  off the mouse and keyboard."* The agent is told to prefer CLI commands and
+  shortcuts when they can accomplish the task, and to stop before Send, Delete,
+  or other irreversible actions unless the user explicitly asked for them.
+
+### Physical-input killswitch
+
+`pynput` installs global low-level mouse and keyboard listeners. On Windows the
+`win32_event_filter` inspects the hook's injected flag, so synthetic events from
+`pyautogui` are ignored while a real mouse move, click, wheel, or key press
+aborts the action. The guard ignores the first `arm_delay_seconds` (default 0.4)
+to absorb the click on the approval button, ignores mouse movement below
+`move_threshold_pixels` (default 4), and is checked between every interpolation
+step. An abort raises `AutomationAbortedException`, stops the current action, and
+sets a turn-level halt; every later GUI tool in the same turn is refused. Only a
+new user message clears the halt. The agent is instructed to report the abort and
+ask how to continue, never to retry silently.
+
+Configuration lives under `automation` in `config/settings.json`:
+`enabled`, `move_duration_seconds`, `highlight_seconds`, `arm_delay_seconds`,
+`move_threshold_pixels`, `max_elements`, `type_interval_seconds`,
+`screenshot_max_width`, and `visual_fallback`.
+
+### End-to-end Outlook scenario
+
+`backend/tests/e2e_gui_outlook.py` launches a real WinForms mock of Outlook
+(`backend/tests/mock_outlook.ps1`), then exercises the same services the agent
+tools use:
+
+1. detect the **New Email** button with Set-of-Mark,
+2. click it with the highlight and smooth glide,
+3. find and fill **To**, **Subject**, and **Body**,
+4. click the mock **Send** and verify the captured fields,
+5. in a separate phase, simulate a physical mouse twitch and assert the click is
+   aborted and later GUI tools are halted.
+
+It never sends a real email. Run it with:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tests/e2e_gui_outlook.py
+```
+
+A live agent run against the same mock also passed: the model called
+`get_open_windows`, `analyze_screen_ui`, `click_element` for **New Email**, the
+**To** and **Subject** fields, typed the values, clicked **Send**, and the mock
+result contained `test@example.com` and `Phase 17 E2E`. The live Notepad dry run
+exposed two real failures that are now fixed:
+
+- `open_file` could open an executable as a document. It now rejects
+  `.exe`/`.com`/`.lnk` and points to `start_program`.
+- `analyze_screen_ui` could target whichever window was active instead of the
+  app that was just launched. `start_program` now records the newly created
+  window (excluding generic path words such as `Windows` and `System32`), and
+  `analyze_screen_ui` prefers it. The agent is also told to call
+  `get_open_windows` after a launch and to retry if the detected title is wrong.
+
+`keyboard_type_text` additionally refuses to type until a text-capable element
+was clicked, so moving the cursor cannot silently send keystrokes to the wrong
+window.
 
 ## System diagnosis
 

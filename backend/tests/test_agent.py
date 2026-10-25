@@ -150,6 +150,17 @@ def test_system_prompt_contains_identity_and_guidance(tmp_path) -> None:
     assert "placeholder tokens" in prompt
 
 
+def test_system_prompt_describes_the_gui_automation_loop(tmp_path) -> None:
+    prompt = build_system_prompt(make_settings(tmp_path))
+
+    assert "analyze_screen_ui" in prompt
+    assert "prefer the CLI" in prompt
+    assert "take their hands off the mouse and keyboard" in prompt
+    assert "never reuse a snapshot" in prompt
+    assert "aborted: true" in prompt
+    assert "Never click Send" in prompt
+
+
 def test_system_prompt_loads_personality_file(tmp_path) -> None:
     personality_file = tmp_path / "personality.md"
     personality_file.write_text(
