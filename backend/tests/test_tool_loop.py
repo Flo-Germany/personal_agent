@@ -310,9 +310,9 @@ def test_approval_event_includes_the_request_and_following_plan(
 
     assert action["request"] == "First create the folder, then verify it."
     assert action["plan"] == [
-        "Create the folder.",
-        "Verify that it exists.",
-        "Report the result.",
+        "Create the folder",
+        "Verify that it exists",
+        "Report the result",
     ]
 
 
@@ -327,8 +327,8 @@ def test_plan_from_request_parses_first_then_sequences() -> None:
         'First create the folder C:\\temp, then create the file note.txt '
         'with "hello". Perform both tasks in order.'
     ) == [
-        "create the folder C:\\temp",
-        'create the file note.txt with "hello"',
+        "Create the folder C:\\temp",
+        'Create the file note.txt with "hello"',
     ]
     assert ChatService._plan_from_request("Create the folder.") == []
 
@@ -338,14 +338,37 @@ def test_plan_from_request_parses_and_und_sequences() -> None:
         'erstelle einen order und erstelle dort eine text datei mit '
         '"hello world" als text drin'
     ) == [
-        "erstelle einen order",
-        'erstelle dort eine text datei mit "hello world" als text drin',
+        "Erstelle einen order",
+        'Erstelle dort eine text datei mit "hello world" als text drin',
     ]
     assert ChatService._plan_from_request(
         "Create a folder and write a note."
-    ) == ["Create a folder", "write a note"]
+    ) == ["Create a folder", "Write a note"]
     assert ChatService._plan_from_request(
         "Create a folder and its contents."
+    ) == []
+
+
+def test_plan_from_request_splits_comma_action_lists() -> None:
+    assert ChatService._plan_from_request(
+        "erstelle einen Ordner, erstelle darin eine Textdatei und schreibe "
+        "'hello world' als Text hinein"
+    ) == [
+        "Erstelle einen Ordner",
+        "Erstelle darin eine Textdatei",
+        "Schreibe 'hello world' als Text hinein",
+    ]
+    assert ChatService._plan_from_request(
+        "Create a folder, create a text file inside it, and write hello "
+        "world into the file."
+    ) == [
+        "Create a folder",
+        "Create a text file inside it",
+        "Write hello world into the file",
+    ]
+    # A comma inside quoted content is not an action separator.
+    assert ChatService._plan_from_request(
+        'Create a file named "hello, world.txt".'
     ) == []
 
 
@@ -372,8 +395,46 @@ def test_approval_falls_back_to_german_und_sequence(tmp_path: Path) -> None:
     action = action_event(paused)
 
     assert action["plan"] == [
-        "erstelle einen order",
-        'erstelle dort eine text datei mit "hello world" als text drin',
+        "Erstelle einen order",
+        'Erstelle dort eine text datei mit "hello world" als text drin',
+    ]
+
+
+def test_plan_selection_prefers_the_more_complete_request_plan(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "complete-plan"
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "propose_plan",
+                    {"steps": ["Create a folder", "Write hello"]},
+                    "call_plan",
+                )
+            ),
+            tool_calls_message(
+                tool_call("create_folder", {"path": str(folder)})
+            ),
+            content_message("Done."),
+        ],
+    )
+    conversation_id = store.new_conversation_id()
+
+    paused = list(
+        service.start_turn(
+            conversation_id,
+            "Create a folder, create a text file inside it, and write hello "
+            "into the file.",
+        )
+    )
+    action = action_event(paused)
+
+    assert action["plan"] == [
+        "Create a folder",
+        "Create a text file inside it",
+        "Write hello into the file",
     ]
 
 
@@ -398,7 +459,7 @@ def test_approval_falls_back_to_the_user_sequence(tmp_path: Path) -> None:
     )
     action = action_event(paused)
 
-    assert action["plan"] == ["create the folder", "create the note"]
+    assert action["plan"] == ["Create the folder", "Create the note"]
 
 
 def test_propose_plan_tool_feeds_the_approval_card(tmp_path: Path) -> None:

@@ -61,20 +61,31 @@ _LEADING_CONNECTOR = re.compile(
     r"\b[:,]?\s*)+",
     re.IGNORECASE,
 )
-_ACTION_START = re.compile(
-    r"^(?:create|make|write|add|delete|remove|move|copy|rename|open|start|"
-    r"launch|run|execute|search|find|read|show|list|zip|unzip|extract|"
-    r"download|upload|edit|update|set|change|install|stop|kill|save|put|"
-    r"place|close|empty|organize|sort|backup|restore|send|print|"
-    r"erstelle|erstellen|erzeuge|erzeugen|mache|machen|schreibe|schreiben|"
-    r"speichere|speichern|lege|legen|füge|fügen|lösche|löschen|entferne|"
-    r"entfernen|verschiebe|verschieben|kopiere|kopieren|benenne|benennen|"
-    r"öffne|öffnen|starte|starten|führe|führen|suche|suchen|finde|finden|"
-    r"lese|lesen|zeige|zeigen|liste|listen|entpacke|entpacken|extrahiere|"
-    r"extrahieren|lade|laden|aktualisiere|aktualisieren|ändere|ändern|"
-    r"setze|setzen|installiere|installieren|beende|beenden|stoppe|stoppen|"
-    r"töte|töten|schließe|schließen|leere|leeren|räume|räumen|sortiere|"
-    r"sortieren|sichere|sichern|sende|senden|drucke|drucken)\b",
+_ACTION_VERBS = (
+    "create|make|write|add|delete|remove|move|copy|rename|open|start|launch|"
+    "run|execute|search|find|read|show|list|zip|unzip|extract|download|"
+    "upload|edit|update|set|change|install|stop|kill|save|put|place|close|"
+    "empty|organize|sort|backup|restore|send|print|check|verify|compare|"
+    "count|calculate|convert|compress|replace|insert|append|merge|split|"
+    "share|email|reply|format|analyze|summarise|summarize|explain|describe|"
+    "clean|erstelle|erstellen|erzeuge|erzeugen|mache|machen|schreibe|"
+    "schreiben|speichere|speichern|lege|legen|füge|fügen|lösche|löschen|"
+    "entferne|entfernen|verschiebe|verschieben|kopiere|kopieren|benenne|"
+    "benennen|öffne|öffnen|starte|starten|führe|führen|suche|suchen|finde|"
+    "finden|lese|lesen|zeige|zeigen|liste|listen|entpacke|entpacken|"
+    "extrahiere|extrahieren|lade|laden|aktualisiere|aktualisieren|ändere|"
+    "ändern|setze|setzen|installiere|installieren|beende|beenden|stoppe|"
+    "stoppen|töte|töten|schließe|schließen|leere|leeren|räume|räumen|"
+    "sortiere|sortieren|sichere|sichern|sende|senden|drucke|drucken|prüfe|"
+    "prüfen|überprüfe|überprüfen|vergleiche|vergleichen|zähle|zählen|"
+    "berechne|berechnen|konvertiere|konvertieren|komprimiere|komprimieren|"
+    "ersetze|ersetzen|ergänze|ergänzen|teile|teilen|formatiere|formatieren|"
+    "analysiere|analysieren|erkläre|erklären|beschreibe|beschreiben|"
+    "bereinige|bereinigen"
+)
+_ACTION_START = re.compile(rf"^(?:{_ACTION_VERBS})\b", re.IGNORECASE)
+_COMMA_ACTION_SPLIT = re.compile(
+    rf",\s+(?=(?:{_ACTION_VERBS})\b)",
     re.IGNORECASE,
 )
 _META_STEP = re.compile(
@@ -1117,17 +1128,28 @@ class ChatService:
                     }
                     for call in confirmation_calls
                 ]
+                model_plan = self._normalize_plan_steps(
+                    self._turn_plans.get(conversation_id)
+                    or self._extract_plan_steps(content)
+                )
+                request_plan = self._plan_from_request(user_message)
+                if (
+                    len(request_plan) >= 2
+                    and len(request_plan) >= len(model_plan)
+                ):
+                    # The user's explicit wording is usually more complete and
+                    # specific than the model's short plan.
+                    plan = request_plan
+                else:
+                    plan = model_plan or request_plan
+
                 pending = self._pending.create(
                     conversation_id,
                     user_message,
                     confirmation_calls,
                     actions,
                     assistant_message=content.strip(),
-                    plan=(
-                        self._turn_plans.get(conversation_id)
-                        or self._extract_plan_steps(content)
-                        or self._plan_from_request(user_message)
-                    ),
+                    plan=plan,
                 )
                 yield pending.to_public()
                 return
@@ -1623,17 +1645,78 @@ class ChatService:
     def _clean_plan_clause(part: str) -> str:
         sentence = re.split(r"(?<=[.!?])\s+", part.strip())[0]
         cleaned = _LEADING_CONNECTOR.sub("", sentence.strip(" \t\r\n.,;:-"))
-        return cleaned.strip(" \t\r\n.,;:-")
+        cleaned = cleaned.strip(" \t\r\n.,;:-")
+        if cleaned:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        return cleaned
+
+    @classmethod
+    def _split_plan_clauses(cls, text: str) -> list[str]:
+        """Split a request into individual action clauses.
+
+        Sequence words are handled first. Commas and ``and``/``und`` are only
+        treated as separators when the following clause starts with an action
+        verb, so paths and prose containing commas stay intact.
+        """
+        clauses: list[str] = []
+
+        for segment in _SEQUENCE_SPLIT.split(text):
+            comma_parts = _COMMA_ACTION_SPLIT.split(segment)
+            candidates: list[str] = []
+            for comma_part in comma_parts:
+                candidates.extend(
+                    re.split(
+                        r"\s+(?:and|und)\s+",
+                        comma_part,
+                        flags=re.IGNORECASE,
+                    )
+                )
+
+            cleaned = [cls._clean_plan_clause(part) for part in candidates]
+            cleaned = [part for part in cleaned if part]
+            if not cleaned:
+                continue
+
+            if len(cleaned) > 1 and not all(
+                _ACTION_START.match(part) and not _META_STEP.match(part)
+                for part in cleaned
+            ):
+                fallback = cls._clean_plan_clause(segment)
+                if fallback:
+                    clauses.append(fallback)
+                continue
+
+            clauses.extend(cleaned)
+
+        return clauses
+
+    @classmethod
+    def _normalize_plan_steps(cls, steps: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+
+        for step in steps:
+            for clause in cls._split_plan_clauses(str(step)):
+                if len(clause) < 3 or _META_STEP.match(clause):
+                    continue
+                key = clause.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                normalized.append(clause[:240])
+                if len(normalized) >= 8:
+                    return normalized
+
+        return normalized
 
     @classmethod
     def _plan_from_request(cls, message: str) -> list[str]:
         """Turn an explicit multi-step request into a short display plan.
 
-        Handles "first X, then Y", German "X, dann Y", and plain
+        Handles "first X, then Y", German "X, dann Y", comma lists, and plain
         conjunctions such as "create X and write Y" / "erstelle X und
-        erstelle Y". A conjunction is only treated as a sequence when every
-        clause starts with an action verb, so "create a folder and its
-        contents" remains a single action.
+        erstelle Y". A conjunction or comma is only treated as a separator when
+        every resulting clause starts with an action verb.
         """
         text = " ".join(message.split())
         if not text:
@@ -1641,38 +1724,16 @@ class ChatService:
 
         numbered = cls._extract_plan_steps(message)
         if len(numbered) > 1:
-            return numbered
+            return cls._normalize_plan_steps(numbered)
 
-        steps: list[str] = []
-        for part in _SEQUENCE_SPLIT.split(text):
-            cleaned = cls._clean_plan_clause(part)
-            if len(cleaned) < 3 or _META_STEP.match(cleaned):
-                continue
-            steps.append(cleaned[:240])
-            if len(steps) >= 8:
-                break
-
-        if len(steps) > 1:
-            return steps
-
-        parts = re.split(r"\s+(?:and|und)\s+", text, flags=re.IGNORECASE)
-        if len(parts) < 2:
+        steps = [
+            clause
+            for clause in cls._split_plan_clauses(text)
+            if len(clause) >= 3 and not _META_STEP.match(clause)
+        ]
+        if len(steps) <= 1:
             return []
-
-        action_steps: list[str] = []
-        for part in parts:
-            cleaned = cls._clean_plan_clause(part)
-            if (
-                len(cleaned) < 3
-                or _META_STEP.match(cleaned)
-                or not _ACTION_START.match(cleaned)
-            ):
-                return []
-            action_steps.append(cleaned[:240])
-            if len(action_steps) >= 8:
-                break
-
-        return action_steps if len(action_steps) > 1 else []
+        return cls._normalize_plan_steps(steps)[:8]
 
     @staticmethod
     def _call_signature(name: str, arguments: Any) -> tuple[str, str]:

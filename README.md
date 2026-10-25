@@ -368,8 +368,8 @@ and prompt token counts, prompt evaluation, model load, and total time.
    event is streamed. The HTTP stream then closes; no thread waits for a click.
    The card lists the exact actions that will run now and the planned sequence
    (from `propose_plan`, the model's numbered plan, or an explicit sequence such
-   as "first … then …", "X and Y", or "X und Y"), and is marked
-   `auto_approve_remaining`.
+   as "first … then …", a comma-separated action list, "X and Y", or "X und Y"),
+   and is marked `auto_approve_remaining`.
 4. `POST /chat/approve` either executes the pending actions and appends
    `role: "tool"` results, or appends an “Action cancelled by user” result.
    After an approval, every remaining modifying step of the same request runs
