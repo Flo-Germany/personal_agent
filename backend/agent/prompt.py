@@ -130,12 +130,28 @@ def strip_language_preferences(knowledge: str) -> str:
     return "\n".join(kept).strip()
 
 
+def build_knowledge_block(knowledge: str) -> str:
+    """Format the editable knowledge base as a compact context block."""
+    knowledge = strip_language_preferences(knowledge.strip())
+    if not knowledge:
+        return ""
+    return (
+        "Long-term knowledge about the user, from a file the user can edit. "
+        "It is the source of truth for personal facts: name, age, location, "
+        "work, study, preferences, and routines. Check it before answering a "
+        "question about the user, use its exact values, and never replace a "
+        "stored number with a guess. Do not recite the whole file:\n\n"
+        f"{knowledge}"
+    )
+
+
 def build_system_prompt(
     settings: Settings,
     knowledge: str = "",
     requested_language: str | None = None,
     now: datetime | None = None,
     project_root: Path | None = None,
+    include_knowledge: bool = True,
 ) -> str:
     """Compose the identity, base system prompt, knowledge, and memory rules."""
     parts = [
@@ -157,19 +173,6 @@ def build_system_prompt(
             "naturally; do not quote or summarize it unless the user asks about "
             "your personality:\n\n"
             f"{personality}"
-        )
-
-    knowledge = knowledge.strip()
-    if knowledge:
-        knowledge = strip_language_preferences(knowledge)
-    if knowledge:
-        parts.append(
-            "Long-term knowledge about the user, from a file the user can edit. "
-            "It is the source of truth for personal facts: name, age, location, "
-            "work, study, preferences, and routines. Check it before answering a "
-            "question about the user, use its exact values, and never replace a "
-            "stored number with a guess. Do not recite the whole file:\n\n"
-            f"{knowledge}"
         )
 
     parts.append(
@@ -356,6 +359,11 @@ def build_system_prompt(
             "another language. Do not translate the reply back into the "
             "question's language."
         )
+
+    if include_knowledge:
+        knowledge_block = build_knowledge_block(knowledge)
+        if knowledge_block:
+            parts.append(knowledge_block)
 
     parts.append(
         f"Identity reminder: your name is {settings.agent_name}. You are an AI "

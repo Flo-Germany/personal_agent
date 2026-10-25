@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -64,13 +65,14 @@ def make_service(
     tmp_path: Path,
     messages: list[Any],
     max_iterations: int = 3,
+    learn_from_chats: bool = False,
 ) -> tuple[ChatService, ConversationStore, ScriptedClient]:
     settings = Settings(
         ollama=OllamaSettings(model="hermes3", temperature=0.2, max_retries=0),
         agent=AgentSettings(max_iterations=max_iterations),
         memory=MemorySettings(
             knowledge_base_path=tmp_path / "knowledge.md",
-            learn_from_chats=False,
+            learn_from_chats=learn_from_chats,
         ),
     )
     store = ConversationStore()
@@ -229,6 +231,45 @@ def test_interrupt_without_an_active_turn_is_a_noop(tmp_path: Path) -> None:
     conversation_id = store.new_conversation_id()
 
     assert service.interrupt(conversation_id) is False
+
+
+def test_scheduled_learning_coalesces_rapid_messages(tmp_path: Path) -> None:
+    service, store, _ = make_service(
+        tmp_path,
+        [content_message("ok")],
+        learn_from_chats=True,
+    )
+    service._learning_delay = 0.05  # type: ignore[attr-defined]
+    recorded: list[str] = []
+    service.learn_from_exchange = lambda message: recorded.append(message) or []  # type: ignore[method-assign]
+    conversation_id = store.new_conversation_id()
+
+    service.schedule_learning(conversation_id, "I am 20.")
+    service.schedule_learning(conversation_id, "I live in Berlin.")
+    time.sleep(0.25)
+
+    assert recorded == ["I am 20.\n\nI live in Berlin."]
+
+
+def test_scheduled_learning_waits_for_an_active_turn(tmp_path: Path) -> None:
+    service, store, _ = make_service(
+        tmp_path,
+        [content_message("ok")],
+        learn_from_chats=True,
+    )
+    service._learning_delay = 0.05  # type: ignore[attr-defined]
+    recorded: list[str] = []
+    service.learn_from_exchange = lambda message: recorded.append(message) or []  # type: ignore[method-assign]
+    conversation_id = store.new_conversation_id()
+
+    service.schedule_learning(conversation_id, "I am 20.")
+    service._begin_turn(conversation_id)
+    time.sleep(0.2)
+    assert recorded == []
+
+    service._end_turn(conversation_id)
+    time.sleep(0.3)
+    assert recorded == ["I am 20."]
 
 
 def test_existing_pending_is_reemitted_without_new_user_message(tmp_path: Path) -> None:

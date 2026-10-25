@@ -47,8 +47,21 @@ CONTEXT_WINDOW_MESSAGES = 10
 # A single user request may auto-run its remaining steps after one approval.
 # This cap stops a runaway model from executing an unbounded action chain.
 MAX_AUTO_APPROVED_ACTIONS = 25
+# Wait for a quiet moment before extracting facts, so the learning call does
+# not compete with a rapid follow-up message.
+LEARNING_IDLE_SECONDS = 3.0
 
 _PLAN_STEP = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+_PERSONAL_CUE = re.compile(
+    r"\b(?:i|i'm|i am|i've|i have|my|me|mine|we|our|us|"
+    r"ich|bin|mein|meine|meinen|mir|mich|wir|unser|uns|"
+    r"remember|merke|notiere|forget|vergiss|"
+    r"name is|age|live|lives|work|works|study|studies|"
+    r"prefer|prefers|like|likes|love|loves|hate|hates|"
+    r"favorite|favourite|birthday|geburtstag|heißt|wohnt|"
+    r"arbeitet|studiert|mag|liebt|hasst)\b",
+    re.IGNORECASE,
+)
 _SEQUENCE_SPLIT = re.compile(
     r"(?:\n+|;|\bthen\b|\bafter\s+that\b|\bafterwards\b|\bfinally\b|"
     r"\band\s+then\b|\bdann\b|\bdanach\b|\banschließend\b|"
@@ -383,6 +396,12 @@ class ChatService:
         self._cancel_guard = threading.Lock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._interrupted: set[str] = set()
+        self._active_guard = threading.Lock()
+        self._active_conversations: set[str] = set()
+        self._learning_guard = threading.Lock()
+        self._learning_pending: dict[str, list[str]] = {}
+        self._learning_timers: dict[str, threading.Timer] = {}
+        self._learning_delay = LEARNING_IDLE_SECONDS
 
     def _lock_for(self, conversation_id: str) -> threading.Lock:
         with self._locks_guard:
@@ -422,6 +441,73 @@ class ChatService:
             event = self._cancel_events.get(conversation_id)
             if event is not None:
                 event.clear()
+
+    # ------------------------------------------------------------- learning
+    def _begin_turn(self, conversation_id: str) -> None:
+        with self._active_guard:
+            self._active_conversations.add(conversation_id)
+
+    def _end_turn(self, conversation_id: str) -> None:
+        with self._active_guard:
+            self._active_conversations.discard(conversation_id)
+
+    def _is_turn_active(self, conversation_id: str) -> bool:
+        with self._active_guard:
+            return conversation_id in self._active_conversations
+
+    def schedule_learning(self, conversation_id: str, user_message: str) -> None:
+        """Queue fact extraction for a quiet moment after the turn.
+
+        Coalescing rapid follow-ups avoids running an extra LLM request while
+        the user is already asking the next question. All messages are kept and
+        learned together once the conversation has been idle briefly.
+        """
+        if not self._settings.memory.learn_from_chats:
+            return
+        message = user_message.strip()
+        if not message or not _PERSONAL_CUE.search(message):
+            return
+
+        with self._learning_guard:
+            pending = self._learning_pending.setdefault(conversation_id, [])
+            pending.append(message)
+            if len(pending) > 6:
+                del pending[:-6]
+
+            timer = self._learning_timers.pop(conversation_id, None)
+            if timer is not None:
+                timer.cancel()
+            timer = threading.Timer(
+                self._learning_delay,
+                self._run_scheduled_learning,
+                args=(conversation_id,),
+            )
+            timer.daemon = True
+            self._learning_timers[conversation_id] = timer
+            timer.start()
+
+    def _run_scheduled_learning(self, conversation_id: str) -> None:
+        with self._learning_guard:
+            self._learning_timers.pop(conversation_id, None)
+            pending = self._learning_pending.get(conversation_id, [])
+            if not pending:
+                return
+            if self._is_turn_active(conversation_id):
+                timer = threading.Timer(
+                    self._learning_delay,
+                    self._run_scheduled_learning,
+                    args=(conversation_id,),
+                )
+                timer.daemon = True
+                self._learning_timers[conversation_id] = timer
+                timer.start()
+                return
+            messages = self._learning_pending.pop(conversation_id, [])
+
+        if not messages:
+            return
+        combined = "\n\n".join(messages)[-8000:]
+        self.learn_from_exchange(combined)
 
     def _store_partial_stream(
         self,
@@ -494,6 +580,7 @@ class ChatService:
             self._turn_plans.pop(conversation_id, None)
             self._clear_interrupt(conversation_id)
             self._cancel_event(conversation_id)
+            self._begin_turn(conversation_id)
 
             try:
                 yield from self._run_segment(conversation_id)
@@ -515,6 +602,7 @@ class ChatService:
                 yield self._error_event(conversation_id, exc)
             finally:
                 self._clear_interrupt(conversation_id)
+                self._end_turn(conversation_id)
 
     def resume(
         self,
@@ -529,6 +617,7 @@ class ChatService:
         with lock:
             self._clear_interrupt(conversation_id)
             self._cancel_event(conversation_id)
+            self._begin_turn(conversation_id)
 
             try:
                 results: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -611,6 +700,7 @@ class ChatService:
                 yield self._error_event(conversation_id, exc)
             finally:
                 self._clear_interrupt(conversation_id)
+                self._end_turn(conversation_id)
 
     def _record_plan(
         self,
@@ -1188,6 +1278,12 @@ class ChatService:
     def learn_from_exchange(self, user_message: str) -> list[tuple[str, str]]:
         """Extract durable facts from the user's message and store them."""
         if not self._settings.memory.learn_from_chats:
+            return []
+
+        if not _PERSONAL_CUE.search(user_message):
+            # Commands, tool requests, and general questions rarely contain
+            # durable personal facts. Skipping that LLM call keeps the model
+            # free for rapid follow-ups without losing first-person facts.
             return []
 
         try:

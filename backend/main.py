@@ -193,7 +193,11 @@ def create_app(
         def learn_if_completed() -> None:
             # Runs after the response finishes, in Starlette's threadpool.
             if state["final_seen"] and learn_message:
-                chat_service.learn_from_exchange(learn_message)
+                schedule = getattr(chat_service, "schedule_learning", None)
+                if schedule is not None:
+                    schedule(conversation_id, learn_message)
+                else:
+                    chat_service.learn_from_exchange(learn_message)
 
         return StreamingResponse(
             generate(),
@@ -296,10 +300,18 @@ def create_app(
         except LLMError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-        background_tasks.add_task(
-            chat_service.learn_from_exchange,
-            payload.message,
-        )
+        schedule = getattr(chat_service, "schedule_learning", None)
+        if schedule is not None:
+            background_tasks.add_task(
+                schedule,
+                conversation_id,
+                payload.message,
+            )
+        else:
+            background_tasks.add_task(
+                chat_service.learn_from_exchange,
+                payload.message,
+            )
         return ChatResponse(reply=reply, conversation_id=conversation_id)
 
     @app.get("/chat/history/{conversation_id}", response_model=HistoryResponse)

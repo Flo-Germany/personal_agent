@@ -315,20 +315,31 @@ The server log should show `OLLAMA_FLASH_ATTENTION:true`. The backend keeps the
 model warm for `keep_alive_seconds` and warms the prompt prefix at startup. See
 `.env.example` for the tracked example.
 
-Measured on this machine (RX 9070 XT, `qwen3-vl:8b-instruct`, 16k context), the
-same request after the change:
+Measured on this machine (RX 9070 XT, `qwen3-vl:8b-instruct`, 16k context),
+after the warm-model and prompt-cache work plus the latest performance pass:
 
-| Scenario | Time to first token |
+| Scenario | Result |
 | --- | --- |
-| Old: cold load + clock-in-system prompt | ~11.7 s |
-| Warm model, identical prompt prefix | ~0.6–0.9 s |
-| Prompt cache broken by the clock | ~3.3 s extra |
-| Model cold load | ~8.5 s extra |
+| Warm simple reply, first token | 0.16–0.20 s |
+| Warm prompt evaluation | ~92 ms |
+| Immediate follow-up, first token | ~0.45 s (cache settling) |
+| Read-only tool turn, total | ~2.9 s, tool itself ~0.18 s |
+| Long answer generation | ~15–21 tokens/s |
+| UI long tasks while streaming | 0 |
+| Cold model load | ~8.5 s (avoided while warm) |
+| One-time prompt refresh after a learned fact | ~2.0 s |
 
-The prompt is about 8,250 tokens (system prompt plus 16 tool schemas). With a
+The prompt is about 8,250 tokens (system prompt plus 17 tool schemas). With a
 stable prefix Ollama reuses the cached tokens and only evaluates the new user
-turn; prompt evaluation dropped from about 3.5 s to about 0.08 s. Background
-fact-learning still uses the same warm model and does not evict the chat prefix.
+turn; prompt evaluation is about 0.09 s. The knowledge block sits at the end of
+the stable system prompt, and the volatile clock stays in the newest user turn.
+A newly learned fact causes one prompt-cache refresh; subsequent turns are fast
+again.
+
+Background fact-learning is deferred for three seconds of idle time and
+coalesced across rapid messages. Command-only messages without personal cues
+skip the extraction call entirely, so they don't compete with the next turn;
+first-person and personal messages are still learned.
 
 ### SSE event types
 

@@ -15,7 +15,7 @@ from openai import APIConnectionError, APITimeoutError
 from agent.chat import ChatService, LLMError
 from agent.learning import infer_deletions, parse_facts, should_apply_deletion
 from agent.language import detect_language_request, detect_requested_language
-from agent.prompt import build_system_prompt
+from agent.prompt import build_knowledge_block, build_system_prompt
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import MemorySettings, OllamaSettings, Settings, ToolSettings
@@ -301,6 +301,64 @@ def test_system_prompt_includes_requested_language() -> None:
 
     assert "explicitly requested Spanish" in prompt
     assert "Write the entire reply in Spanish" in prompt
+
+
+def test_system_prompt_can_leave_knowledge_for_the_user_turn() -> None:
+    settings = Settings(agent_name="Nova")
+    knowledge = "## Interests\n- Likes cycling"
+
+    with_knowledge = build_system_prompt(settings, knowledge)
+    without = build_system_prompt(
+        settings,
+        knowledge,
+        include_knowledge=False,
+    )
+
+    assert "Likes cycling" in with_knowledge
+    assert "Likes cycling" not in without
+    assert "Likes cycling" in build_knowledge_block(knowledge)
+
+
+def test_knowledge_stays_in_the_system_prompt_and_clock_in_the_user_turn(
+    tmp_path,
+) -> None:
+    knowledge_path = tmp_path / "knowledge.md"
+    knowledge_path.write_text("# User\n- Name is Flo\n", encoding="utf-8")
+    client = FakeClient()
+    service, _, _ = make_service(
+        tmp_path,
+        client,
+        ollama=OllamaSettings(model="qwen3:8b", temperature=0.2),
+    )
+    history = [{"role": "user", "content": "What is my name?"}]
+
+    first = service._build_messages(
+        history,
+        now=datetime(2026, 10, 24, 9, 30),
+    )
+
+    assert "Name is Flo" in first[0]["content"]
+    assert "Name is Flo" not in first[-1]["content"]
+    assert first[-1]["content"].startswith("[Current local time:")
+
+    second = service._build_messages(
+        history,
+        now=datetime(2026, 10, 24, 9, 31),
+    )
+
+    # The system prompt is stable across minutes; only the user clock changes.
+    assert first[0]["content"] == second[0]["content"]
+    assert first[-1]["content"] != second[-1]["content"]
+
+    knowledge_path.write_text(
+        "# User\n- Name is Flo\n- Age 20\n",
+        encoding="utf-8",
+    )
+    third = service._build_messages(
+        history,
+        now=datetime(2026, 10, 24, 9, 31),
+    )
+    assert "Age 20" in third[0]["content"]
 
 
 def test_generate_reply_uses_requested_language(tmp_path) -> None:
@@ -708,6 +766,14 @@ def test_learn_from_exchange_skips_duplicates_and_none(tmp_path) -> None:
 
     knowledge.add_facts({"identity": ["Name is Flo"]})
     assert service.learn_from_exchange("I'm Flo") == []
+
+
+def test_learning_skips_commands_without_personal_cues(tmp_path) -> None:
+    client = ScriptedClient(["IDENTITY: Name is Flo"])
+    service, _, _ = make_service(tmp_path, client)
+
+    assert service.learn_from_exchange("Create a folder named Test.") == []
+    assert client.completions.requests == []
 
 
 def test_infer_deletions_finds_negated_preference() -> None:
