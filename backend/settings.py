@@ -104,6 +104,10 @@ class AgentSettings(BaseModel):
     # 0 means no hard limit on actions after one approval.
     max_auto_approved_actions: int = Field(default=0, ge=0)
     approval_ttl_seconds: float = Field(default=600.0, gt=0)
+    # Successful recoveries and multi-step workflows become durable facts in
+    # memory/knowledge_base.md.
+    self_improvement_enabled: bool = True
+    self_improvement_workflow_min_tools: int = Field(default=3, ge=1, le=20)
 
 
 class MemorySettings(BaseModel):
@@ -195,6 +199,9 @@ class AutomationSettings(BaseModel):
     screenshot_dir: Path = Path("memory/screenshots")
     screenshot_max_width: int = Field(default=1600, ge=640, le=3840)
     visual_fallback: bool = True
+    # Re-check the live window/process/rect/focus immediately before an action.
+    pre_action_validation: bool = True
+    validation_tolerance_px: int = Field(default=8, ge=1, le=100)
 
     def resolved_screenshot_dir(self) -> Path:
         if self.screenshot_dir.is_absolute():

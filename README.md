@@ -443,6 +443,7 @@ The agent can use eighteen tools:
 | `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
 | `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
+| `get_desktop_context` | No | Foreground window, process/parent chain, visible/minimized windows, dialogs, and the focused UI control |
 | `analyze_screen_ui` | No | Set-of-Mark UI map: numbered bounding boxes, element IDs, coordinate map, annotated screenshot, and a vision-model suggestion |
 | `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element |
 | `click_element` | Yes | Highlight, glide, and click a detected element; physical input aborts instantly |
@@ -661,7 +662,89 @@ ask how to continue, never to retry silently.
 Configuration lives under `automation` in `config/settings.json`:
 `enabled`, `move_duration_seconds`, `highlight_seconds`, `arm_delay_seconds`,
 `move_threshold_pixels`, `max_elements`, `type_interval_seconds`,
-`screenshot_max_width`, and `visual_fallback`.
+`screenshot_max_width`, `visual_fallback`, `pre_action_validation`, and
+`validation_tolerance_px`.
+
+### Context-aware pre-action validation
+
+`get_desktop_context` synthesizes the foreground window, its owning process and
+parent chain, every visible/minimized top-level window, dialog-like pop-ups, and
+the focused UI Automation control. `analyze_screen_ui` includes the same context
+with every snapshot.
+
+Immediately before a click or move, the backend re-checks the live state against
+the snapshot:
+
+- window handle still exists, visible, and not minimized
+- window title and owning process ID match
+- window rectangle is unchanged within `validation_tolerance_px`
+- the target pixel actually belongs to the target window (so a topmost mock can
+  be clicked even if it is not foreground, but an occluded element is blocked)
+- the owner window is enabled (a modal dialog disables its owner)
+- the element still exists and has not moved beyond tolerance
+
+`keyboard_type_text` additionally reads the live focused UIA element and checks
+that it is still an Edit/Document control in the approved process/window. If the
+focus moved, the tool refuses to type and asks the agent to click the field
+again.
+
+Failures are explicit: `context_changed`, `element_missing`, or
+`focus_changed`, plus `fresh_context` and the last annotated screenshot. The
+agent is told to re-run `analyze_screen_ui` and never retry the stale ID.
+
+### Self-improvement and durable lessons
+
+`backend/agent/self_improvement.py` classifies tool failures and records a
+successful recovery only when a later action proves that the alternative worked.
+It also records optimized multi-step workflows. Lessons are written as bullets in
+`memory/knowledge_base.md` under **Learned notes**, deduplicated by the existing
+knowledge-base writer, and read back into every future system prompt.
+
+Examples of learned facts:
+
+- after a UI context shift, re-run `analyze_screen_ui` and use the new snapshot;
+- after a window mismatch, call `get_open_windows` and pass the exact title;
+- after a PowerShell failure, inspect stderr/exit_code, re-resolve the exact
+  path/PID, then retry;
+- a successful workflow such as `start_program -> get_open_windows ->
+  analyze_screen_ui -> click_element -> keyboard_type_text`.
+
+The reflector never learns from a user-triggered `aborted` result, never stores
+raw screenshots, and redacts obvious credential patterns. Configuration:
+
+```json
+"agent": {
+  "self_improvement_enabled": true,
+  "self_improvement_workflow_min_tools": 3
+}
+```
+
+### Phase 19 scenario matrix
+
+`backend/tests/e2e_agent_tests.py` is the acceptance harness. It runs eight
+scenarios:
+
+| Scenario | What it proves |
+| --- | --- |
+| `filesystem_restructure` | Create a folder and move multiple real files; workflow fact saved |
+| `ide_configuration` | Read, rewrite, and verify a JSON IDE settings file |
+| `system_settings` | Create, read, remove, and verify a scoped `HKCU` test key |
+| `ambiguous_request` | Ask for clarification without touching files |
+| `gui_multi_app` | Type into a Notes mock, save it, then navigate an Outlook mock |
+| `gui_popup` | Detect an unexpected modal pop-up; block a stale click; click OK |
+| `gui_dynamic_resize` | Block stale coordinates after a resize; recover with a fresh snapshot |
+| `gui_missing_element` | Block a missing element; relaunch/re-analyze; save a recovery fact |
+
+Run all scenarios:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/tests/e2e_agent_tests.py
+```
+
+Use `--skip-gui` on a headless machine or `--scenario NAME` for one case. The GUI
+scenarios use real WinForms mocks (`mock_outlook.ps1`, `mock_notes.ps1`) and real
+UI Automation/pyautogui, but never touch real documents or email. The last full
+run passed **8/8 scenarios**.
 
 ### End-to-end Outlook scenario
 

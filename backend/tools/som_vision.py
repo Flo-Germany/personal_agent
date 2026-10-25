@@ -174,6 +174,11 @@ class SOMSnapshot:
     image_width: int
     image_height: int
     created_at: float
+    # Live-context anchors used by pre-action validation.
+    window_handle: int | None = None
+    process_id: int | None = None
+    process_name: str = ""
+    window_rect: tuple[int, int, int, int] | None = None
 
     def element(self, element_id: int) -> UIElement | None:
         return next((item for item in self.elements if item.id == element_id), None)
@@ -197,6 +202,10 @@ class SOMSnapshot:
             "screenshot": self.screenshot,
             "image_width": self.image_width,
             "image_height": self.image_height,
+            "window_handle": self.window_handle,
+            "process_id": self.process_id,
+            "process_name": self.process_name,
+            "window_rect": list(self.window_rect) if self.window_rect else None,
             "elements": [item.to_public() for item in self.elements],
             "coordinate_map": self.coordinate_map(),
         }
@@ -812,6 +821,28 @@ class SOMParser:
             elements,
             monitor,
         )
+
+        window_handle: int | None = None
+        process_id: int | None = None
+        process_name = ""
+        window_rect: tuple[int, int, int, int] | None = None
+        if window is not None:
+            try:
+                from tools.desktop_context import (
+                    _process_details,
+                    _process_id,
+                    _window_rect as _live_window_rect,
+                )
+
+                hwnd = int(getattr(window, "_hWnd", 0) or 0) or None
+                if hwnd:
+                    window_handle = hwnd
+                    process_id = _process_id(hwnd)
+                    process_name = _process_details(process_id).get("name", "")
+                    window_rect = _live_window_rect(hwnd)
+            except Exception:  # noqa: BLE001 - context anchors are best effort
+                logger.debug("Could not capture window context", exc_info=True)
+
         snapshot = SOMSnapshot(
             snapshot_id=f"som_{uuid.uuid4().hex[:16]}",
             elements=elements,
@@ -821,6 +852,10 @@ class SOMParser:
             image_width=image_width,
             image_height=image_height,
             created_at=time.time(),
+            window_handle=window_handle,
+            process_id=process_id,
+            process_name=process_name,
+            window_rect=window_rect,
         )
         self.store.put(snapshot)
 

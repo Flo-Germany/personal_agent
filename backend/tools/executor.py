@@ -257,6 +257,7 @@ class ToolExecutor:
                 )
             ),
             "analyze_screen": analyze_screen,
+            "get_desktop_context": lambda **_ignored: self.automation.get_context(),
             "analyze_screen_ui": analyze_screen_ui,
             "move_cursor_to": move_cursor_to,
             "click_element": click_element,

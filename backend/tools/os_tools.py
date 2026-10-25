@@ -51,6 +51,7 @@ TOOL_REQUIRES_CONFIRMATION: dict[str, bool] = {
     "get_open_windows": False,
     "read_window_content": False,
     "analyze_screen": False,
+    "get_desktop_context": False,
     "analyze_screen_ui": False,
     "move_cursor_to": True,
     "click_element": True,

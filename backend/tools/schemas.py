@@ -689,6 +689,27 @@ TOOL_SCHEMAS: list[ToolSchema] = [
     {
         "type": "function",
         "function": {
+            "name": "get_desktop_context",
+            "description": (
+                "Read the cross-layer desktop context without taking a "
+                "screenshot: foreground window, its owning process and parent "
+                "process chain, visible windows with process IDs and minimized "
+                "state, dialog-like pop-ups, and the currently focused UI "
+                "control. Use this to distinguish a minimized app from the "
+                "active editor, identify an unexpected popup, or choose the "
+                "right window before analyze_screen_ui. Read-only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "analyze_screen_ui",
             "description": (
                 "Set-of-Mark UI analysis for GUI control. Captures the target "

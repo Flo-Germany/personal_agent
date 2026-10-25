@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from settings import AutomationSettings
+from tools.desktop_context import DesktopContextService
 from tools.input_failsafe import (
     AutomationAbortedException,
     InputFailsafe,
@@ -27,6 +28,14 @@ if TYPE_CHECKING:
     from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
+
+_TEXT_CONTROL_TYPES = {
+    "Edit",
+    "Document",
+    "RichEdit",
+    "ComboBox",
+    "Spinner",
+}
 
 
 def _parse_grounding(answer: str) -> dict[str, Any]:
@@ -114,10 +123,12 @@ class GUIAutomationService:
         guard: InputFailsafe | None = None,
         pointer: SmoothPointer | None = None,
         grounder: Callable[[str, SOMSnapshot, str], dict[str, Any]] | None = None,
+        context: DesktopContextService | None = None,
     ) -> None:
         self.settings = settings
         self.vision = vision
         self.parser = parser or SOMParser(settings)
+        self.context = context or DesktopContextService(settings)
         self.store = store or getattr(self.parser, "store", None) or SnapshotStore()
         self.guard = guard or InputFailsafe(
             enabled=settings.enabled,
@@ -130,6 +141,8 @@ class GUIAutomationService:
         # Typing is only allowed after a click focused a text-capable control.
         # Moving the cursor alone must never be treated as focus.
         self._focused = False
+        self._focus_context: dict[str, Any] | None = None
+        self._last_screenshot: str | None = None
         # After start_program, prefer the window belonging to the launched app
         # instead of whichever window happens to be active.
         self._preferred_window_title: str | None = None
@@ -141,6 +154,8 @@ class GUIAutomationService:
         self.store.clear()
         self._last_analysis = None
         self._focused = False
+        self._focus_context = None
+        self._last_screenshot = None
         self._preferred_window_title = None
 
     def status(self) -> dict[str, Any]:
@@ -150,7 +165,13 @@ class GUIAutomationService:
             "snapshots": self.store.count,
             "has_analysis": self._last_analysis is not None,
             "preferred_window_title": self._preferred_window_title,
+            "last_screenshot": self._last_screenshot,
+            "focus_context": self._focus_context,
         }
+
+    def get_context(self) -> dict[str, Any]:
+        context = self.context.capture()
+        return {"ok": True, **context.to_public(), "context_token": context.token}
 
     def visible_window_titles(self) -> set[str]:
         from tools.som_vision import _visible_windows
@@ -327,12 +348,19 @@ class GUIAutomationService:
         snapshot: SOMSnapshot = result["snapshot"]
         self.store.put(snapshot)
         self._last_analysis = snapshot.to_public()
+        self._last_screenshot = snapshot.screenshot
+        live_context = self.context.capture()
 
         base: dict[str, Any] = {
             "ok": True,
             "snapshot_id": snapshot.snapshot_id,
             "window_title": snapshot.window_title,
             "display": snapshot.display.to_public(),
+            "window_handle": snapshot.window_handle,
+            "process_id": snapshot.process_id,
+            "process_name": snapshot.process_name,
+            "context": live_context.to_public(),
+            "context_token": live_context.token,
             "screenshot": snapshot.screenshot,
             "files": result.get("files") or [snapshot.screenshot],
             "elements": [item.to_public() for item in snapshot.elements],
@@ -512,13 +540,16 @@ class GUIAutomationService:
             logger.exception("UI click failed")
             return {"ok": False, "error": f"Could not click the element: {exc}"}
 
-        self._focused = element.control_type in {
-            "Edit",
-            "Document",
-            "RichEdit",
-            "ComboBox",
-            "Spinner",
-        }
+        self._focused = element.control_type in _TEXT_CONTROL_TYPES
+        self._focus_context = (
+            {
+                "process_id": snapshot.process_id,
+                "window_handle": snapshot.window_handle,
+                "element_name": element.name,
+            }
+            if self._focused
+            else None
+        )
         return {
             "ok": True,
             "snapshot_id": snapshot.snapshot_id,
@@ -550,7 +581,7 @@ class GUIAutomationService:
             return {"ok": False, "error": "GUI automation is disabled."}
         if self.guard.halted:
             return self._halted_result()
-        if not self._focused:
+        if not self._focused or self._focus_context is None:
             return {
                 "ok": False,
                 "needs_click": True,
@@ -561,6 +592,29 @@ class GUIAutomationService:
                     "a field."
                 ),
             }
+
+        if self.settings.pre_action_validation:
+            focus_ok, focus_kind, focused = self.context.validate_focus(
+                self._focus_context
+            )
+            if not focus_ok:
+                return {
+                    "ok": False,
+                    "focus_changed": True,
+                    "error": (
+                        "Keyboard focus is no longer on the approved text "
+                        "field. Click the field again before typing."
+                    ),
+                    "focus_kind": focus_kind,
+                    "focused_control": focused,
+                    "fresh_context": self.context.capture().to_public(),
+                    "screenshot": self._last_screenshot,
+                    "next_step": (
+                        "Call analyze_screen_ui again, click the target text "
+                        "field, and then type. Do not type into whatever "
+                        "happens to be focused."
+                    ),
+                }
 
         value = str(text or "")
         if not value:
@@ -691,7 +745,53 @@ class GUIAutomationService:
                     "Do not click disabled controls."
                 ),
             }
+
+        if self.settings.pre_action_validation:
+            ok, kind, reason, fresh, fresh_context = self.context.validate_snapshot(
+                snapshot,
+                element,
+            )
+            if not ok:
+                return None, None, self._context_failure(
+                    kind,
+                    reason,
+                    fresh_context,
+                )
+            if fresh:
+                from dataclasses import replace
+
+                element = replace(
+                    element,
+                    left=int(fresh["left"]),
+                    top=int(fresh["top"]),
+                    right=int(fresh["right"]),
+                    bottom=int(fresh["bottom"]),
+                    name=str(fresh.get("name") or element.name),
+                )
+
         return snapshot, element, None
+
+    def _context_failure(
+        self,
+        kind: str | None,
+        reason: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "ok": False,
+            "error": reason or "The live UI no longer matches the snapshot.",
+            "fresh_context": context.to_public() if context is not None else None,
+            "screenshot": self._last_screenshot,
+            "next_step": (
+                "The live UI changed. Call analyze_screen_ui again and use the "
+                "new snapshot_id. Do not retry this stale element ID."
+            ),
+        }
+        if kind == "element_missing":
+            result["element_missing"] = True
+        else:
+            result["context_changed"] = True
+        return result
 
     def _aborted_result(
         self,
@@ -701,6 +801,7 @@ class GUIAutomationService:
             "ok": False,
             "aborted": True,
             "error": str(exc),
+            "screenshot": self._last_screenshot,
             "message": (
                 "Automation stopped because physical mouse or keyboard input "
                 "was detected. Do not retry any GUI tool in this turn. Tell "

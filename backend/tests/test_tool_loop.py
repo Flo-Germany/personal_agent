@@ -1745,6 +1745,74 @@ def test_gui_click_pauses_with_the_exact_hands_off_message(
     assert automation.clicks == [("som_1", 7, "New Email")]
 
 
+def test_successful_multistep_turn_saves_a_workflow_fact(
+    tmp_path: Path,
+) -> None:
+    note = tmp_path / "note.txt"
+    note.write_text("hello", encoding="utf-8")
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call("search_system", {"root": str(tmp_path)}, "call_1"),
+                tool_call("read_file_content", {"path": str(note)}, "call_2"),
+                tool_call("get_open_windows", {}, "call_3"),
+            ),
+            content_message("Done."),
+        ],
+        max_iterations=10,
+    )
+
+    events = list(
+        service.start_turn(
+            store.new_conversation_id(),
+            "Inspect the workspace and the desktop.",
+        )
+    )
+
+    assert final_event(events)["reply"] == "Done."
+    knowledge = service._knowledge.read()
+    assert "Workflow:" in knowledge
+    assert "search_system" in knowledge
+    assert "get_open_windows" in knowledge
+
+
+def test_cli_failure_then_success_saves_a_recovery_fact(
+    tmp_path: Path,
+) -> None:
+    service, store, _client = make_service(
+        tmp_path,
+        [
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_action",
+                    {"command": "exit 1", "description": "intentional failure"},
+                    "call_1",
+                )
+            ),
+            tool_calls_message(
+                tool_call(
+                    "run_powershell_query",
+                    {"command": "Write-Output ok"},
+                    "call_2",
+                )
+            ),
+            content_message("Recovered with a read-only check."),
+        ],
+        max_iterations=5,
+    )
+    conversation_id = store.new_conversation_id()
+
+    events = list(service.start_turn(conversation_id, "Try the command."))
+    action = action_event(events)
+    resumed = list(service.resume(action["approval_id"], True))
+
+    assert final_event(resumed)["reply"] == "Recovered with a read-only check."
+    knowledge = service._knowledge.read()
+    assert "Learned recovery" in knowledge
+    assert "PowerShell" in knowledge
+
+
 def test_read_only_loop_summarizes_at_max_rounds(tmp_path: Path) -> None:
     note = tmp_path / "note.txt"
     note.write_text("hello", encoding="utf-8")

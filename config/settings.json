@@ -21,7 +21,9 @@
   "agent": {
     "max_iterations": 0,
     "max_auto_approved_actions": 0,
-    "approval_ttl_seconds": 600
+    "approval_ttl_seconds": 600,
+    "self_improvement_enabled": true,
+    "self_improvement_workflow_min_tools": 3
   },
   "memory": {
     "knowledge_base_path": "memory/knowledge_base.md",
@@ -46,7 +48,9 @@
     "move_threshold_pixels": 4,
     "max_elements": 60,
     "type_interval_seconds": 0.02,
-    "visual_fallback": true
+    "visual_fallback": true,
+    "pre_action_validation": true,
+    "validation_tolerance_px": 8
   },
   "vision": {
     "enabled": true,

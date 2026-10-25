@@ -35,6 +35,7 @@ from agent.learning import (
 )
 from agent.ollama_client import NativeOllamaClient
 from agent.prompt import build_system_prompt, format_clock_line
+from agent.self_improvement import SelfImprovementService
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import Settings
@@ -431,6 +432,13 @@ class ChatService:
             settings.tools,
             automation=settings.automation,
         )
+        self._improvement = SelfImprovementService(
+            knowledge,
+            enabled=settings.agent.self_improvement_enabled,
+            min_tools_for_workflow=(
+                settings.agent.self_improvement_workflow_min_tools
+            ),
+        )
         self._client = client or NativeOllamaClient(
             settings.ollama.base_url,
             timeout=settings.ollama.timeout_seconds,
@@ -635,6 +643,7 @@ class ChatService:
             if callable(reset_automation):
                 reset_automation()
 
+            self._improvement.begin_turn(conversation_id)
             start_length = len(self._store.load(conversation_id))
             self._store.append(conversation_id, "user", message)
             self._turn_plans.pop(conversation_id, None)
@@ -643,7 +652,10 @@ class ChatService:
             self._begin_turn(conversation_id)
 
             try:
-                yield from self._run_segment(conversation_id)
+                yield from self._stream_with_improvement(
+                    conversation_id,
+                    self._run_segment(conversation_id),
+                )
             except TurnCancelled:
                 self._finalize_cancelled_turn(conversation_id)
                 yield {
@@ -744,11 +756,14 @@ class ChatService:
                     if approved
                     else set()
                 )
-                yield from self._run_segment(
+                yield from self._stream_with_improvement(
                     conversation_id,
-                    recover_failed_action=failed_powershell_action,
-                    auto_approve=approved,
-                    executed_signatures=executed_signatures,
+                    self._run_segment(
+                        conversation_id,
+                        recover_failed_action=failed_powershell_action,
+                        auto_approve=approved,
+                        executed_signatures=executed_signatures,
+                    ),
                 )
             except TurnCancelled:
                 self._finalize_cancelled_turn(conversation_id)
@@ -889,9 +904,12 @@ class ChatService:
                     result,
                 )
 
-                yield from self._run_segment(
+                yield from self._stream_with_improvement(
                     conversation_id,
-                    screen_already_analyzed=True,
+                    self._run_segment(
+                        conversation_id,
+                        screen_already_analyzed=True,
+                    ),
                 )
             except TurnCancelled:
                 self._finalize_cancelled_turn(conversation_id)
@@ -931,6 +949,30 @@ class ChatService:
             "tools": TOOL_SCHEMAS,
         }
 
+    def _stream_with_improvement(
+        self,
+        conversation_id: str,
+        events: Iterator[dict[str, Any]],
+    ) -> Iterator[dict[str, Any]]:
+        """Pass events through while recording lessons at the turn boundary."""
+        for event in events:
+            kind = event.get("type")
+            if kind == "final":
+                self._improvement.finish_turn(
+                    conversation_id,
+                    self._last_user_message(conversation_id),
+                    str(event.get("reply") or ""),
+                    success=True,
+                )
+            elif kind in {"error", "cancelled"}:
+                self._improvement.finish_turn(
+                    conversation_id,
+                    self._last_user_message(conversation_id),
+                    "",
+                    success=False,
+                )
+            yield event
+
     def _execute_tool(
         self,
         name: str,
@@ -938,12 +980,31 @@ class ChatService:
         conversation_id: str,
     ) -> dict[str, Any]:
         if name != "analyze_screen":
-            return self._tools.execute(name, arguments)
-        return self._tools.execute(
+            result = self._tools.execute(name, arguments)
+        else:
+            result = self._tools.execute(
+                name,
+                arguments,
+                screen_context=self._screen_context(conversation_id),
+            )
+
+        if isinstance(arguments, str):
+            try:
+                parsed_arguments = json.loads(arguments or "{}")
+            except json.JSONDecodeError:
+                parsed_arguments = {}
+        elif isinstance(arguments, dict):
+            parsed_arguments = arguments
+        else:
+            parsed_arguments = {}
+
+        self._improvement.record_tool_result(
+            conversation_id,
             name,
-            arguments,
-            screen_context=self._screen_context(conversation_id),
+            parsed_arguments if isinstance(parsed_arguments, dict) else {},
+            result,
         )
+        return result
 
     def _record_plan(
         self,

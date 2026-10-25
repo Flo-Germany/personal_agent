@@ -45,6 +45,39 @@ class FakeParser:
         }
 
 
+class FakeCapture:
+    token = "fake_context"
+
+    def to_public(self) -> dict[str, Any]:
+        return {
+            "active": {"title": "Fake window"},
+            "process_chain": [],
+            "focused": None,
+            "windows": [],
+            "dialogs": [],
+        }
+
+
+class FakeContext:
+    def capture(self) -> FakeCapture:
+        return FakeCapture()
+
+    def validate_snapshot(self, snapshot: Any, element: Any, **kwargs: Any):
+        return True, None, None, None, self.capture()
+
+    def validate_focus(self, expected: Any):
+        return (
+            True,
+            None,
+            {
+                "control_type": "Edit",
+                "process_id": 1,
+                "window_handle": 1,
+                "text_capable": True,
+            },
+        )
+
+
 class FakePointer:
     def __init__(self) -> None:
         self.moves: list[tuple[int, int]] = []
@@ -167,6 +200,7 @@ def make_service(
         store=parser.store,
         guard=guard,
         pointer=pointer,  # type: ignore[arg-type]
+        context=FakeContext(),  # type: ignore[arg-type]
         grounder=grounder
         or (lambda question, snap, image: {"id": 1, "confidence": 0.9}),
     )
