@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from settings import AutomationSettings
+from tools.app_knowledge import (
+    conversation_hint,
+    is_notification_conversation,
+    profile_for,
+)
+from tools.gui_automation import _conversation_state, _recipient_matches
 from tools.som_vision import (
     DetectedElement,
     _dedupe_detected,
@@ -89,6 +95,51 @@ def test_dedupe_keeps_the_more_semantic_control() -> None:
     )
     kept = _dedupe_detected([container, button])
     assert [item.control_type for item in kept] == ["Button"]
+
+
+def test_discord_conversation_and_notification_detection() -> None:
+    bot_profile = profile_for("Discord.exe", "@Agent Notification - Discord")
+    assert bot_profile.key == "discord"
+    assert (
+        conversation_hint(
+            bot_profile,
+            "@Agent Notification - Discord",
+            ["Nachricht an @Agent Notification"],
+        )
+        == "Agent Notification"
+    )
+    assert is_notification_conversation(bot_profile, "@Agent Notification")
+
+    paul_profile = profile_for("Discord.exe", "Paul - Discord")
+    assert (
+        conversation_hint(
+            paul_profile,
+            "Paul - Discord",
+            ["Nachricht an Paul"],
+        )
+        == "Paul"
+    )
+    assert not is_notification_conversation(paul_profile, "Paul")
+
+    conversation, warning = _conversation_state(
+        bot_profile,
+        "@Agent Notification - Discord",
+        ["Nachricht an @Agent Notification"],
+    )
+    assert conversation == "Agent Notification"
+    assert "notification" in warning.casefold()
+
+
+def test_recipient_matching_rejects_the_bot_dm() -> None:
+    assert _recipient_matches("Paul", "Nachricht an Paul")
+    assert _recipient_matches("Paul", "Paul (Direktnachricht)")
+    assert _recipient_matches("Paul", "Paul - Discord")
+    assert not _recipient_matches(
+        "Paul",
+        "Nachricht an @Agent Notification",
+        "@Agent Notification - Discord",
+    )
+    assert not _recipient_matches("Paul", "")
 
 
 def test_ocr_filter_rejects_paragraphs_and_bad_geometry() -> None:

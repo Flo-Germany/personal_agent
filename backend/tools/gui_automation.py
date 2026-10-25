@@ -12,11 +12,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from settings import AutomationSettings
-from tools.app_knowledge import guide_for
+from tools.app_knowledge import (
+    conversation_hint,
+    guide_for,
+    is_notification_conversation,
+    profile_for,
+)
 from tools.desktop_context import (
     DesktopContextService,
     _process_details,
     _process_id,
+    _window_text,
     force_foreground,
     foreground_handle,
 )
@@ -195,6 +201,73 @@ def _names_match(requested: str, actual: str) -> bool:
     return left in right or right in left
 
 
+def _normalize_recipient(value: str) -> str:
+    text = re.sub(r"\([^)]*\)", " ", str(value or "")).casefold()
+    text = text.replace("@", " ")
+    text = re.sub(r"[^0-9a-z\u00c0-\u024f]+", " ", text)
+    return " ".join(text.split())
+
+
+def _recipient_matches(requested: str, *candidates: str) -> bool:
+    """Whether the requested person appears in the live conversation labels."""
+    wanted = _normalize_recipient(requested)
+    if not wanted:
+        return False
+    for candidate in candidates:
+        current = _normalize_recipient(candidate)
+        if current and (wanted in current or current in wanted):
+            return True
+    return False
+
+
+def _conversation_state(
+    profile: Any,
+    window_title: str,
+    element_names: Sequence[str] = (),
+) -> tuple[str | None, str]:
+    """Return the active chat conversation and a safety warning."""
+    conversation = conversation_hint(profile, window_title, element_names)
+    if is_notification_conversation(profile, conversation):
+        warning = (
+            f"The active conversation is {conversation!r}, a notification/bot "
+            "chat. Do not send user messages here; open the requested person's "
+            "DM first."
+        )
+    elif profile.category == "chat" and conversation:
+        warning = (
+            f"The active conversation is {conversation!r}. Verify it is the "
+            "requested recipient before typing; otherwise open their chat first."
+        )
+    else:
+        warning = ""
+    return conversation, warning
+
+
+def _live_chat_state(
+    context: Any,
+    target_title: str,
+    target_pid: int,
+) -> tuple[Any, str, str]:
+    """Resolve the chat app and conversation of the live focused composer.
+
+    Uses the live focused control and its top-level window instead of the
+    last analyzed title, because switching a chat updates the window title
+    while the analyzed snapshot still carries the old one.
+    """
+    live = context.focused_control() or {}
+    live_name = str(live.get("name") or "")
+    hwnd = int(live.get("window_handle") or 0)
+    live_title = _window_text(hwnd) if hwnd else ""
+    if not live_title:
+        live_title = str(target_title or "")
+    pid = int(live.get("process_id") or target_pid or 0)
+    process_name = ""
+    if pid:
+        process_name = str(_process_details(pid).get("name") or "")
+    profile = profile_for(process_name, live_title)
+    return profile, live_name, live_title
+
+
 def _encode_image(path: str) -> str:
     return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
@@ -289,11 +362,21 @@ class GUIAutomationService:
             active.title if active else "",
             open_window_titles=app_windows,
         )
+        profile = profile_for(
+            active.process_name if active else "",
+            active.title if active else "",
+        )
+        conversation, conversation_warning = _conversation_state(
+            profile,
+            active.title if active else "",
+        )
         return {
             "ok": True,
             **context.to_public(),
             "app": guide,
             "app_windows": app_windows[:8],
+            "conversation": conversation,
+            "conversation_warning": conversation_warning or None,
             "preferred_window_title": self._preferred_window_title,
             "recent_actions": self._recent_actions(),
             "context_token": context.token,
@@ -867,6 +950,16 @@ class GUIAutomationService:
             snapshot.window_title,
             open_window_titles=app_windows,
         )
+        profile = profile_for(snapshot.process_name, snapshot.window_title)
+        conversation, conversation_warning = _conversation_state(
+            profile,
+            snapshot.window_title,
+            [
+                item.name
+                for item in snapshot.elements
+                if item.control_type in _TEXT_CONTROL_TYPES
+            ],
+        )
 
         base: dict[str, Any] = {
             "ok": True,
@@ -885,6 +978,8 @@ class GUIAutomationService:
             ),
             "app": guide,
             "app_windows": app_windows[:8],
+            "conversation": conversation,
+            "conversation_warning": conversation_warning or None,
             "preferred_window_title": self._preferred_window_title,
             "recent_actions": self._recent_actions(),
             "context": live_context.to_public(),
@@ -951,6 +1046,8 @@ class GUIAutomationService:
         base["suggested_element"] = element.to_public() if element else None
         base["confidence"] = grounding.get("confidence")
         base["message"] = str(result.get("message") or "")
+        if conversation_warning:
+            base["message"] += f" {conversation_warning}"
 
         warning = str(guide.get("warning") or "").strip()
         if warning:
@@ -1012,6 +1109,27 @@ class GUIAutomationService:
                 "they mean, or re-run with a more specific target description. "
                 "Do not guess an ID."
             )
+
+        if profile.category == "chat" and conversation:
+            if is_notification_conversation(profile, conversation):
+                base["next_step"] = (
+                    f"Do not use the current conversation ({conversation!r}). "
+                    "Open the requested person's DM first: click their entry in "
+                    "the direct-message list, or use the New Message/Search "
+                    "flow, type the exact name into the Search field, select "
+                    "the person, and verify the composer names them. If a "
+                    "New Message dialog is already open, use its Search field; "
+                    "do not click the message composer behind it. Press Esc or "
+                    "Abbrechen to return to the DM list. Then type with "
+                    "recipient='<name>'."
+                )
+            else:
+                base["next_step"] = (
+                    f"Active conversation: {conversation}. Verify it is the "
+                    "requested recipient before typing, and pass "
+                    "recipient='<name>' to keyboard_type_text. "
+                    + str(base.get("next_step") or "")
+                )
         return base
 
     def _ground(
@@ -1247,6 +1365,7 @@ class GUIAutomationService:
         *,
         press_enter: bool = False,
         interval_seconds: float | None = None,
+        recipient: str | None = None,
     ) -> dict[str, Any]:
         if not self.settings.enabled:
             return {"ok": False, "error": "GUI automation is disabled."}
@@ -1325,6 +1444,84 @@ class GUIAutomationService:
                         ),
                     }
 
+        profile, live_name, live_title = _live_chat_state(
+            self.context,
+            self._target_title or "",
+            self._target_pid or 0,
+        )
+        conversation = conversation_hint(
+            profile,
+            live_title,
+            [live_name] if live_name else [],
+        )
+        if profile.category == "chat" and conversation:
+            if is_notification_conversation(profile, conversation):
+                return {
+                    "ok": False,
+                    "notification_chat": True,
+                    "current_recipient": conversation,
+                    "requested_recipient": recipient,
+                    "focused_control": (
+                        self.context.focused_control() if live_name else None
+                    ),
+                    "error": (
+                        f"The active conversation is {conversation!r}, a "
+                        "notification/bot chat. User messages are never typed "
+                        "there."
+                    ),
+                    "next_step": (
+                        "Open the requested person's DM first: click their "
+                        "entry in the direct-message list (for example "
+                        "'<Name> (Direktnachricht)'), or use the New "
+                        "Message/Search flow, type the exact name into the "
+                        "Search field, select the person, and verify the "
+                        "composer names them. If the New Message dialog is "
+                        "open, use its Search field; do not click the composer "
+                        "behind it, and press Esc or Abbrechen to return to the "
+                        "DM list. Then type with recipient='<name>'."
+                    ),
+                }
+            if not recipient:
+                return {
+                    "ok": False,
+                    "needs_recipient": True,
+                    "current_recipient": conversation,
+                    "error": (
+                        "This is a chat app. Pass recipient='<exact name>' so "
+                        "the backend can verify the active composer before "
+                        "typing. The message was not typed."
+                    ),
+                    "next_step": (
+                        f"The active conversation is {conversation or 'unknown'!r}. "
+                        "If that is the requested person, retry with "
+                        "recipient='<name>'. Otherwise open their chat first."
+                    ),
+                }
+            if not _recipient_matches(recipient, live_name, live_title):
+                current = live_name or live_title or "unknown"
+                return {
+                    "ok": False,
+                    "wrong_recipient": True,
+                    "requested_recipient": recipient,
+                    "current_recipient": current,
+                    "focused_control": (
+                        self.context.focused_control() if live_name else None
+                    ),
+                    "error": (
+                        f"The active composer is for {current!r}, not "
+                        f"{recipient!r}. The message was not typed."
+                    ),
+                    "next_step": (
+                        f"Open the DM/chat for {recipient!r} first: click their "
+                        "entry in the direct-message list, or use the "
+                        "New Message/Search flow, type the exact name into the "
+                        "Search field, select the person, and verify the "
+                        f"composer says 'Nachricht an {recipient}' or "
+                        f"'Message {recipient}'. Then retry with "
+                        f"recipient='{recipient}'."
+                    ),
+                }
+
         value = str(text or "")
         if not value:
             return {"ok": False, "error": "The text to type must not be empty."}
@@ -1370,6 +1567,7 @@ class GUIAutomationService:
             "ok": True,
             "characters": len(value),
             "pressed_enter": bool(press_enter),
+            "recipient": recipient,
             "outcome": delta,
             "recent_actions": self._recent_actions(),
             "message": (

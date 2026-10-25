@@ -26,6 +26,12 @@ class AppProfile:
     title_patterns: tuple[str, ...] = ()
     shortcuts: dict[str, str] = field(default_factory=dict)
     workflow: str = ""
+    # Patterns that extract the current conversation from a composer label such
+    # as "Nachricht an Paul" or "Message @Paul".
+    conversation_patterns: tuple[str, ...] = ()
+    # Names that identify a notification/bot chat where user messages must not
+    # be sent.
+    notification_patterns: tuple[str, ...] = ()
     # Titles of *secondary* windows of this app. When one is already open the
     # agent should work in it instead of triggering the same command again.
     secondary_patterns: tuple[str, ...] = ()
@@ -60,7 +66,94 @@ class AppProfile:
         return found
 
 
+_CHAT_WORKFLOW = (
+    "The window title and the bottom message composer identify the active "
+    "conversation. For a person, first click their existing entry in the "
+    "direct-message/chat list. If there is no chat, open the new-message or "
+    "search dialog, type the exact name into its Search field, select the "
+    "person, and only then open/confirm the chat. The composer at the bottom "
+    "must name the requested person before you type. Never type a message into "
+    "the search or recipient field, and never send a user message to a bot or "
+    "notification chat. Press Enter only after verifying the recipient; pass "
+    "recipient='<name>' to keyboard_type_text."
+)
+
 _PROFILES: tuple[AppProfile, ...] = (
+    AppProfile(
+        key="discord",
+        label="Discord",
+        category="chat",
+        processes=("discord.exe",),
+        title_patterns=(r"- Discord$",),
+        shortcuts={
+            "quick switcher": "ctrl+k",
+            "search": "ctrl+f",
+            "send": "enter",
+            "newline": "shift+enter",
+            "close dialog": "esc",
+        },
+        workflow=(
+            "Use the existing Direct Messages list first; a person appears as "
+            "'<Name> (Direktnachricht)' and can be clicked directly. Ctrl+K opens "
+            "the quick switcher. 'Nachricht erstellen' opens the New Message "
+            "dialog: type the exact name into its Search field, select the "
+            "person, and only then click the final 'Nachricht erstellen' button. "
+            "The bottom composer must say 'Nachricht an <name>' or "
+            "'Message <name>' before you type. Never press the dialog's Create "
+            "button with no selected person, never type the message into the "
+            "search/recipient field, and never send user messages to a "
+            "notification or bot DM. "
+        )
+        + _CHAT_WORKFLOW,
+        conversation_patterns=(
+            r"^(?:Nachricht an|Message(?: @)?|Message to)\s+(.+)$",
+        ),
+        notification_patterns=(
+            r"agent notification",
+            r"\bnotifications?\b",
+            r"\bbot\b",
+        ),
+    ),
+    AppProfile(
+        key="whatsapp",
+        label="WhatsApp",
+        category="chat",
+        processes=("whatsapp.exe",),
+        title_patterns=(r"- WhatsApp$",),
+        shortcuts={"search": "ctrl+f", "send": "enter", "newline": "shift+enter"},
+        workflow=_CHAT_WORKFLOW,
+        notification_patterns=(r"agent notification", r"\bnotifications?\b"),
+    ),
+    AppProfile(
+        key="telegram",
+        label="Telegram",
+        category="chat",
+        processes=("telegram.exe",),
+        title_patterns=(r"- Telegram$",),
+        shortcuts={"search": "ctrl+f", "send": "enter", "newline": "shift+enter"},
+        workflow=_CHAT_WORKFLOW,
+        notification_patterns=(r"agent notification", r"\bnotifications?\b"),
+    ),
+    AppProfile(
+        key="teams",
+        label="Microsoft Teams",
+        category="chat",
+        processes=("ms-teams.exe", "teams.exe"),
+        title_patterns=(r"\| Microsoft Teams$",),
+        shortcuts={"search": "ctrl+e", "send": "enter", "newline": "shift+enter"},
+        workflow=_CHAT_WORKFLOW,
+        notification_patterns=(r"agent notification", r"\bnotifications?\b"),
+    ),
+    AppProfile(
+        key="slack",
+        label="Slack",
+        category="chat",
+        processes=("slack.exe",),
+        title_patterns=(r"- Slack$",),
+        shortcuts={"search": "ctrl+f", "send": "enter", "newline": "shift+enter"},
+        workflow=_CHAT_WORKFLOW,
+        notification_patterns=(r"agent notification", r"\bnotifications?\b"),
+    ),
     AppProfile(
         key="outlook",
         label="Microsoft Outlook",
@@ -266,3 +359,72 @@ def guide_for(
                 guide["warning"] = profile.secondary_hint
 
     return guide
+
+
+def conversation_hint(
+    profile: AppProfile,
+    window_title: str,
+    element_names: Sequence[str] = (),
+) -> str | None:
+    """Identify the active conversation for a chat app.
+
+    Prefers the composer label ("Nachricht an Paul", "Message @Paul") and
+    falls back to the window title ("Paul - Discord"). Returns None when the
+    app is not a chat app or no conversation can be determined.
+    """
+    if profile.category != "chat":
+        return None
+
+    for name in element_names:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        for pattern in profile.conversation_patterns:
+            match = re.match(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                value = re.sub(
+                    r"\s*\((?:Direktnachricht|direct message|dm)\)\s*$",
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                value = value.strip(" @")
+                if value:
+                    return value
+
+    title = str(window_title or "").strip()
+    for suffix in (
+        " - Discord",
+        " - WhatsApp",
+        " - Telegram",
+        " - Slack",
+        " | Microsoft Teams",
+        " - Microsoft Teams",
+    ):
+        if title.casefold().endswith(suffix.casefold()):
+            title = title[: -len(suffix)].strip()
+            break
+    if title and title.casefold() not in {
+        "discord",
+        "whatsapp",
+        "telegram",
+        "slack",
+        "microsoft teams",
+        "teams",
+    }:
+        return title
+    return None
+
+
+def is_notification_conversation(
+    profile: AppProfile,
+    conversation: str | None,
+) -> bool:
+    text = str(conversation or "").casefold()
+    if not text:
+        return False
+    return any(
+        re.search(pattern, text, re.IGNORECASE)
+        for pattern in profile.notification_patterns
+    )

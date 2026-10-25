@@ -172,12 +172,14 @@ class ToolExecutor:
             text: str,
             press_enter: bool = False,
             interval_seconds: float | None = None,
+            recipient: str | None = None,
             **_ignored: Any,
         ) -> dict[str, Any]:
             return self.automation.type_text(
                 text,
                 press_enter=press_enter,
                 interval_seconds=interval_seconds,
+                recipient=recipient,
             )
 
         def keyboard_press_keys(

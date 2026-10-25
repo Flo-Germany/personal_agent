@@ -627,3 +627,54 @@ def test_app_guides_explain_shortcuts_and_detect_open_compose_windows() -> None:
     generic = guide_for("unknown-app.exe", "Whatever")
     assert generic["app"] == "generic"
     assert generic["shortcuts"]["next control"] == "tab"
+
+
+def test_typing_refuses_a_wrong_chat_recipient(tmp_path: Path) -> None:
+    service, _parser, pointer, _guard = make_service(tmp_path)
+    analysis = service.analyze("the To field")
+    snapshot_id = analysis["snapshot_id"]
+    assert service.click(snapshot_id, 2, "To")["ok"] is True
+    service._target_title = "@Agent Notification - Discord"
+
+    def focused(name: str) -> dict[str, Any]:
+        return {
+            "control_type": "Edit",
+            "name": name,
+            "automation_id": "composer",
+            "process_id": 1,
+            "window_handle": 1,
+            "rect": [300, 200, 460, 250],
+            "text_capable": True,
+        }
+
+    service.context.focused_control = lambda: focused(  # type: ignore[method-assign]
+        "Nachricht an @Agent Notification"
+    )
+    blocked = service.type_text("Hallo", recipient="Paul")
+    assert blocked["ok"] is False
+    assert blocked["notification_chat"] is True
+    assert blocked["current_recipient"] == "Agent Notification"
+    assert pointer.typed == []
+
+    blocked_without_recipient = service.type_text("Hallo")
+    assert blocked_without_recipient["ok"] is False
+    assert blocked_without_recipient["notification_chat"] is True
+    assert pointer.typed == []
+
+    service.context.focused_control = lambda: focused(  # type: ignore[method-assign]
+        "Nachricht an Paul"
+    )
+    missing_recipient = service.type_text("Hallo")
+    assert missing_recipient["ok"] is False
+    assert missing_recipient["needs_recipient"] is True
+    assert pointer.typed == []
+
+    wrong = service.type_text("Hallo", recipient="Ben")
+    assert wrong["ok"] is False
+    assert wrong["wrong_recipient"] is True
+    assert pointer.typed == []
+
+    typed = service.type_text("Hallo", recipient="Paul")
+    assert typed["ok"] is True
+    assert typed["recipient"] == "Paul"
+    assert pointer.typed[-1] == "Hallo"

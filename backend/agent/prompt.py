@@ -475,6 +475,22 @@ def build_system_prompt(
         "a failed step, not a shortcut."
     )
     parts.append(
+        "Messaging apps (Discord, WhatsApp, Telegram, Teams, Slack): the window "
+        "title and the bottom composer identify the active conversation. If the "
+        "composer names a different person, or a bot/notification chat, do not "
+        "type. First click the person's existing entry in the direct-message "
+        "list (for example '<Name> (Direktnachricht)'). If there is no chat, open "
+        "the New Message/Search dialog, type the exact name into its Search "
+        "field, select the person, and only then use the bottom composer. Never "
+        "type the message into the search/recipient field, never press the "
+        "dialog's Create button with no person selected, and never send user "
+        "messages to a notification or bot chat. For chat "
+        "messages, pass recipient='<name>' to keyboard_type_text and use "
+        "press_enter=true only after the composer names that person. If the "
+        "tool returns wrong_recipient, open the correct DM first; do not retry "
+        "the same text."
+    )
+    parts.append(
         "Use the conversation history as your memory for this chat. Stay consistent "
         "with details and preferences the user shared earlier, and refer back to "
         "them when useful. Do not claim to remember conversations outside the "

@@ -869,7 +869,9 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                 "Non-ASCII text uses the clipboard paste fallback. Use "
                 "keyboard_press_keys for Tab/Enter and shortcuts. Do not type "
                 "into password fields or send messages without explicit user "
-                "intent."
+                "intent. For Discord, WhatsApp, Telegram, Teams, or Slack, pass "
+                "recipient='<name>'; the backend refuses to type when the "
+                "active composer names a different person or conversation."
             ),
             "parameters": {
                 "type": "object",
@@ -881,6 +883,14 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     "press_enter": {
                         "type": "boolean",
                         "description": "Press Enter after typing.",
+                    },
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "For chat apps: the exact person/conversation this "
+                            "message is for. The backend verifies the live "
+                            "composer before typing and refuses a mismatch."
+                        ),
                     },
                     "interval_seconds": {
                         "type": "number",

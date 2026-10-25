@@ -820,6 +820,35 @@ with Ctrl+L inside the same approved action. `start_program` returns
 `already_running` with the existing windows instead of launching a duplicate
 instance.
 
+### Chat recipient safety
+
+Messaging apps need one extra invariant: the active conversation, not just the
+active window, must be the requested person. A real Discord task exposed the
+failure mode. The agent clicked **New Message**, then treated the *existing*
+`Nachricht an @Agent Notification` composer as the recipient field and started
+typing a message intended for **Paul** into the bot DM.
+
+`analyze_screen_ui` therefore reports `conversation` (read from the composer
+label `Nachricht an …` / `Message …` or the window title) and a
+`conversation_warning`. Notification and bot chats are flagged, and the
+`next_step` tells the agent to open the person's existing DM entry or use the
+New Message/Search flow instead of reusing the current composer.
+
+The backend no longer relies on the prompt alone. `keyboard_type_text` accepts
+an optional `recipient` and resolves the live focused composer plus its actual
+window title before typing:
+
+* a notification/bot chat is refused unconditionally (`notification_chat`);
+* chat apps require `recipient='<exact name>'` (`needs_recipient`);
+* a composer for a different person is refused (`wrong_recipient`) with the
+  current label, so the agent must navigate first and retry.
+
+Discord, WhatsApp, Telegram, Teams, and Slack profiles now share the chat
+workflow and label patterns. In a live check, clicking `Paul (Direktnachricht)`
+changed the title from `@Agent Notification - Discord` to `@Paul - Discord` and
+the composer to `Nachricht an @Paul`; typing without a recipient or with a
+mismatching one was rejected, and no message was sent.
+
 ### Real-application acceptance tests
 
 `backend/tests/live_real_apps.py` is an opt-in harness that drives the real
