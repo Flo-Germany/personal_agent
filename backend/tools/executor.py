@@ -18,6 +18,37 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SEARCH_BOOLEAN_ALIASES = ("folders_only", "files_only", "include_folders")
+
+
+def _normalize_search_aliases(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Map guessed boolean flags onto the schema's explicit ``kind`` field.
+
+    Small local models sometimes send ``folders_only: true`` or
+    ``include_folders: false`` instead of ``kind``. Accepting both keeps a
+    folder search working without teaching the schema three overlapping knobs.
+    Explicit ``kind`` always wins.
+    """
+    if "kind" in parsed:
+        return {
+            key: value
+            for key, value in parsed.items()
+            if key not in _SEARCH_BOOLEAN_ALIASES
+        }
+
+    normalized = dict(parsed)
+    folders_only = normalized.pop("folders_only", None)
+    files_only = normalized.pop("files_only", None)
+    include_folders = normalized.pop("include_folders", None)
+
+    if folders_only:
+        normalized["kind"] = "folders"
+    elif files_only:
+        normalized["kind"] = "files"
+    elif include_folders is False:
+        normalized["kind"] = "files"
+    return normalized
+
 
 class ToolExecutor:
     """Bind tool names to their implementations and HITL flags."""
@@ -55,11 +86,14 @@ class ToolExecutor:
             allowed_filters = {
                 "name_contains",
                 "extension",
+                "kind",
+                "max_depth",
                 "modified_after",
                 "modified_before",
                 "min_size",
                 "max_size",
                 "include_hidden",
+                "include_junk",
                 "all_drives",
                 "recursive",
             }
@@ -406,6 +440,9 @@ class ToolExecutor:
 
         if not isinstance(parsed, dict):
             return {"ok": False, "error": f"Arguments for {name} must be an object."}
+
+        if name == "search_system":
+            parsed = _normalize_search_aliases(parsed)
 
         schema = self._parameters.get(name)
         if schema:

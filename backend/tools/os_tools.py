@@ -63,6 +63,11 @@ _PROGRAM_NAMES = {"calculator", "calc", "notepad", "explorer", "paint", "mspaint
 _MAX_SEARCH_RESULTS = 200
 _MAX_SCANNED_FILES = 100_000
 _MAX_SEARCH_SECONDS = 60.0
+_MAX_SEARCH_DEPTH = 64
+# Reading a folder's immediate entry count is cheap, but a network share with
+# thousands of children is not; stop counting at this many entries.
+_MAX_FOLDER_SAMPLE = 2_000
+_SEARCH_KINDS = {"any", "files", "folders"}
 _MAX_READ_BYTES = 5_000_000
 _MAX_WRITE_BYTES = 1_000_000
 _MAX_UNZIP_MEMBERS = 2000
@@ -72,6 +77,24 @@ _SKIP_DIR_NAMES = {
     "$Recycle.Bin",
     "System Volume Information",
     "WinSxS",
+}
+
+# Dependency, cache, and tool folders that bury real matches. They are still
+# returned when their own name matches (so "find node_modules" works), but the
+# walk does not descend into them unless include_junk is set.
+_JUNK_DIR_NAMES = {
+    "node_modules",
+    ".venv",
+    "venv",
+    "site-packages",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".next",
+    ".nuxt",
+    ".cache",
 }
 
 # High-confidence credential formats. Redacting these keeps an accidental read
@@ -837,11 +860,14 @@ def search_system(
     *,
     name_contains: str | None = None,
     extension: str | None = None,
+    kind: str = "any",
+    max_depth: int | None = None,
     modified_after: str | None = None,
     modified_before: str | None = None,
     min_size: int | None = None,
     max_size: int | None = None,
     include_hidden: bool = False,
+    include_junk: bool = False,
     all_drives: bool = False,
     recursive: bool = True,
     sort_by: str = "modified_desc",
@@ -849,10 +875,14 @@ def search_system(
     max_scanned: int = 20_000,
     max_seconds: float = 30.0,
 ) -> dict[str, Any]:
-    """Search files by name, extension, size, and modification time.
+    """Search files *and folders* by name, extension, size, and modification time.
 
     Results default to newest-first so questions like "the last 5 files" can be
     answered by requesting ``max_results=5`` with ``sort_by="modified_desc"``.
+    Folders are first-class results: ``kind`` selects files, folders, or both,
+    and the response carries a ready-to-render ``tree`` grouped by search root
+    so the UI can show where each match lives. The tree is for display only;
+    the model receives the flat ``results`` list.
     """
     max_results = max(1, min(int(max_results), _MAX_SEARCH_RESULTS))
     max_scanned = max(1, min(int(max_scanned), _MAX_SCANNED_FILES))
@@ -876,6 +906,32 @@ def search_system(
     if ext and not ext.startswith("."):
         ext = f".{ext}"
 
+    search_kind = (kind or "any").strip().lower()
+    # Models often say "all", "items", "folder" or "directories".
+    search_kind = {
+        "all": "any",
+        "items": "any",
+        "item": "any",
+        "file": "files",
+        "folder": "folders",
+        "directory": "folders",
+        "directories": "folders",
+        "dir": "folders",
+        "dirs": "folders",
+    }.get(search_kind, search_kind)
+    if search_kind not in _SEARCH_KINDS:
+        raise ToolError("kind must be 'any', 'files', or 'folders'.")
+
+    depth_limit: int | None = None
+    if max_depth not in (None, "", 0, "0"):
+        try:
+            depth_limit = int(max_depth)
+        except (TypeError, ValueError) as exc:
+            raise ToolError("max_depth must be an integer.") from exc
+        if depth_limit < 1:
+            raise ToolError("max_depth must be at least 1.")
+        depth_limit = min(depth_limit, _MAX_SEARCH_DEPTH)
+
     after_text = (modified_after or "").strip()
     before_text = (modified_before or "").strip()
     after_ts = _parse_datetime(after_text) if after_text else None
@@ -895,6 +951,18 @@ def search_system(
     min_size_value = optional_size(min_size, "min_size")
     max_size_value = optional_size(max_size, "max_size")
 
+    # An extension or a byte size can only belong to a file. Folders asked for
+    # explicitly are incompatible with those filters, so say so instead of
+    # silently returning nothing.
+    file_only_filter = ext or min_size_value is not None or max_size_value is not None
+    if search_kind == "folders" and file_only_filter:
+        raise ToolError(
+            "Folders have no extension or byte size; drop the extension/size "
+            "filter or use kind='files'."
+        )
+    if file_only_filter:
+        search_kind = "files"
+
     if all_drives:
         roots: list[Path] = []
         requested = _absolute_path(root) if str(root).strip() else None
@@ -909,6 +977,19 @@ def search_system(
         if not requested.is_dir():
             raise ToolError(f"Search root is not a folder: {requested}")
         roots = [requested]
+
+    def name_matches(name: str) -> bool:
+        if not needle:
+            return True
+        if use_glob:
+            return fnmatch.fnmatch(name.casefold(), needle)
+        return needle in name.casefold()
+
+    def relative_path(path: Path, search_root: Path) -> str:
+        try:
+            return path.relative_to(search_root).as_posix()
+        except ValueError:
+            return path.name
 
     started = time.monotonic()
     scanned = 0
@@ -925,24 +1006,101 @@ def search_system(
                 truncated = True
                 break
 
-            if not recursive:
-                dirnames[:] = []
-            else:
-                kept_dirs: list[str] = []
-                for name in dirnames:
-                    if name in _SKIP_DIR_NAMES:
+            directory = Path(dirpath)
+            try:
+                depth = len(directory.relative_to(search_root).parts)
+            except ValueError:
+                depth = 0
+
+            child_dirs: list[str] = []
+            for name in dirnames:
+                if name in _SKIP_DIR_NAMES:
+                    continue
+                child = directory / name
+                try:
+                    is_junction = getattr(child, "is_junction", lambda: False)()
+                    if child.is_symlink() or is_junction:
                         continue
-                    child = Path(dirpath) / name
+                    if not include_hidden and _is_hidden(child, child.stat()):
+                        continue
+                except OSError:
+                    continue
+                child_dirs.append(name)
+
+            if search_kind != "files":
+                for name in child_dirs:
+                    if time.monotonic() - started >= max_seconds:
+                        truncated = True
+                        break
+                    if depth_limit is not None and depth + 1 > depth_limit:
+                        continue
+
+                    folder = directory / name
                     try:
-                        is_junction = getattr(child, "is_junction", lambda: False)()
-                        if child.is_symlink() or is_junction:
-                            continue
-                        if not include_hidden and _is_hidden(child, child.stat()):
-                            continue
+                        folder_stats = folder.stat()
                     except OSError:
                         continue
-                    kept_dirs.append(name)
-                dirnames[:] = kept_dirs
+
+                    scanned += 1
+                    if scanned > max_scanned:
+                        truncated = True
+                        break
+                    if not name_matches(name):
+                        continue
+                    if after_ts is not None and folder_stats.st_mtime < after_ts:
+                        continue
+                    if before_ts is not None and folder_stats.st_mtime > before_ts:
+                        continue
+
+                    entry_count, has_children = _folder_entry_count(folder)
+                    matches.append(
+                        {
+                            "path": str(folder),
+                            "name": name,
+                            "type": "folder",
+                            "extension": "",
+                            "size": None,
+                            "modified": _now_iso(folder_stats.st_mtime),
+                            "relative_path": relative_path(folder, search_root),
+                            "depth": depth + 1,
+                            "root": str(search_root),
+                            "children_count": entry_count,
+                            "has_children": has_children,
+                            "_mtime": folder_stats.st_mtime,
+                        }
+                    )
+                    if sort_key == "none" and len(matches) >= max_results:
+                        limited = True
+                        break
+
+                if truncated or (sort_key == "none" and limited):
+                    break
+
+            # Descend only when the walk is recursive and the depth budget
+            # still allows deeper matches.
+            descend_dirs = (
+                child_dirs
+                if include_junk
+                else [
+                    name
+                    for name in child_dirs
+                    if name.casefold() not in _JUNK_DIR_NAMES
+                ]
+            )
+            if not recursive:
+                dirnames[:] = []
+            elif depth_limit is not None:
+                dirnames[:] = [
+                    name for name in descend_dirs if depth + 1 < depth_limit
+                ]
+            else:
+                dirnames[:] = descend_dirs
+
+            if search_kind == "folders":
+                # Folders-only search: descend but never collect files.
+                if truncated:
+                    break
+                continue
 
             for name in filenames:
                 if time.monotonic() - started >= max_seconds:
@@ -954,7 +1112,7 @@ def search_system(
                     truncated = True
                     break
 
-                path = Path(dirpath) / name
+                path = directory / name
                 try:
                     stats = path.stat()
                 except OSError:
@@ -962,12 +1120,8 @@ def search_system(
 
                 if not include_hidden and _is_hidden(path, stats):
                     continue
-                if needle:
-                    if use_glob:
-                        if not fnmatch.fnmatch(name.casefold(), needle):
-                            continue
-                    elif needle not in name.casefold():
-                        continue
+                if not name_matches(name):
+                    continue
                 if ext and path.suffix.lower() != ext:
                     continue
                 if min_size_value is not None and stats.st_size < min_size_value:
@@ -978,14 +1132,20 @@ def search_system(
                     continue
                 if before_ts is not None and stats.st_mtime > before_ts:
                     continue
+                if depth_limit is not None and depth + 1 > depth_limit:
+                    continue
 
                 matches.append(
                     {
                         "path": str(path),
                         "name": name,
+                        "type": "file",
                         "extension": path.suffix.lower(),
                         "size": stats.st_size,
                         "modified": _now_iso(stats.st_mtime),
+                        "relative_path": relative_path(path, search_root),
+                        "depth": depth + 1,
+                        "root": str(search_root),
                         "_mtime": stats.st_mtime,
                     }
                 )
@@ -1005,9 +1165,9 @@ def search_system(
     elif sort_key == "name":
         matches.sort(key=lambda item: item["name"].casefold())
     elif sort_key == "size_desc":
-        matches.sort(key=lambda item: item["size"], reverse=True)
+        matches.sort(key=lambda item: item.get("size") or 0, reverse=True)
     elif sort_key == "size_asc":
-        matches.sort(key=lambda item: item["size"])
+        matches.sort(key=lambda item: item.get("size") or 0)
 
     if len(matches) > max_results:
         limited = True
@@ -1015,16 +1175,29 @@ def search_system(
     for item in results:
         item.pop("_mtime", None)
 
+    folder_count = sum(1 for item in results if item["type"] == "folder")
+    file_count = len(results) - folder_count
+    newest = max(results, key=lambda item: item.get("modified") or "", default=None)
+
     if not results:
         if truncated:
             message = (
-                "No matching files were found before the search caps were hit. "
-                "Narrow the root or remove filters and try again."
+                "No matching files or folders were found before the search caps "
+                "were hit. Narrow the root or remove filters and try again."
             )
-        else:
+        elif search_kind == "folders":
+            message = "No matching folders were found."
+        elif search_kind == "files":
             message = "No matching files were found."
+        else:
+            message = "No matching files or folders were found."
     else:
-        message = f"Found {len(results)} file(s)."
+        parts = []
+        if folder_count:
+            parts.append(f"{folder_count} folder(s)")
+        if file_count:
+            parts.append(f"{file_count} file(s)")
+        message = f"Found {' and '.join(parts)}."
         if limited:
             message += (
                 f" Showing {len(results)} of {len(matches)} matches"
@@ -1033,15 +1206,141 @@ def search_system(
         if truncated:
             message += " Search caps were reached."
 
+    tree = _search_tree(results, roots)
+    total_size = sum(
+        item["size"]
+        for item in results
+        if item["type"] == "file" and isinstance(item.get("size"), int)
+    )
+
     return {
         "ok": True,
         "message": message,
         "results": results,
+        "tree": tree,
+        "query": {
+            "name_contains": name_contains or None,
+            "extension": ext or None,
+            "kind": search_kind,
+            "recursive": recursive,
+            "max_depth": depth_limit,
+            "include_junk": include_junk,
+        },
+        "summary": {
+            "total": len(results),
+            "files": file_count,
+            "folders": folder_count,
+            "total_size": total_size,
+            "newest_path": newest.get("path") if newest else None,
+            "newest_modified": newest.get("modified") if newest else None,
+            "truncated": truncated,
+            "limited": limited,
+        },
+        "kind": search_kind,
         "roots": [str(root) for root in roots],
         "scanned": scanned,
         "truncated": truncated,
         "limited": limited,
         "sort_by": sort_key,
         "recursive": recursive,
+        "max_depth": depth_limit,
         "duration_seconds": round(time.monotonic() - started, 2),
     }
+
+
+def _folder_entry_count(path: Path) -> tuple[int | None, bool]:
+    """Count a folder's immediate children without walking the whole tree."""
+    count = 0
+    try:
+        with os.scandir(path) as entries:
+            for _ in entries:
+                count += 1
+                if count >= _MAX_FOLDER_SAMPLE:
+                    break
+    except OSError:
+        return None, False
+    return count, count > 0
+
+
+def _search_tree(
+    results: list[dict[str, Any]],
+    roots: list[Path],
+) -> list[dict[str, Any]]:
+    """Group flat search results into a tree the UI can render directly.
+
+    Context folders that only exist to place a match are included with
+    ``matched: False``; leaves carry the metadata of the match. Roots are the
+    search roots themselves, so results from ``all_drives`` stay separated.
+    """
+    trees: dict[str, dict[str, Any]] = {}
+
+    def root_node(root: str) -> dict[str, Any]:
+        node = trees.get(root)
+        if node is None:
+            label = Path(root).name or root
+            node = {
+                "name": label,
+                "path": root,
+                "type": "folder",
+                "matched": False,
+                "is_root": True,
+                "children": {},
+            }
+            trees[root] = node
+        return node
+
+    for root in roots:
+        root_node(str(root))
+
+    for item in results:
+        parts = [part for part in (item.get("relative_path") or "").split("/") if part]
+        if not parts:
+            continue
+        cursor = root_node(str(item.get("root") or ""))
+        for part in parts[:-1]:
+            child = cursor["children"].get(part)
+            if child is None:
+                child = {
+                    "name": part,
+                    "path": _join_tree_path(cursor["path"], part),
+                    "type": "folder",
+                    "matched": False,
+                    "children": {},
+                }
+                cursor["children"][part] = child
+            cursor = child
+
+        leaf = cursor["children"].get(parts[-1])
+        if leaf is None:
+            leaf = {
+                "name": parts[-1],
+                "path": item["path"],
+                "type": item["type"],
+                "matched": True,
+                "children": {},
+            }
+            cursor["children"][parts[-1]] = leaf
+        leaf["matched"] = True
+        leaf["modified"] = item.get("modified")
+        leaf["size"] = item.get("size")
+        leaf["extension"] = item.get("extension")
+        leaf["children_count"] = item.get("children_count")
+        leaf["has_children"] = item.get("has_children")
+
+    def finalize(node: dict[str, Any]) -> dict[str, Any]:
+        children = sorted(
+            node.get("children", {}).values(),
+            key=lambda child: (child["type"] != "folder", child["name"].casefold()),
+        )
+        node["children"] = [finalize(child) for child in children]
+        return node
+
+    return [
+        finalize(node)
+        for node in sorted(trees.values(), key=lambda node: node["path"].casefold())
+        if node["children"]
+    ]
+
+
+def _join_tree_path(parent: str, name: str) -> str:
+    return str(Path(parent) / name)

@@ -1662,6 +1662,54 @@ def test_unlimited_tool_rounds_support_more_than_one_hundred_steps(
     assert len(client.completions.requests) == rounds + 1
 
 
+def test_search_cards_keep_only_the_current_turn(tmp_path: Path) -> None:
+    service, store, _ = make_service(tmp_path, [content_message("ok")])
+    conversation_id = store.new_conversation_id()
+
+    for index in range(4):
+        service._remember_search_card(
+            conversation_id,
+            {
+                "ok": True,
+                "results": [{"path": f"C:\\tmp\\hit-{index}", "type": "file"}],
+                "tree": [{"name": f"hit-{index}", "path": "C:\\tmp", "children": []}],
+            },
+        )
+    service._remember_search_card(conversation_id, {"ok": False, "error": "nope"})
+    service._remember_search_card(conversation_id, {"ok": True, "results": []})
+
+    cards = service.search_cards(conversation_id)
+    assert len(cards) == 3
+    assert [card["results"][0]["path"] for card in cards] == [
+        "C:\\tmp\\hit-1",
+        "C:\\tmp\\hit-2",
+        "C:\\tmp\\hit-3",
+    ]
+
+    service.clear_search_cards(conversation_id)
+    assert service.search_cards(conversation_id) == []
+
+
+def test_search_tree_is_ui_only(tmp_path: Path) -> None:
+    """The nested tree is for the chat card; the model gets the flat list."""
+    result = {
+        "ok": True,
+        "message": "Found 1 folder(s) and 1 file(s).",
+        "results": [
+            {"path": "C:\\tmp\\Projects", "name": "Projects", "type": "folder"},
+            {"path": "C:\\tmp\\Projects\\a.txt", "name": "a.txt", "type": "file"},
+        ],
+        "tree": [{"name": "tmp", "path": "C:\\tmp", "children": []}],
+        "summary": {"total": 2, "files": 1, "folders": 1},
+    }
+
+    projected = json.loads(_model_facing_tool_result("search_system", result))
+
+    assert "tree" not in projected
+    assert len(projected["results"]) == 2
+    assert projected["summary"]["folders"] == 1
+
+
 def test_diagnosis_artifact_paths_are_hidden_from_the_model(
     tmp_path: Path,
 ) -> None:

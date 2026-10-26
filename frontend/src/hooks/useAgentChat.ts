@@ -29,6 +29,7 @@ import type {
   DiagnosisReportData,
   Identity,
   PendingAction,
+  SearchResultData,
   StreamCallbacks,
   TaskStep,
   TokenMetrics,
@@ -54,7 +55,9 @@ async function loadSnapshot(
   }
 
   const [history, pending] = await Promise.all([
-    storedId ? fetchHistory(storedId, signal) : Promise.resolve({ messages: [], diagnosis: null }),
+    storedId
+      ? fetchHistory(storedId, signal)
+      : Promise.resolve({ messages: [], diagnosis: null, searches: [] }),
     storedId ? fetchPending(storedId, signal) : Promise.resolve(null),
   ]);
 
@@ -67,13 +70,22 @@ async function loadSnapshot(
     thinkingTokens: message.thinking_tokens ?? undefined,
   }));
 
+  const extras: ChatMessage[] = history.searches.map((search) => ({
+    id: crypto.randomUUID(),
+    role: "search" as const,
+    content: "",
+    search,
+  }));
   if (history.diagnosis) {
-    const diagnosisMessage: ChatMessage = {
+    extras.push({
       id: crypto.randomUUID(),
       role: "diagnosis",
       content: "",
       diagnosis: history.diagnosis,
-    };
+    });
+  }
+
+  if (extras.length > 0) {
     let lastAssistant = -1;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       if (messages[index].role === "assistant") {
@@ -82,9 +94,9 @@ async function loadSnapshot(
       }
     }
     if (lastAssistant >= 0) {
-      messages.splice(lastAssistant, 0, diagnosisMessage);
+      messages.splice(lastAssistant, 0, ...extras);
     } else {
-      messages.push(diagnosisMessage);
+      messages.push(...extras);
     }
   }
 
@@ -420,6 +432,50 @@ export function useAgentChat() {
     });
   }, []);
 
+  const addSearchResults = useCallback((search: SearchResultData) => {
+    if (!mountedRef.current) {
+      return;
+    }
+    if (!Array.isArray(search.results) || search.results.length === 0) {
+      return;
+    }
+
+    const fingerprint = [...search.results]
+      .map((item) => item.path.toLowerCase())
+      .sort()
+      .join("|");
+
+    setMessages((current) => {
+      // A retry or a second search for the same paths should not stack cards.
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        const message = current[index];
+        if (message.role === "search" && message.search) {
+          const previous = [...message.search.results]
+            .map((item) => item.path.toLowerCase())
+            .sort()
+            .join("|");
+          if (previous === fingerprint) {
+            return current;
+          }
+          break;
+        }
+        if (message.role === "user") {
+          break;
+        }
+      }
+
+      return [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          role: "search",
+          content: "",
+          search,
+        },
+      ];
+    });
+  }, []);
+
   const rememberConversation = useCallback((id?: string) => {
     if (!id) {
       return;
@@ -566,6 +622,14 @@ export function useAgentChat() {
           }
           if (tool === "propose_plan") {
             return;
+          }
+          if (
+            tool === "search_system" &&
+            ok &&
+            result &&
+            Array.isArray((result as { results?: unknown }).results)
+          ) {
+            addSearchResults(result as unknown as SearchResultData);
           }
           if (
             tool === "system_diagnosis" &&
@@ -976,6 +1040,7 @@ export function useAgentChat() {
       addAssistant,
       addAttachments,
       addDiagnosis,
+      addSearchResults,
       applyMetrics,
       failRunningTasks,
       finalizeStreaming,

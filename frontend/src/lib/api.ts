@@ -5,6 +5,7 @@ import type {
   HistoryMessage,
   Identity,
   PendingAction,
+  SearchResultData,
   StatusPhase,
   StreamCallbacks,
 } from "../types";
@@ -381,6 +382,7 @@ export async function waitForBackend(
 export type HistorySnapshot = {
   messages: HistoryMessage[];
   diagnosis: DiagnosisReportData | null;
+  searches: SearchResultData[];
 };
 
 export async function fetchHistory(
@@ -393,18 +395,20 @@ export async function fetchHistory(
       { signal },
     );
     if (!response.ok) {
-      return { messages: [], diagnosis: null };
+      return { messages: [], diagnosis: null, searches: [] };
     }
     const data = (await response.json()) as {
       messages?: HistoryMessage[];
       diagnosis?: DiagnosisReportData | null;
+      searches?: SearchResultData[];
     };
     return {
       messages: data.messages ?? [],
       diagnosis: data.diagnosis ?? null,
+      searches: Array.isArray(data.searches) ? data.searches : [],
     };
   } catch {
-    return { messages: [], diagnosis: null };
+    return { messages: [], diagnosis: null, searches: [] };
   }
 }
 

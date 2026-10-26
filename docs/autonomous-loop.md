@@ -86,11 +86,16 @@ reports accuracy, performance, and UX separately, plus the overall average.
 UI/UX is deliberately split into machine-checkable evidence and artifacts:
 
 1. the SSE event contract (ordering, compactness, streaming);
-2. a static source contract for the compact status component and the
-   collapsible thought-process button (`ThinkingBlock.tsx`, `assistant_thinking`,
-   `thinking_ms`);
+2. a static source contract for the compact status component, the collapsible
+   thought-process button (`ThinkingBlock.tsx`, `assistant_thinking`,
+   `thinking_ms`), and the search tree card (`SearchResults.tsx`, folder
+   results, `kind` in the search schema);
 3. annotated Set-of-Mark screenshots (valid PNG, non-blank, elements detected)
    written by the backend and kept in the run folder for visual review.
+
+The `cli` catalog also covers folder search in English and German
+(`cli_find_folder`, `cli_find_folders_de`); a wrong result kind or an accidental
+deep recursion fails the experiment.
 
 The harness does not pretend to judge aesthetics with a threshold. It fails
 regressions it can prove and leaves the screenshots and event transcripts for

@@ -48,6 +48,20 @@ class FakeChatService:
         return None
 
 
+class FakeSearchChatService(FakeChatService):
+    """Fake service that exposes the search-card contract of ChatService."""
+
+    def __init__(self, store: ConversationStore) -> None:
+        super().__init__(store)
+        self.cards: dict[str, list[dict]] = {}
+
+    def search_cards(self, conversation_id: str) -> list[dict]:
+        return list(self.cards.get(conversation_id, []))
+
+    def clear_search_cards(self, conversation_id: str) -> None:
+        self.cards.pop(conversation_id, None)
+
+
 @pytest.fixture
 def store() -> ConversationStore:
     return ConversationStore(max_conversations=20)
@@ -415,3 +429,32 @@ def test_cors_allows_tauri_origin(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "tauri://localhost"
+
+
+def test_history_returns_search_cards_and_delete_clears_them(
+    settings: Settings,
+    store: ConversationStore,
+) -> None:
+    service = FakeSearchChatService(store)
+    app = create_app(settings=settings, store=store, chat_service=service)
+    conversation_id = store.new_conversation_id()
+    store.append_exchange(conversation_id, "Find my archive folder", "Found it.")
+    service.cards[conversation_id] = [
+        {
+            "results": [
+                {"path": "C:\\Users\\Flo\\Archive", "name": "Archive", "type": "folder"}
+            ],
+            "tree": [{"name": "Flo", "path": "C:\\Users\\Flo", "children": []}],
+            "summary": {"folders": 1, "files": 0},
+        }
+    ]
+
+    with TestClient(app) as http:
+        payload = http.get(f"/chat/history/{conversation_id}").json()
+        assert len(payload["searches"]) == 1
+        assert payload["searches"][0]["tree"][0]["name"] == "Flo"
+        # Search cards must not leak into the model-facing message list.
+        assert all("Archive" not in message["content"] for message in payload["messages"])
+
+        assert http.delete(f"/chat/history/{conversation_id}").status_code == 204
+        assert service.cards.get(conversation_id) is None

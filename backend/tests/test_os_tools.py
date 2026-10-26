@@ -319,8 +319,170 @@ def test_search_system_recursive_false_returns_direct_children(
 
     result = os_tools.search_system(str(workdir), recursive=False)
 
-    assert [item["name"] for item in result["results"]] == ["top.txt"]
+    # Folders are searchable results too, but the nested file must not leak.
+    assert [item["name"] for item in result["results"]] == ["nested", "top.txt"]
+    assert [item["type"] for item in result["results"]] == ["folder", "file"]
     assert result["recursive"] is False
+
+
+def test_search_system_finds_folders_files_or_both(workdir: Path) -> None:
+    archive = workdir / "Archive 2026"
+    archive.mkdir()
+    (archive / "memo.txt").write_text("x", encoding="utf-8")
+    (workdir / "archive.txt").write_text("x", encoding="utf-8")
+
+    folders = os_tools.search_system(
+        str(workdir),
+        name_contains="archive",
+        kind="folders",
+    )
+    assert [item["name"] for item in folders["results"]] == ["Archive 2026"]
+    folder = folders["results"][0]
+    assert folder["type"] == "folder"
+    assert folder["relative_path"] == "Archive 2026"
+    assert folder["depth"] == 1
+    assert folder["size"] is None
+    assert folder["has_children"] is True
+    assert folder["children_count"] == 1
+    assert folders["summary"]["folders"] == 1
+    assert folders["summary"]["files"] == 0
+
+    files = os_tools.search_system(
+        str(workdir),
+        name_contains="archive",
+        kind="files",
+    )
+    assert [item["name"] for item in files["results"]] == ["archive.txt"]
+
+    both = os_tools.search_system(str(workdir), name_contains="archive")
+    assert sorted(item["name"] for item in both["results"]) == [
+        "Archive 2026",
+        "archive.txt",
+    ]
+    assert both["summary"]["folders"] == 1
+    assert both["summary"]["files"] == 1
+
+
+def test_search_system_rejects_impossible_folder_filters(workdir: Path) -> None:
+    with pytest.raises(ToolError):
+        os_tools.search_system(str(workdir), kind="folders", extension="pdf")
+    with pytest.raises(ToolError):
+        os_tools.search_system(str(workdir), kind="folders", min_size=10)
+    with pytest.raises(ToolError):
+        os_tools.search_system(str(workdir), kind="sockets")
+
+
+def test_search_system_extension_filter_implies_files_only(workdir: Path) -> None:
+    (workdir / "report.pdf").write_text("x", encoding="utf-8")
+    (workdir / "report").mkdir()
+
+    result = os_tools.search_system(
+        str(workdir),
+        name_contains="report",
+        extension="pdf",
+    )
+
+    assert result["kind"] == "files"
+    assert [item["name"] for item in result["results"]] == ["report.pdf"]
+
+
+def test_search_system_builds_a_tree_with_context_folders(workdir: Path) -> None:
+    deep = workdir / "Projects" / "2026"
+    deep.mkdir(parents=True)
+    (deep / "report.pdf").write_text("x", encoding="utf-8")
+    (workdir / "Projects" / "notes.txt").write_text("x", encoding="utf-8")
+
+    result = os_tools.search_system(
+        str(workdir),
+        name_contains="report",
+    )
+
+    tree = result["tree"]
+    assert len(tree) == 1
+    root = tree[0]
+    assert root["path"] == str(workdir)
+    assert root["is_root"] is True
+    assert root["matched"] is False
+
+    projects = next(child for child in root["children"] if child["name"] == "Projects")
+    assert projects["type"] == "folder"
+    assert projects["matched"] is False
+    assert projects["path"].endswith("Projects")
+
+    year = projects["children"][0]
+    assert year["name"] == "2026"
+    assert year["matched"] is False
+
+    leaf = year["children"][0]
+    assert leaf["name"] == "report.pdf"
+    assert leaf["type"] == "file"
+    assert leaf["matched"] is True
+    assert leaf["path"] == str(deep / "report.pdf")
+    assert leaf["extension"] == ".pdf"
+    assert leaf["size"] == 1
+
+
+def test_search_system_max_depth_limits_results(workdir: Path) -> None:
+    deep = workdir / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (deep / "target.txt").write_text("x", encoding="utf-8")
+
+    shallow = os_tools.search_system(
+        str(workdir),
+        name_contains="target",
+        max_depth=2,
+    )
+    assert shallow["results"] == []
+    assert shallow["max_depth"] == 2
+
+    matched = os_tools.search_system(
+        str(workdir),
+        name_contains="target",
+        max_depth=4,
+    )
+    assert [item["name"] for item in matched["results"]] == ["target.txt"]
+    assert matched["results"][0]["depth"] == 4
+
+
+def test_search_system_skips_dependency_folders_but_still_finds_them(
+    workdir: Path,
+) -> None:
+    modules = workdir / "node_modules" / "left-pad"
+    modules.mkdir(parents=True)
+    (modules / "index.js").write_text("x", encoding="utf-8")
+    (workdir / "app.js").write_text("x", encoding="utf-8")
+
+    by_name = os_tools.search_system(
+        str(workdir),
+        name_contains="node_modules",
+        kind="folders",
+    )
+    assert [item["name"] for item in by_name["results"]] == ["node_modules"]
+
+    inner = os_tools.search_system(str(workdir), name_contains="index.js")
+    assert inner["results"] == []
+
+    with_junk = os_tools.search_system(
+        str(workdir),
+        name_contains="index.js",
+        include_junk=True,
+    )
+    assert [item["name"] for item in with_junk["results"]] == ["index.js"]
+    assert with_junk["query"]["include_junk"] is True
+
+
+def test_search_system_folder_counts_stay_cheap(workdir: Path, monkeypatch) -> None:
+    busy = workdir / "busy"
+    busy.mkdir()
+    for index in range(5):
+        (busy / f"item-{index}.txt").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(os_tools, "_MAX_FOLDER_SAMPLE", 2)
+    result = os_tools.search_system(str(workdir), name_contains="busy")
+
+    folder = result["results"][0]
+    assert folder["children_count"] == 2
+    assert folder["has_children"] is True
 
 
 def test_documents_alias_maps_to_known_folder(

@@ -1,4 +1,10 @@
-export type ChatRole = "user" | "assistant" | "status" | "files" | "diagnosis";
+export type ChatRole =
+  | "user"
+  | "assistant"
+  | "status"
+  | "files"
+  | "diagnosis"
+  | "search";
 
 export type StatusPhase = "thinking" | "tool_started" | "approval" | "generating";
 
@@ -195,6 +201,63 @@ export type DiagnosisReportData = {
   message?: string;
 };
 
+export type SearchTreeNode = {
+  name: string;
+  path: string;
+  type: "file" | "folder";
+  matched: boolean;
+  is_root?: boolean;
+  modified?: string | null;
+  size?: number | null;
+  extension?: string | null;
+  children_count?: number | null;
+  has_children?: boolean | null;
+  children?: SearchTreeNode[];
+};
+
+export type SearchResultItem = {
+  path: string;
+  name: string;
+  type: "file" | "folder";
+  extension?: string;
+  size?: number | null;
+  modified?: string | null;
+  relative_path?: string;
+  depth?: number;
+  children_count?: number | null;
+  has_children?: boolean | null;
+};
+
+export type SearchQuery = {
+  name_contains?: string | null;
+  extension?: string | null;
+  kind?: "any" | "files" | "folders";
+  recursive?: boolean;
+  max_depth?: number | null;
+};
+
+export type SearchResultData = {
+  results: SearchResultItem[];
+  tree: SearchTreeNode[];
+  query?: SearchQuery;
+  summary?: {
+    total?: number;
+    files?: number;
+    folders?: number;
+    total_size?: number;
+    newest_path?: string | null;
+    newest_modified?: string | null;
+    truncated?: boolean;
+    limited?: boolean;
+  };
+  roots?: string[];
+  duration_seconds?: number;
+  truncated?: boolean;
+  limited?: boolean;
+  kind?: string;
+  message?: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
@@ -202,6 +265,7 @@ export type ChatMessage = {
   status?: ToolStatusData;
   files?: string[];
   diagnosis?: DiagnosisReportData;
+  search?: SearchResultData;
   metrics?: TokenMetrics;
   streaming?: boolean;
   /** Reasoning the model emitted before the answer. */

@@ -194,6 +194,121 @@ _SMALL_TALK = re.compile(
     re.IGNORECASE,
 )
 
+# ---- search intent -------------------------------------------------------
+# The user's wording decides whether a search is about folders, files, or both,
+# even when a small model omits or mislabels the `kind` argument.
+_FOLDER_WORD = re.compile(
+    r"\b(?:ordner(?:n|s)?|verzeichnis(?:se|sen)?|folder(?:s)?|"
+    r"director(?:y|ies)|dirs?)\b",
+    re.IGNORECASE,
+)
+_FILE_WORD = re.compile(
+    r"\b(?:datei(?:en)?|files?|dokument(?:e)?|documents?)\b",
+    re.IGNORECASE,
+)
+_EXTENSION_WORD = re.compile(
+    r"\b\*?\.(?:pdf|docx?|xlsx?|pptx?|txt|csv|zip|rar|7z|png|jpe?g|gif|"
+    r"mp[34]|avi|mkv|md|json|ya?ml|log|exe|lnk|url)\b",
+    re.IGNORECASE,
+)
+_LOCATION_BEFORE_FOLDER = re.compile(
+    r"\b(?:in|im|inside|within|unter|from|aus)\b[^.!?\n]{0,30}$",
+    re.IGNORECASE,
+)
+_LOCATION_AFTER_FOLDER = re.compile(
+    r"^\s+(?:auf|im|in|on|under|unter)\b",
+    re.IGNORECASE,
+)
+_NAMED_AFTER_FOLDER = re.compile(
+    r"^\s+(?:named|called|namens|mit\s+dem\s+namen|mit\s+namen)\b",
+    re.IGNORECASE,
+)
+_FOLDER_QUANTIFIER = re.compile(
+    r"\b(?:alle|allen|aller|all|which|welche|welchen|welcher|meine|meinen|"
+    r"meiner|my|beide|both|many|viele|list|liste|show|zeige|gib)"
+    r"\s+(?:[\w-]+\s+){0,2}$",
+    re.IGNORECASE,
+)
+# Absolute paths and file URLs must not influence intent: a folder request may
+# legitimately mention "C:\Users\Me\Dokumente" or an output file "found.txt".
+_PATH_TOKEN = re.compile(
+    r"(?:[A-Za-z]:[\\/]|\\\\|file:///)[^\s'\"<>|]+",
+    re.IGNORECASE,
+)
+# "on the desktop" / "auf dem Desktop" names the top level, not everything
+# nested inside every folder there.
+_TOP_LEVEL_PHRASE = re.compile(
+    r"\b(?:on|auf)\s+(?:my|the|dem|meinem|meiner)?\s*desktop\b",
+    re.IGNORECASE,
+)
+_RECURSIVE_PHRASE = re.compile(
+    r"\b(?:inside|within|recursive|recursively|anywhere|everywhere|"
+    r"unterordner|subfolder|subfolders|rekursiv|irgendwo|überall)\b"
+    r"|\bin\s+allen\b|\bin\s+all\b",
+    re.IGNORECASE,
+)
+
+
+def _search_scope_top_level(message: str) -> bool:
+    """True when the wording clearly means only the top level of a folder."""
+    text = _PATH_TOKEN.sub(" ", message)
+    return bool(_TOP_LEVEL_PHRASE.search(text)) and not _RECURSIVE_PHRASE.search(text)
+
+
+def _folder_target_count(message: str) -> int:
+    """Count folder words that name the target, not just the location."""
+    count = 0
+    file_targets_present = bool(_FILE_WORD.search(message))
+    for match in _FOLDER_WORD.finditer(message):
+        before = message[max(0, match.start() - 40) : match.start()]
+        after = message[match.end() : match.end() + 20]
+        word = match.group(0).casefold()
+        plural = word in {"folders", "directories", "dirs"} or word in {
+            "ordnern",
+            "verzeichnisse",
+            "verzeichnissen",
+        }
+        quantified = bool(_FOLDER_QUANTIFIER.search(before))
+        describes_place = bool(_LOCATION_AFTER_FOLDER.match(after))
+        names_a_target = bool(_NAMED_AFTER_FOLDER.match(after))
+
+        if not plural and not quantified and file_targets_present:
+            # "files in the Downloads folder named report": the folder is the
+            # place to look, the files are the target.
+            continue
+        if plural or quantified or describes_place or names_a_target:
+            count += 1
+            continue
+        if _LOCATION_BEFORE_FOLDER.search(before):
+            # "in the Downloads folder" describes where to look, not what to find.
+            continue
+    return count
+
+
+def _search_kind_hint(message: str) -> str | None:
+    """Infer files/folders/any from how the user phrased the request.
+
+    Returns None when the wording does not clearly name a result type, so the
+    model's own choice (or the tool default) is left alone. Absolute paths are
+    removed first: a folder request may mention a path like
+    ``C:\\Users\\Flo\\Dokumente`` or an output file ``found.txt`` without
+    meaning "files".
+    """
+    text = _PATH_TOKEN.sub(" ", message).strip()
+    if not text:
+        return None
+    folder_targets = _folder_target_count(text)
+    file_targets = len(_FILE_WORD.findall(text))
+    if folder_targets and file_targets:
+        return "any"
+    if folder_targets:
+        return "folders"
+    if file_targets:
+        return "files"
+    if _EXTENSION_WORD.search(text):
+        return "files"
+    return None
+
 
 def _profile_tool_names(message: str) -> set[str]:
     """Pick the tool schemas a user request plausibly needs.
@@ -361,6 +476,8 @@ def _model_facing_tool_result(name: str, result: dict[str, Any]) -> str:
             and isinstance(result.get("content"), str)
         ):
             projected = _compact_read_file(result)
+        elif name == "search_system" and result.get("ok"):
+            projected = _compact_search_result(result)
         else:
             projected = result
         return json.dumps(projected, ensure_ascii=False, default=str)
@@ -388,6 +505,16 @@ def _compact_read_file(result: dict[str, Any]) -> dict[str, Any]:
         )
         projection["truncated"] = True
     return projection
+
+
+def _compact_search_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Drop the UI-only tree from a search result before it reaches the model.
+
+    The flat ``results`` list already carries every path, type, and timestamp.
+    Sending the tree as well would duplicate the same paths (once per ancestor)
+    and waste context on nesting the model cannot use.
+    """
+    return {key: value for key, value in result.items() if key != "tree"}
 
 
 _FILE_URL_WITHOUT_COLON = re.compile(r"file:///([A-Za-z])/(?=[^\s)>\]]*)")
@@ -735,6 +862,10 @@ class ChatService:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         self._turn_plans: dict[str, list[str]] = {}
+        # UI-only search cards for the current turn. The model-facing tool result
+        # deliberately drops the tree, so history keeps the rendered cards here.
+        self._search_cards: dict[str, list[dict[str, Any]]] = {}
+        self._search_cards_guard = threading.Lock()
         self._cancel_guard = threading.Lock()
         self._cancel_events: dict[str, threading.Event] = {}
         self._interrupted: set[str] = set()
@@ -927,6 +1058,7 @@ class ChatService:
             start_length = len(self._store.load(conversation_id))
             self._store.append(conversation_id, "user", message)
             self._turn_plans.pop(conversation_id, None)
+            self.clear_search_cards(conversation_id)
             self._clear_interrupt(conversation_id)
             self._cancel_event(conversation_id)
             self._begin_turn(conversation_id)
@@ -1397,6 +1529,8 @@ class ChatService:
         arguments: str | dict[str, Any],
         conversation_id: str,
     ) -> dict[str, Any]:
+        if name == "search_system":
+            arguments = self._align_search_kind(conversation_id, arguments)
         if name != "analyze_screen":
             result = self._tools.execute(name, arguments)
         else:
@@ -1422,7 +1556,111 @@ class ChatService:
             parsed_arguments if isinstance(parsed_arguments, dict) else {},
             result,
         )
+        if name == "search_system":
+            self._remember_search_card(conversation_id, result)
         return result
+
+    def _align_search_kind(
+        self,
+        conversation_id: str,
+        arguments: str | dict[str, Any],
+    ) -> str | dict[str, Any]:
+        """Align search arguments with an unambiguous user wording.
+
+        Models occasionally omit ``kind``, label a folder request as files, or
+        recurse into the whole Desktop when the user asked for the folders *on*
+        the Desktop. The user's own words are the ground truth, so those cases
+        are corrected before the tool runs. Ambiguous wording is left alone.
+        """
+        message = self._last_user_message(conversation_id)
+        hint = _search_kind_hint(message)
+        top_level = _search_scope_top_level(message)
+        if hint is None and not top_level:
+            return arguments
+
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments or "{}")
+            except json.JSONDecodeError:
+                return arguments
+        else:
+            parsed = arguments
+        if not isinstance(parsed, dict):
+            return arguments
+
+        normalized = dict(parsed)
+        changed = False
+
+        if hint is not None:
+            if hint == "folders" and (
+                normalized.get("extension")
+                or normalized.get("min_size")
+                or normalized.get("max_size")
+            ):
+                # A byte or extension filter can only describe files; forcing
+                # folders would make the tool reject the call.
+                hint = "files"
+
+            current = str(normalized.get("kind") or "").strip().lower()
+            if current != hint:
+                normalized["kind"] = hint
+                changed = True
+                logger.info(
+                    "search_system kind %r adjusted to %r from the user's wording",
+                    current or None,
+                    hint,
+                )
+
+        if top_level and normalized.get("recursive") is not False:
+            # "Ordner auf dem Desktop" means the icons, not every folder below.
+            normalized["recursive"] = False
+            normalized.pop("max_depth", None)
+            changed = True
+            logger.info("search_system limited to the top level by the user's wording")
+
+        return normalized if changed else arguments
+
+    def _remember_search_card(
+        self,
+        conversation_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        """Keep the rendered search tree for the history endpoint.
+
+        Only the current turn is kept: the card is a view of the last search
+        the user asked about, and the full path list already lives in the tool
+        message for the model.
+        """
+        if not result.get("ok") or not result.get("results"):
+            return
+        card = {
+            key: result.get(key)
+            for key in (
+                "results",
+                "tree",
+                "summary",
+                "query",
+                "roots",
+                "kind",
+                "truncated",
+                "limited",
+                "duration_seconds",
+                "message",
+            )
+        }
+        with self._search_cards_guard:
+            cards = self._search_cards.setdefault(conversation_id, [])
+            cards.append(card)
+            del cards[:-3]
+
+    def search_cards(self, conversation_id: str) -> list[dict[str, Any]]:
+        """Return the search cards of the current turn for /chat/history."""
+        with self._search_cards_guard:
+            return list(self._search_cards.get(conversation_id, []))
+
+    def clear_search_cards(self, conversation_id: str) -> None:
+        with self._search_cards_guard:
+            self._search_cards.pop(conversation_id, None)
 
     def _record_plan(
         self,

@@ -244,6 +244,19 @@ def prepare_search(ctx: ExperimentContext) -> None:
     os.utime(newer, (now - 60, now - 60))
 
 
+def prepare_find_folder(ctx: ExperimentContext) -> None:
+    ctx.write("Projects/Archive 2026/notes.txt", "phase21 archive folder\n")
+    ctx.write("Projects/2025/archive.txt", "a file, not the folder\n")
+    ctx.write("Downloads/readme.txt", "noise\n")
+
+
+def prepare_folders_de(ctx: ExperimentContext) -> None:
+    ctx.write("Projekte/notiz.txt", "phase21 project folder\n")
+    ctx.write("Archiv/2025/bericht.txt", "phase21 archive folder\n")
+    ctx.write("notizen.txt", "a file that must not be listed\n")
+    ctx.write("verknuepfung.url", "a shortcut that must not be listed\n")
+
+
 def prepare_move(ctx: ExperimentContext) -> None:
     ctx.write("inbox/report.txt", "phase21 move me")
 
@@ -350,6 +363,89 @@ def verify_move(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
             "accuracy",
             not ctx.exists("inbox/report.txt"),
             str(ctx.path("inbox", "report.txt")),
+        )
+    )
+    return checks
+
+
+def verify_folders_de(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
+    target = ctx.path("ordner.txt")
+    text = (
+        target.read_text(encoding="utf-8", errors="replace")
+        if target.is_file()
+        else ""
+    )
+    lowered = text.casefold()
+    checks = [
+        check(
+            "folders_listed",
+            "accuracy",
+            "projekte" in lowered and "archiv" in lowered,
+            text[:300] or "ordner.txt is missing",
+        ),
+        check(
+            "files_not_listed",
+            "accuracy",
+            "notizen" not in lowered and "verknuepfung" not in lowered,
+            "only folder names belong in the answer",
+        ),
+    ]
+
+    folder_results = [
+        item
+        for event in turn.tool_results
+        for item in ((event.get("result") or {}).get("results") or [])
+        if item.get("type") == "folder"
+    ]
+    checks.append(
+        check(
+            "folder_results_typed",
+            "accuracy",
+            len(folder_results) >= 2,
+            f"{len(folder_results)} typed folder result(s)",
+        )
+    )
+    return checks
+
+
+def verify_find_folder(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
+    target = ctx.path("Projects", "Archive 2026")
+    expected = str(target).replace("/", "\\").casefold()
+    found_file = ctx.path("found.txt")
+
+    if found_file.is_file():
+        text = found_file.read_text(encoding="utf-8", errors="replace").strip()
+    else:
+        text = ""
+    normalized = text.strip('"\'`').replace("/", "\\").rstrip(".").casefold()
+
+    checks = [
+        check(
+            "found_folder_path",
+            "accuracy",
+            bool(expected) and expected in normalized,
+            text[:300] or "found.txt is missing",
+        ),
+        check(
+            "file_with_similar_name_untouched",
+            "accuracy",
+            ctx.exists("Projects/2025/archive.txt"),
+            str(ctx.path("Projects", "2025", "archive.txt")),
+        ),
+    ]
+
+    folder_in_results = any(
+        item.get("type") == "folder"
+        and "archive 2026" in str(item.get("path") or "").casefold()
+        for event in turn.tool_results
+        for item in ((event.get("result") or {}).get("results") or [])
+    )
+    checks.append(
+        check(
+            "folder_in_search_results",
+            "accuracy",
+            folder_in_results,
+            "search_system returned the folder as a typed result",
         )
     )
     return checks
@@ -513,6 +609,43 @@ def build_experiments(*, include_gui: bool = False) -> list[Experiment]:
             expected_tools=frozenset({"search_system", "run_powershell_query"}),
             forbidden_tools=GUI_TOOLS,
             tags=("files", "search"),
+        ),
+        Experiment(
+            id="cli_find_folder",
+            title="Find a folder by name and report its path",
+            category="cli",
+            prompt_template=(
+                "Somewhere under {workspace} there is a folder named "
+                "'Archive 2026'. Search for it and write only its full path to "
+                "{workspace}/found.txt. Do not create, move, or change anything "
+                "else."
+            ),
+            verifier=verify_find_folder,
+            timeout=180,
+            max_tools=6,
+            mutable=True,
+            prepare=prepare_find_folder,
+            expected_tools=frozenset({"search_system", "run_powershell_query"}),
+            forbidden_tools=GUI_TOOLS,
+            tags=("folders", "search"),
+        ),
+        Experiment(
+            id="cli_find_folders_de",
+            title="Alle Ordner finden (deutsch)",
+            category="cli",
+            prompt_template=(
+                "Suche unter {workspace} nach allen Ordnern und schreibe ihre "
+                "Namen, einen pro Zeile, in {workspace}/ordner.txt. Schreibe "
+                "keine Dateinamen hinein."
+            ),
+            verifier=verify_folders_de,
+            timeout=180,
+            max_tools=6,
+            mutable=True,
+            prepare=prepare_folders_de,
+            expected_tools=frozenset({"search_system", "run_powershell_query"}),
+            forbidden_tools=GUI_TOOLS,
+            tags=("folders", "search", "german"),
         ),
         Experiment(
             id="cli_move",

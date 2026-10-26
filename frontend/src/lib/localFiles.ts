@@ -142,6 +142,11 @@ export function extractToolFiles(
     return [];
   }
 
+  // Search hits are rendered as a file tree card, including folders.
+  if (tool === "search_system") {
+    return [];
+  }
+
   const candidates: string[] = [];
   const results = result.results;
 

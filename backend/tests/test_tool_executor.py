@@ -213,3 +213,54 @@ def test_executor_passes_search_limits(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert len(result["results"]) == 1
+
+
+def test_executor_maps_guessed_folder_flags(tmp_path: Path) -> None:
+    """Models sometimes send folders_only/include_folders instead of kind."""
+    archive = tmp_path / "Archive"
+    archive.mkdir()
+    (tmp_path / "archive.txt").write_text("x", encoding="utf-8")
+    executor = ToolExecutor(ToolSettings())
+
+    folders = executor.execute(
+        "search_system",
+        {"root": str(tmp_path), "name_contains": "archive", "folders_only": True},
+    )
+    assert [item["name"] for item in folders["results"]] == ["Archive"]
+
+    files = executor.execute(
+        "search_system",
+        {"root": str(tmp_path), "name_contains": "archive", "include_folders": False},
+    )
+    assert [item["name"] for item in files["results"]] == ["archive.txt"]
+
+    both = executor.execute(
+        "search_system",
+        {"root": str(tmp_path), "name_contains": "archive", "kind": "any"},
+    )
+    assert len(both["results"]) == 2
+
+
+def test_executor_forwards_kind_and_depth(tmp_path: Path) -> None:
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    (deep / "hit.txt").write_text("x", encoding="utf-8")
+    executor = ToolExecutor(ToolSettings())
+
+    shallow = executor.execute(
+        "search_system",
+        {"root": str(tmp_path), "name_contains": "hit", "max_depth": 1},
+    )
+    assert shallow["results"] == []
+
+    matched = executor.execute(
+        "search_system",
+        {
+            "root": str(tmp_path),
+            "name_contains": "hit",
+            "kind": "files",
+            "max_depth": 3,
+        },
+    )
+    assert [item["name"] for item in matched["results"]] == ["hit.txt"]
+    assert matched["kind"] == "files"

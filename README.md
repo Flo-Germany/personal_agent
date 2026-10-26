@@ -476,7 +476,7 @@ The agent can use eighteen tools:
 | `propose_plan` | No | Record the ordered steps of a multi-step request so the approval card can show the full sequence before anything runs |
 | `run_powershell_query` | No | Read-only PowerShell inspection: processes/RAM/CPU, services, registry, disks, network, event logs, files. Rejects state-changing commands |
 | `run_powershell_action` | Yes | State-changing PowerShell after approval: kill/stop processes, change services or settings, registry writes, file changes, installs |
-| `search_system` | No | Recursive or direct-child search by name/glob, extension, size, modified time, hidden flag, or all drives; newest/oldest sorting; known-folder aliases |
+| `search_system` | No | Search for **files and folders** by name/glob, extension, size, modified time, kind, depth, hidden flag, or all drives; newest/oldest sorting; folder child counts; returns a renderable tree for the chat card; known-folder aliases |
 | `semantic_image_search` | No | Search the whole PC for images by visual content with a local CLIP index; returns ranked paths and scores |
 | `system_diagnosis` | No | Full read-only health/performance check: hardware, live CPU/memory/GPU, top processes, disk/SSD health, services, startup, security, event errors, benchmarks, and matplotlib charts |
 | `get_open_windows` | No | List visible top-level Windows applications, exact titles, and the active window |
@@ -527,6 +527,53 @@ Security boundaries:
 - Zip extraction rejects path escapes, caps entry count, and caps uncompressed
   size.
 - Searches cap results, scanned files, and elapsed time.
+
+### File and folder search
+
+`search_system` treats folders as first-class results. `kind` picks what to
+return: `folders` for a folder/directory request, `files` for files, and `any`
+(the default) for both. An extension or size filter always means files, and
+asking for folders with those filters returns a clear error instead of an empty
+list. Two extra knobs keep results relevant:
+
+- `max_depth` limits how far below the root a match may live (`1` = direct
+  children).
+- Dependency and cache folders (`node_modules`, `.venv`, `site-packages`,
+  `__pycache__`, `.cache`, ...) are never walked into, so a project search does
+  not drown in libraries. They are still returned when their own name matches,
+  and `include_junk=true` descends into them when the user really wants that.
+
+The request wording decides the target type before the tool runs, so a weak
+model choice cannot turn a folder request into a file list:
+
+- "alle Ordner", "folders", "directories", or "folder named X" force
+  `kind=folders`; "Dateien"/"files" or an extension force files; both mean
+  `any`.
+- "on the Desktop" / "auf dem Desktop" limits the search to the top level, so
+  the answer lists the six icons on the desktop instead of 110 nested folders.
+  Wording such as "inside", "everywhere", or "in allen Unterordnern" keeps the
+  recursive search.
+- Absolute paths are removed before this decision, so writing the result to
+  `found.txt` does not turn a folder search into a file search.
+
+`backend/tests/test_search_intent.py` locks the German and English cases in,
+and the live experiments `cli_find_folder` and `cli_find_folders_de` verify the
+whole loop against the real model.
+
+Every result carries `type`, `relative_path`, `depth`, and `children_count` for
+folders. The response also contains a ready-to-render `tree` grouped by search
+root; the chat renders it as an expandable file tree instead of a flat list:
+
+- folder rows show an open/closed icon and their immediate child count;
+- matches are highlighted, context folders stay dim so the path is readable;
+- **All / Folders / Files** chips filter the tree without a new search;
+- every row opens on click and offers *open*, *show in Explorer*, and *copy
+  path*; the header can copy all matching paths at once;
+- the footer shows the newest match and the combined size of matched files.
+
+The tree is display-only: the model receives the flat result list with the same
+paths and metadata, which keeps the prompt lean while the user gets the
+hierarchy.
 - `start_program` can launch any installed program or executable. Its first use
   in a request requires approval. It passes no arguments and never uses a shell.
 - `open_file` requires an explicit editor/program; the agent asks the user when

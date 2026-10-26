@@ -107,6 +107,9 @@ def audit_frontend() -> list[Check]:
     types = _read("frontend/src/types.ts")
     api = _read("frontend/src/lib/api.ts")
     chat = _read("backend/agent/chat.py")
+    search_ui = _read("frontend/src/components/SearchResults.tsx")
+    os_tools = _read("backend/tools/os_tools.py")
+    schemas = _read("backend/tools/schemas.py")
 
     checks = [
         check(
@@ -224,6 +227,42 @@ def audit_frontend() -> list[Check]:
             "ux",
             '"thinking_ms"' in chat,
             "thinking duration is reported for analysis",
+        ),
+        check(
+            "ui_search_tree_exists",
+            "ux",
+            bool(search_ui.strip()) and 'role="tree"' in search_ui,
+            "frontend/src/components/SearchResults.tsx renders a tree",
+        ),
+        check(
+            "ui_search_tree_renders_folders",
+            "ux",
+            '"folder"' in search_ui and "FolderOpen" in search_ui,
+            "folder nodes get their own icon and expand state",
+        ),
+        check(
+            "ui_search_tree_has_actions",
+            "ux",
+            "openLocalFile" in search_ui and "revealLocalFile" in search_ui,
+            "tree rows can be opened and revealed in Explorer",
+        ),
+        check(
+            "ui_search_tree_routed",
+            "ux",
+            "SearchResults" in app and '"search"' in app,
+            "App.tsx routes search messages to the tree card",
+        ),
+        check(
+            "backend_search_returns_folders",
+            "accuracy",
+            '"type": "folder"' in os_tools and '"tree"' in os_tools,
+            "search_system returns folder results and a tree",
+        ),
+        check(
+            "schema_search_kind",
+            "accuracy",
+            '"kind"' in schemas and '"folders"' in schemas,
+            "the search schema exposes kind=folders",
         ),
     ]
     return checks

@@ -7,6 +7,7 @@ import { ChatComposer } from "./components/ChatComposer";
 import { DisplayPickerCard } from "./components/DisplayPickerCard";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem } from "./components/MessageItem";
+import { SearchResults } from "./components/SearchResults";
 import { ToolStatus } from "./components/ToolStatus";
 import { useAgentChat } from "./hooks/useAgentChat";
 
@@ -136,6 +137,8 @@ function App() {
                     key={message.id}
                     files={message.files ?? []}
                   />
+                ) : message.role === "search" && message.search ? (
+                  <SearchResults key={message.id} data={message.search} />
                 ) : (
                   <MessageItem key={message.id} message={message} />
                 ),

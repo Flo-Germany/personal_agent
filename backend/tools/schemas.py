@@ -400,13 +400,16 @@ TOOL_SCHEMAS: list[ToolSchema] = [
         "function": {
             "name": "search_system",
             "description": (
-                "Recursively search the local file system for files by name, "
-                "extension, size, and modification time. Read-only, so no approval "
-                "is required. Provide a root folder (use a drive root such as "
-                "'C:\\' or set all_drives=true for every drive). Results include "
-                "full paths and metadata. Searches are capped by result count, "
-                "files scanned, and elapsed time; check 'truncated' before "
-                "concluding that no more matches exist."
+                "Recursively search the local file system for files AND folders "
+                "by name, extension, size, and modification time. Read-only, so no "
+                "approval is required. Provide a root folder (use a drive root such "
+                "as 'C:\\' or set all_drives=true for every drive). Set kind to "
+                "'folders' when the user asks for a folder/directory, 'files' when "
+                "they ask for files, and 'any' for 'items' or when unsure. Results "
+                "include full paths, type, size, and modification time; folders "
+                "also report their immediate child count. Searches are capped by "
+                "result count, entries scanned, and elapsed time; check "
+                "'truncated' before concluding that no more matches exist."
             ),
             "parameters": {
                 "type": "object",
@@ -421,14 +424,33 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     "name_contains": {
                         "type": "string",
                         "description": (
-                            "Case-insensitive part of the file name, for example "
-                            "'invoice'."
+                            "Case-insensitive part of the file or folder name, for "
+                            "example 'invoice'. A value with '*' or '?' is treated "
+                            "as a glob pattern."
+                        ),
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["any", "files", "folders"],
+                        "description": (
+                            "What to return. 'folders' for folder/directory "
+                            "requests, 'files' for files, 'any' for both (default)."
                         ),
                     },
                     "extension": {
                         "type": "string",
                         "description": (
-                            "File extension filter, for example '.pdf' or 'pdf'."
+                            "File extension filter, for example '.pdf' or 'pdf'. "
+                            "An extension filter always means files."
+                        ),
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64,
+                        "description": (
+                            "Only match entries at most this many levels below the "
+                            "root. Leave unset for an unlimited depth."
                         ),
                     },
                     "modified_after": {
@@ -450,6 +472,16 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     "include_hidden": {
                         "type": "boolean",
                         "description": "Include hidden files and folders.",
+                    },
+                    "include_junk": {
+                        "type": "boolean",
+                        "description": (
+                            "Descend into dependency, cache, and tool folders "
+                            "(node_modules, .venv, site-packages, __pycache__, "
+                            ".cache). Off by default; those folders are still "
+                            "returned when their own name matches. Set true only "
+                            "when the user wants matches inside them."
+                        ),
                     },
                     "all_drives": {
                         "type": "boolean",
@@ -479,8 +511,8 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                         ],
                         "description": (
                             "Result order. Use 'modified_desc' for questions about "
-                            "the latest/newest files, 'modified_asc' for the oldest, "
-                            "and 'name' or size orders when requested."
+                            "the latest/newest files or folders, 'modified_asc' for "
+                            "the oldest, and 'name' or size orders when requested."
                         ),
                     },
                     "max_results": {

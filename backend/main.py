@@ -97,6 +97,7 @@ class HistoryResponse(BaseModel):
     conversation_id: str
     messages: list[HistoryMessage]
     diagnosis: dict[str, Any] | None = None
+    searches: list[dict[str, Any]] = []
 
 
 class IdentityResponse(BaseModel):
@@ -428,6 +429,11 @@ def create_app(
             conversation_id=normalized,
             messages=messages,
             diagnosis=diagnosis,
+            searches=(
+                chat_service.search_cards(normalized)
+                if hasattr(chat_service, "search_cards")
+                else []
+            ),
         )
 
     @app.delete("/chat/history/{conversation_id}", status_code=204)
@@ -435,6 +441,8 @@ def create_app(
         """Delete a conversation from memory and discard pending approvals."""
         normalized = str(conversation_id)
         await run_in_threadpool(chat_service.discard_pending, normalized)
+        if hasattr(chat_service, "clear_search_cards"):
+            await run_in_threadpool(chat_service.clear_search_cards, normalized)
         await run_in_threadpool(store.clear, normalized)
         return Response(status_code=204)
 
