@@ -161,6 +161,24 @@ def build_system_prompt(
         build_identity_block(settings, now=now, project_root=project_root),
     ]
 
+    runtime_model = (getattr(settings, "runtime_model", "") or "").strip()
+    if runtime_model:
+        parts.append(
+            "Model actually serving this conversation right now: "
+            f"{runtime_model}. If the user asks which model, engine, or hardware "
+            "you are using, state exactly this and never claim a different model "
+            "or a cloud service."
+        )
+
+    parts.append(
+        "The knowledge base below is what you know about the user, not about "
+        "yourself. When the user asks what you know about them, answer only from "
+        "the knowledge base and this conversation. If it is empty, say you do not "
+        "know anything about them yet, then ask one short question to learn "
+        "something. Never answer that question by describing yourself, your "
+        "personality, or your capabilities."
+    )
+
     system_prompt = settings.system_prompt.strip()
     if system_prompt:
         parts.append(system_prompt)

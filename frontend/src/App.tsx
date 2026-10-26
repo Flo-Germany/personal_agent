@@ -28,6 +28,7 @@ function App() {
     interrupt,
     clearChat,
     refresh,
+    refreshIdentity,
   } = useAgentChat();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -113,7 +114,10 @@ function App() {
 
         {view === "settings" ? (
           <div className="min-h-0 flex-1">
-            <ModelSettings onClose={() => setView("chat")} />
+            <ModelSettings
+              onClose={() => setView("chat")}
+              onModelChanged={() => void refreshIdentity()}
+            />
           </div>
         ) : (
           <>

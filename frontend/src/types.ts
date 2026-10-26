@@ -340,6 +340,8 @@ export type EngineServerStatus = {
   context?: number;
   uptime_seconds?: number;
   log?: string;
+  loaded_model?: string | null;
+  model_matches?: boolean;
 };
 
 export type EngineStatus = {

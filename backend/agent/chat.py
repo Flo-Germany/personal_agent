@@ -2618,7 +2618,7 @@ class ChatService:
             "type": "metrics",
             "conversation_id": conversation_id,
             "live": live,
-            "model": self._settings.ollama.model,
+            "model": self._settings.runtime_model or self._settings.ollama.model,
         }
         if first_token_ms is not None:
             event["first_token_ms"] = round(first_token_ms, 1)

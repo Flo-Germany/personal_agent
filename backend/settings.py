@@ -315,11 +315,18 @@ class EngineSettings(BaseModel):
     vision_model: str = "qwen3-vl-2b-q4"
     # Empty means the model catalog context (16k for vision, 32k for text).
     context_window: int | None = Field(default=None, ge=2048, le=131072)
+    # Vulkan device to use (for example "Vulkan0"). Empty selects the first
+    # Vulkan device; "cpu" forces the CPU backend. Multi-GPU machines where the
+    # discrete card is not Vulkan0 can pin it here.
+    device: str = Field(default="", max_length=40)
     start_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
 
 
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
+    # Filled at runtime with the model that is actually serving this chat, so
+    # the agent can answer "which model are you?" truthfully.
+    runtime_model: str = Field(default="", max_length=200)
     # Personality lives in a dedicated, user-editable Markdown file. The inline
     # field remains as a fallback for older configs or when the file is missing.
     personality: str = ""

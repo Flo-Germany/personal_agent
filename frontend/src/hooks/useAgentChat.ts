@@ -484,6 +484,17 @@ export function useAgentChat() {
     storeConversationId(id);
   }, []);
 
+  const refreshIdentity = useCallback(async () => {
+    try {
+      const next = await fetchIdentity();
+      if (next && mountedRef.current) {
+        setIdentity(next);
+      }
+    } catch {
+      // Keep the current identity when the backend is momentarily busy.
+    }
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     const controller = new AbortController();
@@ -1411,6 +1422,7 @@ export function useAgentChat() {
       interrupt,
       clearChat,
       refresh,
+      refreshIdentity,
     }),
     [
       approve,
@@ -1424,6 +1436,7 @@ export function useAgentChat() {
       messages,
       pendingAction,
       refresh,
+      refreshIdentity,
       sendMessage,
     ],
   );

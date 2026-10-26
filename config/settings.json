@@ -74,6 +74,7 @@
     "text_model": "qwen3-0.6b-q4",
     "vision_model": "qwen3-vl-2b-q4",
     "context_window": null,
+    "device": "",
     "start_timeout_seconds": 180
   },
   "vision": {

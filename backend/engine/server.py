@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
 import subprocess
 import time
 import urllib.error
@@ -19,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 from engine.runtime import RuntimeManager
 
@@ -36,6 +37,7 @@ class ServerSpec:
     context: int
     n_gpu_layers: int
     port: int
+    device: str = ""
 
     def matches(self, other: "ServerSpec") -> bool:
         return (
@@ -45,6 +47,7 @@ class ServerSpec:
             and self.context == other.context
             and self.n_gpu_layers == other.n_gpu_layers
             and self.port == other.port
+            and self.device == other.device
         )
 
 
@@ -80,6 +83,8 @@ class LlamaServerManager:
             server = self._servers.get(role)
             if server is None:
                 return {"role": role, "running": False}
+            props = _props(server.spec.port) or {}
+            loaded = props.get("model_path")
             return {
                 "role": role,
                 "running": server.process.poll() is None,
@@ -87,6 +92,8 @@ class LlamaServerManager:
                 "port": server.spec.port,
                 "n_gpu_layers": server.spec.n_gpu_layers,
                 "context": server.spec.context,
+                "loaded_model": loaded,
+                "model_matches": _same_path(loaded, server.spec.model_path),
                 "uptime_seconds": round(time.time() - server.started_at, 1),
                 "log": str(server.log_path),
             }
@@ -110,7 +117,7 @@ class LlamaServerManager:
             and existing is not None
             and existing.process.poll() is None
             and existing.spec.matches(spec)
-            and _healthy(spec.port)
+            and _serves_model(spec.port, spec.model_path)
         ):
             return existing
 
@@ -119,6 +126,7 @@ class LlamaServerManager:
             self.stop(spec.role)
 
         server_path = self.runtime.ensure()
+        self._reclaim_port(spec.port)
         self._wait_port_free(spec.port)
         arguments = [
             str(server_path),
@@ -140,6 +148,8 @@ class LlamaServerManager:
         ]
         if spec.mmproj_path is not None:
             arguments.extend(["--mmproj", str(spec.mmproj_path)])
+        if spec.device:
+            arguments.extend(["--device", spec.device])
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = self.log_dir / f"llama-{spec.role}-{stamp}.log"
@@ -172,14 +182,25 @@ class LlamaServerManager:
                     f"llama-server exited during startup with code "
                     f"{process.returncode}. {self._log_tail(log_path)}"
                 )
-            if _healthy(spec.port):
-                logger.info("llama-server %s is ready on port %s", spec.role, spec.port)
+            props = _props(spec.port)
+            if props is not None and _same_path(
+                props.get("model_path"), spec.model_path
+            ):
+                logger.info(
+                    "llama-server %s is ready on port %s with %s",
+                    spec.role,
+                    spec.port,
+                    spec.model_path.name,
+                )
                 return running
             time.sleep(0.5)
 
+        served = _props(spec.port) or {}
         self.stop(spec.role)
         raise TimeoutError(
-            f"llama-server did not become healthy within {self.start_timeout:g}s. "
+            f"llama-server did not serve {spec.model_path.name} within "
+            f"{self.start_timeout:g}s (port {spec.port} served "
+            f"{served.get('model_path') or 'nothing'}). "
             f"{self._log_tail(log_path)}"
         )
 
@@ -218,13 +239,68 @@ class LlamaServerManager:
         return self.stop(role)
 
     # -------------------------------------------------------------- helpers
+    def _reclaim_port(self, port: int) -> None:
+        """Remove stale llama-server processes left on our port.
+
+        A dev harness or a killed backend can leave one *or more* llama-server
+        processes behind (Windows lets several bind the same port when they set
+        SO_REUSEADDR). Accepting the old server's ``/health`` made the app
+        believe the new model was loaded while the old one kept answering.
+        Every llama-server on the port is reclaimed; anything else is reported.
+        """
+        pids = _listening_pids(port)
+        if not pids:
+            return
+
+        killed: list[psutil.Process] = []
+        foreign: list[str] = []
+        for pid in pids:
+            try:
+                process = psutil.Process(pid)
+                name = (process.name() or "").casefold()
+                exe = (process.exe() or "").casefold()
+            except (psutil.Error, OSError):
+                foreign.append(f"pid {pid}")
+                continue
+
+            if name == "llama-server.exe" or exe.endswith("llama-server.exe"):
+                logger.warning(
+                    "Reclaiming orphaned llama-server pid %s on port %s",
+                    pid,
+                    port,
+                )
+                children: list[psutil.Process] = []
+                try:
+                    children = process.children(recursive=True)
+                except psutil.Error:
+                    children = []
+                for child in children:
+                    try:
+                        child.kill()
+                    except psutil.Error:
+                        pass
+                try:
+                    process.kill()
+                except psutil.Error:
+                    pass
+                killed.extend([process, *children])
+            else:
+                foreign.append(f"{name or exe} (pid {pid})")
+
+        if foreign:
+            raise RuntimeError(
+                f"Port {port} is used by {', '.join(foreign)}. Close it, or "
+                "change the engine port settings."
+            )
+        if killed:
+            psutil.wait_procs(killed, timeout=10)
+        self._wait_port_free(port)
+
     def _wait_port_free(self, port: int, timeout: float = 15.0) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                probe.settimeout(0.25)
-                if probe.connect_ex(("127.0.0.1", port)) != 0:
-                    return
+            if not _listening_pids(port):
+                return
             time.sleep(0.25)
 
     @staticmethod
@@ -237,17 +313,49 @@ class LlamaServerManager:
 
 
 def _healthy(port: int, timeout: float = 1.5) -> bool:
+    return _props(port, timeout=timeout) is not None
+
+
+def _props(port: int, timeout: float = 1.5) -> dict[str, Any] | None:
+    """Return llama-server's /props (loaded model, context) or None."""
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/health", timeout=timeout
+            f"http://127.0.0.1:{port}/props", timeout=timeout
         ) as response:
-            body = response.read(4096)
             if response.status != 200:
-                return False
-            try:
-                data = json.loads(body or b"{}")
-            except json.JSONDecodeError:
-                return True
-            return str(data.get("status", "ok")).lower() in {"ok", "ready"}
-    except (urllib.error.URLError, OSError, TimeoutError):
+                return None
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+    except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def _serves_model(port: int, model_path: Path) -> bool:
+    props = _props(port)
+    return bool(props) and _same_path(props.get("model_path"), model_path)
+
+
+def _same_path(left: Any, right: Any) -> bool:
+    if not left or not right:
         return False
+    try:
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+            os.path.abspath(str(right))
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _listening_pids(port: int) -> list[int]:
+    pids: set[int] = set()
+    try:
+        for connection in psutil.net_connections(kind="inet"):
+            if (
+                connection.status == psutil.CONN_LISTEN
+                and connection.laddr
+                and connection.laddr.port == port
+                and connection.pid
+            ):
+                pids.add(int(connection.pid))
+    except (psutil.Error, OSError):
+        return []
+    return sorted(pids)

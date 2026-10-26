@@ -582,3 +582,96 @@ def test_engine_type_switches_at_runtime(tmp_path: Path) -> None:
         denied = client.post("/engine/type", json={"type": "llamacpp"})
         assert denied.status_code == 400
         assert "runtime" in denied.json()["detail"].lower()
+
+
+def test_model_label_names_the_loaded_hardware(tmp_path: Path) -> None:
+    service = EngineService(
+        EngineSettings(type="llamacpp", text_model="qwen3-8b-q4"),
+        tmp_path / "engine",
+        config_path=tmp_path / "settings.json",
+    )
+    service.hardware = HardwareProfile(
+        gpu_name="AMD Radeon RX 9070 XT",
+        vram_bytes=17_095_983_104,
+    )
+    service.servers = SimpleNamespace(  # type: ignore[assignment]
+        status=lambda role: {"role": role, "running": True, "n_gpu_layers": 36},
+    )
+    service._state["active"]["text"] = "qwen3-8b-q4"
+
+    label = service.model_label("text")
+
+    assert "Qwen3 8B" in label
+    assert "36 GPU layers" in label
+    assert "AMD Radeon RX 9070 XT" in label
+
+
+def test_prompt_states_the_runtime_model_and_user_rule() -> None:
+    from agent.prompt import build_system_prompt
+
+    settings = Settings(
+        agent_name="Compa",
+        personality="",
+        system_prompt="",
+        personality_file=Path("missing-personality.md"),
+        runtime_model="Qwen3 8B (Q4_K_M) · llama.cpp · 36 GPU layers",
+    )
+
+    prompt = build_system_prompt(settings, knowledge="")
+
+    assert "Qwen3 8B (Q4_K_M)" in prompt
+    assert "never claim a different model" in prompt
+    assert "what you know about the user" in prompt
+    assert "Never answer that question by describing yourself" in prompt
+
+
+def test_server_uses_the_configured_vulkan_device(tmp_path: Path, monkeypatch) -> None:
+    from engine import server as server_module
+
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"x")
+    runtime = SimpleNamespace(
+        ensure=lambda: tmp_path / "llama-server.exe",
+        directory=tmp_path,
+    )
+    manager = server_module.LlamaServerManager(
+        runtime,  # type: ignore[arg-type]
+        tmp_path / "logs",
+        ports={"text": 8123},
+        start_timeout=1.0,
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self, args: list[str], **_: Any) -> None:
+            captured["args"] = args
+
+        def poll(self) -> None:
+            return None
+
+    monkeypatch.setattr(server_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(manager, "_reclaim_port", lambda port: None)
+    monkeypatch.setattr(manager, "_wait_port_free", lambda port: None)
+    monkeypatch.setattr(
+        server_module,
+        "_props",
+        lambda port, timeout=1.5: {"model_path": str(model)},
+    )
+
+    spec = server_module.ServerSpec(
+        role="text",
+        model_id="qwen3-8b-q4",
+        model_path=model,
+        mmproj_path=None,
+        context=4096,
+        n_gpu_layers=36,
+        port=8123,
+        device="Vulkan0",
+    )
+    manager.ensure(spec)
+
+    args = captured["args"]
+    assert "--device" in args
+    assert args[args.index("--device") + 1] == "Vulkan0"

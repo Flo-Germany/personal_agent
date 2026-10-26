@@ -85,6 +85,24 @@ class EngineService:
     def active_id(self, task: str) -> str:
         return str(self._state["active"].get(task) or "")
 
+    def model_label(self, task: str = "text", *, ollama_model: str = "") -> str:
+        """A human label for the model that is actually serving the task."""
+        if self.settings.type != "llamacpp":
+            return f"Ollama · {ollama_model}".strip(" ·")
+        model_id = self.active_id(task)
+        entry = next((item for item in CATALOG if item.id == model_id), None)
+        if entry is None:
+            return model_id or "no model"
+        server = self.servers.status(task)
+        layers = server.get("n_gpu_layers")
+        if isinstance(layers, int) and layers > 0:
+            hardware = f"{layers} GPU layers"
+            if self.hardware.gpu_name:
+                hardware += f" on {self.hardware.gpu_name}"
+        else:
+            hardware = "CPU"
+        return f"{entry.name} ({entry.quantization}) · llama.cpp · {hardware}"
+
     def set_active(self, task: str, model_id: str) -> None:
         self._state["active"][task] = model_id
         self._save_state()
@@ -248,6 +266,15 @@ class EngineService:
             return int(self.settings.context_window)
         return entry.context
 
+    def _device(self) -> str:
+        """Vulkan device for llama-server; empty means CPU/auto."""
+        configured = (self.settings.device or "").strip()
+        if configured.casefold() == "cpu":
+            return ""
+        if configured:
+            return configured
+        return "Vulkan0" if self.hardware.vulkan else ""
+
     # -------------------------------------------------------------- runtime
     def runtime_status(self) -> dict[str, Any]:
         return self.runtime.status().as_dict()
@@ -345,6 +372,7 @@ class EngineService:
                 context=context,
                 n_gpu_layers=plan.n_gpu_layers,
                 port=self.servers.port_for(task),
+                device=self._device(),
             )
             running = self.servers.ensure(spec, force=True)
             return {
@@ -389,6 +417,7 @@ class EngineService:
                 context=context,
                 n_gpu_layers=plan.n_gpu_layers,
                 port=self.servers.port_for("text"),
+                device=self._device(),
             )
             running = self.servers.ensure(spec)
             client = LlamaServerClient(
@@ -423,6 +452,7 @@ class EngineService:
             context=context,
             n_gpu_layers=plan.n_gpu_layers,
             port=self.servers.port_for("vision"),
+            device=self._device(),
         )
         self.servers.ensure(spec)
         return self.servers.base_url("vision")

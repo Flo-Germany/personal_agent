@@ -1472,6 +1472,7 @@ with one setting:
   "vram_override_gb": null,      // override the detected budget
   "vram_reserve_gb": 1.5,        // desktop/driver headroom
   "context_window": null,        // null = model catalog value
+  "device": "",                 // "Vulkan0", another device, or "cpu"
   "start_timeout_seconds": 180
 }
 ```
@@ -1494,10 +1495,21 @@ with one setting:
   kills the old process tree first (a hard VRAM flush; the driver reclaims the
   allocation on exit), waits for the port, then starts the new weights. The
   text role stays warm between turns; the vision role is stopped after use.
+  A stale `llama-server` left by a crashed app is reclaimed, and the new server
+  must answer `/props` with the intended model file before it is accepted, so
+  "the old model is still answering" cannot happen silently.
+- Ollama is asked to unload its chat model (`keep_alive: 0`) whenever the native
+  engine starts or swaps, and llama.cpp is pinned to the first Vulkan device
+  (`--device Vulkan0`) so a second GPU never splits the model. Set
+  `engine.device` to pin another device (`cpu` forces the CPU backend).
 - `backend/engine/client.py` speaks llama-server's OpenAI-compatible API and
   translates streaming deltas (content, `reasoning_content`, tool calls,
   usage/timings) into the chunks the agent loop already consumes. Tool calling
   works through `--jinja` and the selected model's template.
+- The agent knows what is serving it: the runtime model label ("Qwen3 8B
+  (Q4_K_M) · llama.cpp · 36 GPU layers on …") is part of the system prompt, the
+  `/identity` response, the metrics event, and the header. Asking "which model
+  are you running?" answers with the loaded model instead of a guess.
 
 ### Model Manager
 
@@ -1560,6 +1572,10 @@ verified, 28/28 layers on the RX 9070 XT, first answer in 0.57 s, and swaps in
   `POST /engine/type`; the choice is written to the active settings file and the
   chat client is rebound immediately. Switching to llama.cpp requires the
   runtime plus an installed text model.
+- The agent answers "what do you know about me?" from the knowledge base and
+  the conversation, says when it knows nothing about the user yet, and does not
+  replace that answer with a self-description. The knowledge base stays empty
+  until the user shares facts (or learning extracts them).
 - Ollama remains the default until a full GUI pass on the native engine. Selecting
   Ollama keeps the old vision adapter as a fallback; selecting llama.cpp never
   silently falls back to Ollama vision, so failures are visible.

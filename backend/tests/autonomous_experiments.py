@@ -408,6 +408,109 @@ def verify_folders_de(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
     return checks
 
 
+def verify_model_identity(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
+    reply = turn.final_text()
+    lowered = reply.casefold()
+    label = str((turn.metrics_final or {}).get("model") or "").casefold()
+    family = "qwen3" if "qwen3" in label else ""
+    engine = (
+        "llama.cpp"
+        if "llama.cpp" in label
+        else ("ollama" if "ollama" in label else "")
+    )
+    checks = [
+        check("answer_present", "accuracy", bool(reply.strip()), reply[:200]),
+        check(
+            "names_model_family",
+            "accuracy",
+            bool(family) and family in lowered,
+            f"expected {family or 'a model family'} in the reply",
+        ),
+        check(
+            "names_engine",
+            "accuracy",
+            bool(engine) and engine in lowered,
+            f"expected {engine or 'an engine'} in the reply",
+        ),
+    ]
+    if "8b" in label:
+        checks.append(
+            check(
+                "does_not_claim_the_small_model",
+                "accuracy",
+                "0.6b" not in lowered,
+                "the reply must describe the model that is actually loaded",
+            )
+        )
+    return checks
+
+
+def verify_user_knowledge_empty(
+    ctx: ExperimentContext, turn: TurnResult
+) -> list[Check]:
+    reply = turn.final_text()
+    lowered = reply.casefold()
+    admits = any(
+        phrase in lowered
+        for phrase in (
+            "don't know",
+            "do not know",
+            "nothing",
+            "no information",
+            "not know",
+            "noch nichts",
+            "weiß nichts",
+        )
+    )
+    self_centered = any(
+        phrase in lowered
+        for phrase in (
+            "my personality",
+            "i am an ai",
+            "as an ai",
+            "my name is compa",
+            "my capabilities",
+        )
+    )
+    about_user = "you" in lowered or "dein" in lowered or "dich" in lowered
+    return [
+        check(
+            "does_not_describe_itself",
+            "accuracy",
+            not self_centered,
+            "the answer must be about the user, not the assistant",
+        ),
+        check(
+            "answers_about_the_user",
+            "accuracy",
+            about_user or admits,
+            "mention the user or state that nothing is known",
+        ),
+        check(
+            "admits_or_asks",
+            "accuracy",
+            admits or "?" in reply,
+            "say what is unknown or ask one short question",
+        ),
+    ]
+
+
+def verify_user_knowledge_recall(
+    ctx: ExperimentContext, turn: TurnResult
+) -> list[Check]:
+    lowered = turn.final_text().casefold()
+    return [
+        check("uses_the_name", "accuracy", "flo" in lowered, "Flo"),
+        check("uses_the_interest", "accuracy", "cycl" in lowered, "cycling"),
+        check(
+            "answers_about_the_user",
+            "accuracy",
+            "you" in lowered or "your" in lowered or "dein" in lowered,
+            "the answer must describe the user",
+        ),
+    ]
+
+
 def verify_find_folder(ctx: ExperimentContext, turn: TurnResult) -> list[Check]:
     target = ctx.path("Projects", "Archive 2026")
     expected = str(target).replace("/", "\\").casefold()
@@ -716,6 +819,52 @@ def build_experiments(*, include_gui: bool = False) -> list[Experiment]:
             forbidden_tools=GUI_TOOLS,
             tags=("robustness",),
         ),
+        Experiment(
+            id="self_model_identity",
+            title="Agent states the model that is actually serving",
+            category="edge",
+            prompt_template=(
+                "Which model and engine are you running on right now? Name the "
+                "model, the engine, and how many layers run on the GPU, in one "
+                "sentence."
+            ),
+            verifier=verify_model_identity,
+            timeout=120,
+            max_tools=2,
+            mutable=False,
+            forbidden_tools=GUI_TOOLS,
+            tags=("identity", "engine"),
+        ),
+        Experiment(
+            id="self_user_knowledge_empty",
+            title="Unknown user profile is admitted, not replaced with self-talk",
+            category="edge",
+            prompt_template=(
+                "What do you know about me? If you don't know anything yet, say "
+                "so and ask me one short question."
+            ),
+            verifier=verify_user_knowledge_empty,
+            timeout=120,
+            max_tools=2,
+            mutable=False,
+            forbidden_tools=GUI_TOOLS,
+            tags=("identity", "knowledge"),
+        ),
+        Experiment(
+            id="self_user_knowledge_recall",
+            title="Facts the user just shared are repeated back",
+            category="edge",
+            prompt_template=(
+                "My name is Flo and I like cycling and building local AI "
+                "agents. What do you know about me?"
+            ),
+            verifier=verify_user_knowledge_recall,
+            timeout=120,
+            max_tools=2,
+            mutable=False,
+            forbidden_tools=GUI_TOOLS,
+            tags=("identity", "knowledge"),
+        ),
     ]
 
     if include_gui:
@@ -864,9 +1013,20 @@ def preflight_checks(
         )
 
     if health:
+        engine_type = str(config.get("engine") or "ollama")
+        runtime_model = str(config.get("runtime_model") or "")
         model = str(config.get("model") or (identity or {}).get("model") or "")
         thinking = config.get("thinking")
-        if model and thinking is not None:
+        if runtime_model:
+            checks.append(
+                check(
+                    "runtime_model",
+                    "info",
+                    True,
+                    runtime_model,
+                )
+            )
+        if model and thinking is not None and engine_type != "llamacpp":
             checks.append(
                 check(
                     "thinking_mode",
@@ -878,30 +1038,35 @@ def preflight_checks(
         ollama_url = str(
             config.get("ollama_base_url") or "http://127.0.0.1:11434/v1"
         )
-        if needs_model and model:
-            status = ollama_status(ollama_url)
-            loaded = bool(status and status.get("models"))
-            if not loaded:
-                ok, detail = warmup_ollama(
-                    ollama_url,
-                    model,
-                    num_ctx=int(config.get("context_window") or 16384),
-                    timeout=240.0,
-                )
-                checks.append(
-                    check("ollama_warmup", "performance", ok, detail)
-                )
-        for item in ollama_checks(ollama_url):
-            if item.name == "ollama_gpu_offload" and (allow_cpu or not needs_model):
-                item.dimension = "info"
-                item.detail += (
-                    " (allowed by --allow-cpu)"
-                    if allow_cpu
-                    else " (not required by the selected static checks)"
-                )
-            if item.name == "ollama_reachable" and not needs_model:
-                item.dimension = "info"
-            checks.append(item)
+        # The native engine owns the GPU; warming or checking Ollama here would
+        # reload its model into VRAM and make the next run slow and misleading.
+        if engine_type != "llamacpp":
+            if needs_model and model:
+                status = ollama_status(ollama_url)
+                loaded = bool(status and status.get("models"))
+                if not loaded:
+                    ok, detail = warmup_ollama(
+                        ollama_url,
+                        model,
+                        num_ctx=int(config.get("context_window") or 16384),
+                        timeout=240.0,
+                    )
+                    checks.append(
+                        check("ollama_warmup", "performance", ok, detail)
+                    )
+            for item in ollama_checks(ollama_url):
+                if item.name == "ollama_gpu_offload" and (
+                    allow_cpu or not needs_model
+                ):
+                    item.dimension = "info"
+                    item.detail += (
+                        " (allowed by --allow-cpu)"
+                        if allow_cpu
+                        else " (not required by the selected static checks)"
+                    )
+                if item.name == "ollama_reachable" and not needs_model:
+                    item.dimension = "info"
+                checks.append(item)
 
     if not client.base_url.endswith(":8000"):
         try:

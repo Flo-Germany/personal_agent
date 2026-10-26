@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import threading
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -30,6 +32,39 @@ from tools.executor import ToolExecutor
 from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
+
+
+def _unload_ollama(settings: Settings) -> None:
+    """Ask Ollama to unload its chat model so llama.cpp gets the VRAM.
+
+    Both engines can be installed, and an Ollama runner holding 8.4 GB turns an
+    8B Vulkan model into a slow partially-offloaded one. Unloading is best
+    effort: a missing Ollama must never block the native engine.
+    """
+    if settings.engine.type != "llamacpp":
+        return
+    base = settings.ollama.base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    payload = json.dumps(
+        {
+            "model": settings.ollama.model,
+            "messages": [],
+            "keep_alive": 0,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/api/chat",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            response.read()
+        logger.info("Unloaded Ollama model %s to free VRAM", settings.ollama.model)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        logger.debug("Could not unload Ollama: %s", exc)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,6 +199,7 @@ def create_app(
     if chat_service is None:
         engine_client = None
         if settings.engine.type == "llamacpp":
+            _unload_ollama(settings)
             try:
                 engine_client = engine.text_client()
             except Exception as exc:  # noqa: BLE001 - fall back, never brick chat
@@ -171,6 +207,11 @@ def create_app(
                     "llama.cpp engine unavailable (%s); falling back to Ollama",
                     exc,
                 )
+        settings.runtime_model = (
+            engine.model_label("text")
+            if engine_client is not None
+            else f"Ollama · {settings.ollama.model}"
+        )
         chat_service = ChatService(
             settings,
             store,
@@ -288,9 +329,7 @@ def create_app(
     async def identity() -> IdentityResponse:
         """Expose the configured assistant identity to the UI."""
         personality = await run_in_threadpool(load_personality, settings)
-        model = settings.ollama.model
-        if settings.engine.type == "llamacpp":
-            model = engine.active_id("text") or model
+        model = settings.runtime_model or settings.ollama.model
         return IdentityResponse(
             name=settings.agent_name,
             personality=personality,
@@ -314,6 +353,7 @@ def create_app(
             "engine_text_model": engine.active_id("text"),
             "engine_vision_model": engine.active_id("vision"),
             "engine_vram_gb": engine.hardware.vram_gb,
+            "runtime_model": settings.runtime_model,
             "data_root": str(DATA_ROOT),
             "log_level": logging.getLevelName(logging.getLogger().level),
         }
@@ -381,11 +421,17 @@ def create_app(
         if payload.task == "text" and hasattr(chat_service, "set_client"):
             client = None
             if settings.engine.type == "llamacpp":
+                _unload_ollama(settings)
                 try:
                     client = await run_in_threadpool(engine.text_client)
                 except Exception as exc:  # noqa: BLE001 - keep chat usable
                     logger.warning("Could not bind the llama.cpp client: %s", exc)
             chat_service.set_client(client or ollama_client)
+            settings.runtime_model = (
+                engine.model_label("text")
+                if client is not None
+                else f"Ollama · {settings.ollama.model}"
+            )
         return result
 
     @app.delete("/models/{model_id}")
@@ -417,11 +463,17 @@ def create_app(
         if hasattr(chat_service, "set_client"):
             client = None
             if payload.type == "llamacpp":
+                _unload_ollama(settings)
                 try:
                     client = await run_in_threadpool(engine.text_client)
                 except Exception as exc:  # noqa: BLE001 - keep chat usable
                     logger.warning("Could not bind the llama.cpp client: %s", exc)
             chat_service.set_client(client or ollama_client)
+            settings.runtime_model = (
+                engine.model_label("text")
+                if client is not None
+                else f"Ollama · {settings.ollama.model}"
+            )
         return result
 
     @app.get("/engine/runtime/progress/{job_id}")
