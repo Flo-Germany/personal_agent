@@ -2490,7 +2490,7 @@ class ChatService:
         intentionally short: Ollama stores the common system+tools prefix even
         though the final user tokens differ from the first real message.
         """
-        if self._settings.ollama.keep_alive_seconds <= 0:
+        if self._settings.ollama.keep_alive_seconds == 0:
             return False
 
         started = time.monotonic()

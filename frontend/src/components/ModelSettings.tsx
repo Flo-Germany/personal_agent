@@ -101,11 +101,14 @@ function ProgressBar({
 type ModelSettingsProps = {
   onClose: () => void;
   onModelChanged: () => void;
+  /** Shell integration block rendered above the model sections. */
+  extra?: React.ReactNode;
 };
 
 export const ModelSettings = memo(function ModelSettings({
   onClose,
   onModelChanged,
+  extra,
 }: ModelSettingsProps) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [models, setModels] = useState<CatalogModel[]>([]);
@@ -386,7 +389,7 @@ export const ModelSettings = memo(function ModelSettings({
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.055] px-4 py-3 sm:px-5">
         <Settings2 className="size-4 text-white/45" />
-        <h2 className="text-[13px] font-medium text-white/90">Model Settings</h2>
+        <h2 className="text-[13px] font-medium text-white/90">Settings</h2>
         <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-1.5 py-px font-mono text-[10px] uppercase text-white/40">
           {status?.engine ?? "…"}
         </span>
@@ -407,6 +410,8 @@ export const ModelSettings = memo(function ModelSettings({
               {error}
             </p>
           )}
+
+          {extra}
 
           {status?.engine === "ollama" && (
             <p className="rounded-lg border border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[10.5px] leading-4 text-amber-100/70">

@@ -1,4 +1,9 @@
+//! Compa desktop shell: tray, backend lifecycle, and Phase 23 desktop hooks.
 use std::fs::OpenOptions;
+
+mod desktop;
+mod notifications;
+
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -7,7 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -58,16 +63,7 @@ impl Drop for BackendGuard {
 
 /// Show the chat window when hidden, hide it when visible.
 fn toggle_main_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-
-    if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
-    } else {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    desktop::toggle_main(app);
 }
 
 fn log_dir(app: &AppHandle) -> PathBuf {
@@ -443,8 +439,9 @@ fn ensure_backend(app: &AppHandle) -> bool {
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let toggle_item = MenuItem::with_id(app, "toggle", "Show / Hide", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&toggle_item, &settings_item, &quit_item])?;
 
     let icon = app
         .default_window_icon()
@@ -458,6 +455,10 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => toggle_main_window(app),
+            "settings" => {
+                desktop::focus_main(app);
+                let _ = app.emit("compa://ui", "settings");
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -479,12 +480,38 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            desktop::forward_args(app, &argv);
+        }))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    desktop::on_shortcut(app, event.state);
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            desktop::get_desktop_settings,
+            desktop::get_desktop_state,
+            desktop::save_desktop_settings,
+            desktop::set_palette_height,
+            desktop::set_palette_expanded,
+            desktop::hide_main,
+            desktop::show_main,
+            desktop::take_pending_analyze,
+            desktop::record_frame_stats,
+            desktop::quit_app,
+        ])
         .setup(|app| {
             create_tray(app)?;
             app.manage(BackendGuard(Mutex::new(None)));
+            app.manage(desktop::DesktopRuntime::default());
+            if let Err(error) = desktop::init(app.handle()) {
+                eprintln!("desktop integration failed: {error}");
+            }
 
             // Start Ollama and the backend without a terminal window. The
             // frontend retries /health, so the window can appear immediately.
@@ -514,6 +541,7 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
+            desktop::shutdown(app_handle);
             if let Some(guard) = app_handle.try_state::<BackendGuard>() {
                 guard.stop();
             }

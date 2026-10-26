@@ -115,9 +115,10 @@ class OllamaSettings(BaseModel):
     # Ollama unloads an idle model after this many seconds. Keeping it warm
     # avoids an 8+ second cold load and preserves the prompt cache, which is
     # by far the largest latency win. Chat and screen analysis use the same
-    # model, so there is no second model competing for VRAM. Set 0 to restore
-    # immediate unloading after every request.
-    keep_alive_seconds: int = Field(default=1800, ge=0, le=86_400)
+    # model, so there is no second model competing for VRAM.
+    # -1 = stay resident until the app quits (instant summon from the tray),
+    # 0 = unload after every request, >0 = idle timeout in seconds.
+    keep_alive_seconds: int = Field(default=-1, ge=-1, le=86_400)
     # Preload the model and the stable prompt prefix when the backend starts.
     # The first real message then only evaluates its new user text.
     warmup_on_startup: bool = False

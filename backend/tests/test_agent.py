@@ -231,7 +231,8 @@ def test_quantization_warning_flags_large_models() -> None:
     warning = OllamaSettings(model="some-model:q8_0").quantization_warning()
     assert warning is not None
     assert "q4_K_M" in warning
-    assert OllamaSettings().keep_alive_seconds == 1800
+    assert OllamaSettings().keep_alive_seconds == -1
+    assert OllamaSettings(keep_alive_seconds=0).keep_alive_seconds == 0
     assert OllamaSettings().warmup_on_startup is False
 
 

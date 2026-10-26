@@ -567,3 +567,132 @@ a:focus-visible {
   color: rgba(255, 255, 255, 0.82);
   background: rgba(255, 255, 255, 0.05);
 }
+
+/* ------------------------------------------------------------------ */
+/* Modern palette (Raycast-style, QD-OLED + Mica)                      */
+/* ------------------------------------------------------------------ */
+
+.palette-root {
+  /* Opaque surface used by the expanded sheet and code blocks. */
+  --compa-oled: #000000;
+  /* Alpha veil for the Mica layer: keeps OLED black deep, lets the
+     desktop bleed through softly at the edges and behind the glass. */
+  --compa-veil: rgba(0, 0, 0, 0.88);
+  --compa-line: rgba(255, 255, 255, 0.075);
+}
+
+.palette-card {
+  border-radius: 18px;
+  border: 1px solid var(--compa-line);
+  background-color: rgba(0, 0, 0, 0.88);
+  box-shadow:
+    0 28px 80px -34px rgba(0, 0, 0, 0.96),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+/* Pure #000000 for the strict OLED backdrop (no Mica layer). */
+.palette-root[data-backdrop="solid"] .palette-card {
+  background-color: var(--compa-oled);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Mica keeps the native blur; the veil is the only thing in front of it. */
+.palette-root[data-backdrop="mica"] .palette-card {
+  backdrop-filter: saturate(115%);
+}
+
+.palette-root[data-backdrop="solid"] ::selection {
+  background: rgba(167, 139, 250, 0.28);
+}
+
+/* Pulsing Set-of-Mark glow: colored frame around the whole palette. */
+.palette-glow {
+  position: absolute;
+  inset: -1px;
+  z-index: 3;
+  border-radius: 19px;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 1px rgba(167, 139, 250, 0.5),
+    0 0 26px 2px rgba(167, 139, 250, 0.22),
+    0 0 48px 10px rgba(52, 211, 153, 0.1);
+  will-change: opacity;
+}
+
+.palette-glow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    0 0 0 1px rgba(216, 180, 254, 0.7),
+    0 0 34px 5px rgba(139, 92, 246, 0.34);
+  animation: compa-glow-pulse 1.9s ease-in-out infinite;
+}
+
+@keyframes compa-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.palette-caret {
+  display: inline-block;
+  width: 6px;
+  height: 13px;
+  margin-left: 1px;
+  vertical-align: -2px;
+  border-radius: 1px;
+  background: rgba(216, 180, 254, 0.85);
+  animation: compa-caret 1s steps(2, start) infinite;
+}
+
+@keyframes compa-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.palette-markdown {
+  font-size: 13px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+
+.palette-markdown > :first-child {
+  margin-top: 0;
+}
+
+.palette-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.palette-markdown pre {
+  background: #000 !important;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+
+.palette-markdown code {
+  font-size: 11.5px;
+}
+
+/* Browser preview: no OS Mica behind the window, use a soft desktop stand-in. */
+html[data-environment="browser"] .palette-root[data-backdrop="mica"] .palette-card {
+  background-color: rgba(0, 0, 0, 0.72);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .palette-glow::after,
+  .palette-caret {
+    animation: none;
+  }
+}

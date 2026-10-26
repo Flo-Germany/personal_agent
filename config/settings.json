@@ -12,7 +12,7 @@
     "timeout_seconds": 120,
     "temperature": 0.5,
     "max_retries": 1,
-    "keep_alive_seconds": 1800,
+    "keep_alive_seconds": -1,
     "warmup_on_startup": true,
     "thinking": "auto",
     "thinking_min_chars": 160,

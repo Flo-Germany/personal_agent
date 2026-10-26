@@ -136,7 +136,7 @@ startup, so restart uvicorn after changing it.
     "timeout_seconds": 120,
     "temperature": 0.5,
     "max_retries": 1,
-    "keep_alive_seconds": 1800,
+    "keep_alive_seconds": -1,
     "warmup_on_startup": true,
     "thinking": "auto",
     "thinking_min_chars": 160,
@@ -216,12 +216,14 @@ message for Hermes models, `"system"` always uses the system role, and `"user"`
 always folds it.
 
 `ollama.keep_alive_seconds` is sent as Ollama's `keep_alive` on every chat and
-vision request. The default is `1800` (30 minutes): the model stays in VRAM
-while the app is in use, avoiding an 8+ second cold load on every message. Chat
-and screen analysis use the same `qwen3-vl` model, so keeping it loaded does not
-make two different models compete for VRAM. Set `0` if you want strict
-immediate unloading (every request then pays the load and prefill cost again).
-For interactive use, leave it above zero: screen analysis also relies on the
+vision request. The default is `-1`: the model stays in VRAM until the app
+quits, so summoning Compa from the tray or the global shortcut never pays the
+8+ second cold load. Chat and screen analysis use the same `qwen3-vl` model, so
+keeping it loaded does not make two different models compete for VRAM. Set `0`
+for strict immediate unloading (every request then pays the load and prefill
+cost again), or a positive number of seconds for an idle timeout. The native
+llama.cpp engine ignores this value: its server stays resident by design.
+For interactive use, leave it at `-1`: screen analysis also relies on the
 loaded runner and on Ollama's prompt cache surviving between turns.
 
 `ollama.warmup_on_startup` (enabled in `config/settings.json`) preloads the model
@@ -1205,7 +1207,10 @@ the path of a packaged backend executable to override it.
 
 The app starts hidden in the system tray. Click the tray icon to show or hide the
 chat window; right-click it for **Show / Hide** and **Quit**. Closing the window
-hides it instead of quitting.
+hides it instead of quitting. `Ctrl + Shift + Space` summons it from anywhere;
+remap it in **Settings → Windows integration**. See
+[Phase 23](#phase-23-windows-integration-and-the-modern-palette) for the modern
+palette, the Explorer verb, and the notification listener.
 
 The window is frameless and transparent: the header is a Tauri drag region, and
 the **Hide to tray** button in the top-right calls `getCurrentWindow().hide()`.
@@ -1581,6 +1586,49 @@ verified, 28/28 layers on the RX 9070 XT, first answer in 0.57 s, and swaps in
   silently falls back to Ollama vision, so failures are visible.
 - Re-run `tests/live_real_apps.py` (real Outlook/Chrome/Explorer) on the native
   engine before removing the Ollama dependency from the shipped build.
+
+## Phase 23: Windows integration and the modern palette
+
+Compa now runs as a tray daemon with a system-wide summon key, an Explorer
+verb, an opt-in toast listener, and a second shell mode for large OLED panels.
+Full details, the state-file contract and the automation surface are in
+[docs/desktop-integration.md](docs/desktop-integration.md).
+
+**Shortcut and daemon.** `Ctrl + Shift + Space` summons the window instantly; it
+is remappable in **Settings → Windows integration**, and a chord that Windows
+refuses is rejected with the old key restored. The LLM stays resident
+(`ollama.keep_alive_seconds: -1`, or the always-on llama.cpp server), so a summon
+never pays a model load. Closing the window keeps the app in the tray; quitting
+unregisters the hook.
+
+**Explorer.** **Analyze with Compa** is added to file and folder context menus
+via `HKCU\Software\Classes\*\shell\Compa` (and `Directory\shell\Compa`), calling
+`Personal Agent.exe --analyze "%1"`. The path is forwarded to the running
+instance through the single-instance plugin and starts an analysis turn.
+
+**Smart notifications.** An optional WinRT `UserNotificationListener` polls new
+toasts every 10 s and emits `compa://notification`. The toggle is strict:
+disabling joins the thread, releases the WinRT objects, and returns to the idle
+CPU baseline. Windows may deny toast access to unpackaged apps; the panel shows
+the exact status instead of retrying.
+
+**Dual-mode UI.** Settings switches between **Classic** (the previous 440×680
+chat window) and **Modern**, a frameless Raycast-style palette: 720 px wide,
+136 px collapsed, growing with content while the agent streams, `#000000` for
+strict OLED black or a 12 % veil over native Windows 11 Mica, no raw tool logs
+(animated dots and a single verb instead), and a pulsing violet frame while
+screen analysis runs.
+
+**QA matrix.** `scripts/qa_phase23.ps1` drives the shell through the same
+`--qa` command path the UI uses and checks shortcut ownership and conflict
+restore, hook unregistration on exit, notification CPU/thread baseline, Mica via
+`DWMWA_SYSTEMBACKDROP_TYPE`, the OLED/frameless CSS contract, and frame pacing
+during a synthetic 3.4 s token stream. It restores the original settings and
+writes `build/phase23-qa.json`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\qa_phase23.ps1
+```
 
 ## Known limitation
 
