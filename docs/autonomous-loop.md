@@ -86,7 +86,9 @@ reports accuracy, performance, and UX separately, plus the overall average.
 UI/UX is deliberately split into machine-checkable evidence and artifacts:
 
 1. the SSE event contract (ordering, compactness, streaming);
-2. a static source contract for the compact status component;
+2. a static source contract for the compact status component and the
+   collapsible thought-process button (`ThinkingBlock.tsx`, `assistant_thinking`,
+   `thinking_ms`);
 3. annotated Set-of-Mark screenshots (valid PNG, non-blank, elements detected)
    written by the backend and kept in the run folder for visual review.
 

@@ -45,8 +45,20 @@ export function metricsDetails(metrics: TokenMetrics): MetricDetail[] {
   }
   if (metrics.first_token_ms !== undefined) {
     details.push({
-      label: "First token",
+      // With a thinking model this is the first *answer* token; the reasoning
+      // phase is reported separately above.
+      label: metrics.thinking_ms !== undefined ? "First answer token" : "First token",
       value: formatDuration(metrics.first_token_ms),
+    });
+  }
+  if (metrics.thinking_ms !== undefined) {
+    const tokens =
+      metrics.thinking_tokens !== undefined && metrics.thinking_tokens > 0
+        ? ` (~${formatCount(metrics.thinking_tokens)} tok)`
+        : "";
+    details.push({
+      label: "Thinking",
+      value: `${formatDuration(metrics.thinking_ms)}${tokens}`,
     });
   }
   if (metrics.completion_tokens !== undefined) {

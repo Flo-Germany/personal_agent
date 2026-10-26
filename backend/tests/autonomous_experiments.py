@@ -731,13 +731,19 @@ def preflight_checks(
         )
 
     if health:
+        model = str(config.get("model") or (identity or {}).get("model") or "")
+        thinking = config.get("thinking")
+        if model and thinking is not None:
+            checks.append(
+                check(
+                    "thinking_mode",
+                    "info",
+                    True,
+                    f"thinking={thinking} model={model}",
+                )
+            )
         ollama_url = str(
             config.get("ollama_base_url") or "http://127.0.0.1:11434/v1"
-        )
-        model = str(
-            config.get("model")
-            or (identity or {}).get("model")
-            or ""
         )
         if needs_model and model:
             status = ollama_status(ollama_url)

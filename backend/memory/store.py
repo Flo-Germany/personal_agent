@@ -15,7 +15,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 VALID_ROLES = {"user", "assistant", "tool"}
-_EXTRA_KEYS = ("tool_calls", "tool_call_id", "name")
+# Metadata the UI can replay. ``thinking`` backs the collapsible reasoning block
+# but is never sent back to the model (see ChatService._build_messages).
+_EXTRA_KEYS = (
+    "tool_calls",
+    "tool_call_id",
+    "name",
+    "thinking",
+    "thinking_ms",
+    "thinking_tokens",
+)
 
 
 class ConversationStore:
@@ -55,8 +64,8 @@ class ConversationStore:
     ) -> None:
         """Append one message without discarding earlier ones.
 
-        Extra fields are limited to the metadata used by OpenAI tool calling:
-        ``tool_calls``, ``tool_call_id``, and ``name``.
+        Extra fields are limited to the metadata the UI needs to replay a turn
+        (tool calls and the collapsible reasoning block).
         """
         if role not in VALID_ROLES:
             raise ValueError(f"Invalid message role: {role}")

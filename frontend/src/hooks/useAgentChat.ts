@@ -62,6 +62,9 @@ async function loadSnapshot(
     id: crypto.randomUUID(),
     role: message.role,
     content: message.content,
+    thinking: message.thinking ?? undefined,
+    thinkingMs: message.thinking_ms ?? undefined,
+    thinkingTokens: message.thinking_tokens ?? undefined,
   }));
 
   if (history.diagnosis) {
@@ -153,9 +156,17 @@ export function useAgentChat() {
   const streamingMessageIdRef = useRef<string | null>(null);
   const lastStreamedIdRef = useRef<string | null>(null);
   const lastStreamedContentRef = useRef("");
+  const thinkingRef = useRef("");
+  const thinkingStartedAtRef = useRef<number | null>(null);
+  const lastThinkingFlushRef = useRef(0);
 
   const addMessage = useCallback(
-    (role: ChatRole, content: string, files?: string[]) => {
+    (
+      role: ChatRole,
+      content: string,
+      files?: string[],
+      extra?: Partial<ChatMessage>,
+    ) => {
       setMessages((current) => [
         ...current,
         {
@@ -163,6 +174,7 @@ export function useAgentChat() {
           role,
           content,
           files,
+          ...extra,
         },
       ]);
     },
@@ -170,7 +182,8 @@ export function useAgentChat() {
   );
 
   const addAssistant = useCallback(
-    (content: string) => addMessage("assistant", content),
+    (content: string, extra?: Partial<ChatMessage>) =>
+      addMessage("assistant", content, undefined, extra),
     [addMessage],
   );
 
@@ -211,6 +224,9 @@ export function useAgentChat() {
     statusStartedAtRef.current = null;
     statusFinishedAtRef.current = null;
     plannedTotalRef.current = 0;
+    thinkingRef.current = "";
+    thinkingStartedAtRef.current = null;
+    lastThinkingFlushRef.current = 0;
   }, []);
 
   const syncTaskStatus = useCallback(
@@ -655,6 +671,31 @@ export function useAgentChat() {
             addAssistant(content);
           }
         },
+        onThinking: (content) => {
+          if (!mountedRef.current) {
+            return;
+          }
+          if (thinkingStartedAtRef.current === null) {
+            thinkingStartedAtRef.current = Date.now();
+          }
+          thinkingRef.current += content;
+          // Reasoning arrives token by token; repaint the compact status row at
+          // most a few times per second. The full text is attached at the end.
+          const now = Date.now();
+          if (now - lastThinkingFlushRef.current < 120) {
+            return;
+          }
+          lastThinkingFlushRef.current = now;
+          const base = lastStatusRef.current;
+          if (!base) {
+            return;
+          }
+          updateStatus({
+            ...base,
+            thinking: thinkingRef.current,
+            thinkingStartedAt: thinkingStartedAtRef.current ?? undefined,
+          });
+        },
         onAssistantStart: () => {
           if (!mountedRef.current) {
             return;
@@ -663,6 +704,7 @@ export function useAgentChat() {
           streamingMessageIdRef.current = id;
           lastStreamedIdRef.current = id;
           lastStreamedContentRef.current = "";
+          const liveThinking = thinkingRef.current;
           setMessages((current) => [
             ...current,
             {
@@ -670,6 +712,13 @@ export function useAgentChat() {
               role: "assistant",
               content: "",
               streaming: true,
+              ...(liveThinking
+                ? {
+                    thinking: liveThinking,
+                    thinkingStreaming: true,
+                    thinkingStartedAt: thinkingStartedAtRef.current ?? undefined,
+                  }
+                : {}),
             },
           ]);
         },
@@ -704,7 +753,13 @@ export function useAgentChat() {
           setMessages((current) =>
             current.map((message) =>
               message.id === id
-                ? { ...message, content: finalContent, streaming: false }
+                ? {
+                    ...message,
+                    content: finalContent,
+                    streaming: false,
+                    // Reasoning is finished once answer text is complete.
+                    thinkingStreaming: false,
+                  }
                 : message,
             ),
           );
@@ -757,7 +812,7 @@ export function useAgentChat() {
             });
           }
         },
-        onFinal: (reply, id, streamed) => {
+        onFinal: (reply, id, streamed, thinking) => {
           if (!mountedRef.current) {
             return;
           }
@@ -777,18 +832,33 @@ export function useAgentChat() {
             (streamed === true ||
               lastStreamedContentRef.current.trim() === text.trim());
 
+          const thinkingText = thinking?.text ?? thinkingRef.current;
+          const thinkingExtra: Partial<ChatMessage> | undefined = thinkingText
+            ? {
+                thinking: thinkingText,
+                thinkingMs: thinking?.ms,
+                thinkingTokens: thinking?.tokens,
+                thinkingStreaming: false,
+              }
+            : undefined;
+
           if (text.trim()) {
             if (alreadyStreamed && streamedId) {
               // Replace the raw stream with the normalized final text.
               setMessages((current) =>
                 current.map((message) =>
                   message.id === streamedId
-                    ? { ...message, content: text, streaming: false }
+                    ? {
+                        ...message,
+                        content: text,
+                        streaming: false,
+                        ...thinkingExtra,
+                      }
                     : message,
                 ),
               );
             } else {
-              addAssistant(text);
+              addAssistant(text, thinkingExtra);
             }
           }
 

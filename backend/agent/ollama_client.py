@@ -44,14 +44,45 @@ class NativeOllamaClient:
         post_json: PostJson | None = None,
     ) -> None:
         self._endpoint = f"{_native_root(base_url)}/api/chat"
+        self._tags_endpoint = f"{_native_root(base_url)}/api/tags"
         self._timeout = timeout
         self._num_ctx = num_ctx
         self._keep_alive = keep_alive
         self._max_retries = max_retries
         self._post_json = post_json or _CONNECTION_POOL.post
+        self._thinking_support: dict[str, bool] = {}
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(create=self._create),
         )
+
+    def supports_thinking(self, model: str) -> bool:
+        """Report whether Ollama advertises the thinking capability.
+
+        Ollama rejects ``think`` for models without it, so the agent asks first
+        and caches the answer per model for the process lifetime. An
+        unreachable or slow server simply means "no thinking": the chat still
+        works.
+        """
+        if model in self._thinking_support:
+            return self._thinking_support[model]
+
+        try:
+            with urllib.request.urlopen(self._tags_endpoint, timeout=2.0) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001 - capability probe must never fail a turn
+            self._thinking_support[model] = False
+            return False
+
+        wanted = _base_model_name(model)
+        for item in data.get("models") or []:
+            name = item.get("model") or item.get("name") or ""
+            if _base_model_name(name) != wanted:
+                continue
+            supported = "thinking" in (item.get("capabilities") or [])
+            self._thinking_support[model] = supported
+            return supported
+        self._thinking_support[model] = False
+        return False
 
     def _create(self, **kwargs: Any) -> Any:
         body = json.dumps(
@@ -101,6 +132,9 @@ class NativeOllamaClient:
         }
         if kwargs.get("max_tokens"):
             payload["options"]["num_predict"] = kwargs["max_tokens"]
+        if kwargs.get("think") is not None:
+            # Native Ollama accepts true/false or a low/medium/high budget.
+            payload["think"] = kwargs["think"]
         if kwargs.get("tools"):
             payload["tools"] = kwargs["tools"]
         return payload
@@ -214,6 +248,12 @@ def _native_root(base_url: str) -> str:
     return root.rstrip("/")
 
 
+def _base_model_name(model: str) -> str:
+    """Compare ``model:tag`` names without a redundant ``:latest`` tag."""
+    name = (model or "").strip()
+    return name[: -len(":latest")] if name.endswith(":latest") else name
+
+
 def _native_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert stored (OpenAI-shaped) history into Ollama's native message form.
 
@@ -284,6 +324,7 @@ def _to_openai_shape(data: dict[str, Any]) -> Any:
             SimpleNamespace(
                 message=SimpleNamespace(
                     content=message.get("content") or "",
+                    thinking=message.get("thinking") or None,
                     tool_calls=tool_calls or None,
                 )
             )

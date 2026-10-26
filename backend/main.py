@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 from starlette.background import BackgroundTask
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
@@ -79,6 +79,18 @@ class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: str | None = None
+    thinking: str | None = None
+    thinking_ms: float | None = None
+    thinking_tokens: int | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_thinking(self, handler: Any) -> dict[str, Any]:
+        """Drop the reasoning fields when a turn did not reason."""
+        data = handler(self)
+        for key in ("thinking", "thinking_ms", "thinking_tokens"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class HistoryResponse(BaseModel):
@@ -247,6 +259,8 @@ def create_app(
         return {
             "agent_name": settings.agent_name,
             "model": settings.ollama.model,
+            "thinking": settings.ollama.thinking,
+            "thinking_min_chars": settings.ollama.thinking_min_chars,
             "ollama_base_url": settings.ollama.base_url,
             "keep_alive_seconds": settings.ollama.keep_alive_seconds,
             "context_window": settings.ollama.context_window,
@@ -370,12 +384,26 @@ def create_app(
         """Return the user-visible chat history for a conversation."""
         normalized = str(conversation_id)
         stored = await run_in_threadpool(store.load, normalized)
-        messages = [
-            message
-            for message in stored
-            if message.get("role") in {"user", "assistant"}
-            and str(message.get("content", "")).strip()
-        ]
+        messages: list[dict[str, Any]] = []
+        for message in stored:
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            if not str(message.get("content", "")).strip():
+                continue
+            item: dict[str, Any] = {
+                "role": message.get("role"),
+                "content": message.get("content", ""),
+                "created_at": message.get("created_at"),
+            }
+            # Only present when the model actually reasoned, so the payload of
+            # a normal turn is unchanged.
+            if message.get("thinking"):
+                item["thinking"] = message["thinking"]
+                if message.get("thinking_ms") is not None:
+                    item["thinking_ms"] = message["thinking_ms"]
+                if message.get("thinking_tokens") is not None:
+                    item["thinking_tokens"] = message["thinking_tokens"]
+            messages.append(item)
         # Attach the diagnosis card only to the latest turn so an older report
         # never appears after a newer, unrelated answer.
         turn_start = 0

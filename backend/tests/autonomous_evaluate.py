@@ -194,6 +194,37 @@ def audit_frontend() -> list[Check]:
             "_tool_result_event" in chat or '"type": "tool_result"' in chat,
             "the backend emits structured tool_result events",
         ),
+        check(
+            "ui_thinking_component_exists",
+            "ux",
+            bool(_read("frontend/src/components/ThinkingBlock.tsx").strip()),
+            "frontend/src/components/ThinkingBlock.tsx",
+        ),
+        check(
+            "ui_thinking_is_collapsible",
+            "ux",
+            "aria-expanded" in _read("frontend/src/components/ThinkingBlock.tsx")
+            and "expanded" in _read("frontend/src/components/ThinkingBlock.tsx"),
+            "the thought process collapses into a compact button",
+        ),
+        check(
+            "ui_thinking_rendered_for_assistant",
+            "ux",
+            "ThinkingBlock" in _read("frontend/src/components/MessageItem.tsx"),
+            "MessageItem renders the thought process above the answer",
+        ),
+        check(
+            "event_contract_thinking",
+            "accuracy",
+            '"type": "assistant_thinking"' in chat,
+            "the backend streams reasoning deltas",
+        ),
+        check(
+            "metrics_include_thinking",
+            "ux",
+            '"thinking_ms"' in chat,
+            "thinking duration is reported for analysis",
+        ),
     ]
     return checks
 

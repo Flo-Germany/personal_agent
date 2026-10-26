@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -116,6 +116,36 @@ export const ToolStatus = memo(function ToolStatus({
   const totalDuration = formatTotalDuration(status);
   const [expanded, setExpanded] = useState(hasTasks && active);
   const [simpleExpanded, setSimpleExpanded] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const thinkingRef = useRef<HTMLDivElement>(null);
+
+  // Follow the newest reasoning line while the model thinks.
+  useEffect(() => {
+    const body = thinkingRef.current;
+    if (body) {
+      body.scrollTop = body.scrollHeight;
+    }
+  }, [status.thinking]);
+
+  // A live counter makes the hidden reasoning/prompt-evaluation phase legible:
+  // the user sees how long the model is taking instead of a spinner with no
+  // sense of progress.
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
+  const liveElapsed =
+    active && status.startedAt !== undefined
+      ? Math.max(0, now - status.startedAt) / 1000
+      : null;
+  const liveDuration =
+    liveElapsed !== null
+      ? `${liveElapsed.toFixed(liveElapsed < 10 ? 1 : 0)}s`
+      : null;
 
   useEffect(() => {
     if (!hasTasks) {
@@ -147,6 +177,11 @@ export const ToolStatus = memo(function ToolStatus({
       >
         <StatusIcon state={status.state} />
         <span className="truncate">{status.label}</span>
+        {liveDuration && (
+          <span className="shrink-0 font-mono tabular-nums text-white/25">
+            {liveDuration}
+          </span>
+        )}
         {status.state === "error" && status.exitCode !== undefined && (
           <span className="shrink-0 rounded-full bg-rose-400/10 px-1.5 py-px font-mono text-[9px] text-rose-200/65">
             exit {status.exitCode}
@@ -182,6 +217,15 @@ export const ToolStatus = memo(function ToolStatus({
             row
           )}
 
+          {status.thinking && active && (
+            <div
+              ref={thinkingRef}
+              className="mt-1 max-h-28 max-w-xl overflow-y-auto rounded-lg border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/35"
+            >
+              {status.thinking}
+            </div>
+          )}
+
           {simpleExpanded && (
             <pre className="mt-1 max-h-40 max-w-xl overflow-auto rounded-xl border border-rose-300/10 bg-rose-400/[0.025] px-2.5 py-2 font-mono text-[10px] leading-4 whitespace-pre-wrap break-words text-rose-100/55">
               {status.detail}
@@ -196,7 +240,7 @@ export const ToolStatus = memo(function ToolStatus({
   const sublineParts: string[] = [];
   if (active) {
     sublineParts.push(`${completed} of ${Math.max(total, 1)} steps`);
-    sublineParts.push("live");
+    sublineParts.push(liveDuration ? `live · ${liveDuration}` : "live");
   } else {
     sublineParts.push(
       `${tasks.length} step${tasks.length === 1 ? "" : "s"}`,
@@ -253,6 +297,15 @@ export const ToolStatus = memo(function ToolStatus({
                 className="h-full rounded-full bg-gradient-to-r from-violet-300/60 via-violet-200/55 to-emerald-300/60 transition-[width] duration-500 ease-out"
                 style={{ width: `${progress}%` }}
               />
+            </div>
+          )}
+
+          {status.thinking && active && (
+            <div
+              ref={thinkingRef}
+              className="mx-2 mb-1.5 max-h-28 overflow-y-auto rounded-md border border-white/[0.04] bg-white/[0.015] px-2 py-1 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/35"
+            >
+              {status.thinking}
             </div>
           )}
 

@@ -28,14 +28,25 @@ function App() {
   } = useAgentChat();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastContentLength = messages[messages.length - 1]?.content.length ?? 0;
+  const lastMessage = messages[messages.length - 1];
+  const lastContentLength = lastMessage?.content.length ?? 0;
+  // Reasoning grows inside the status row / message while content stays empty,
+  // so it needs its own scroll trigger.
+  const lastThinkingLength =
+    lastMessage?.status?.thinking?.length ?? lastMessage?.thinking?.length ?? 0;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
       behavior: isStreaming ? "auto" : "smooth",
       block: "end",
     });
-  }, [messages.length, lastContentLength, isStreaming, pendingAction]);
+  }, [
+    messages.length,
+    lastContentLength,
+    lastThinkingLength,
+    isStreaming,
+    pendingAction,
+  ]);
 
   const isEmpty = useMemo(() => messages.length === 0, [messages.length]);
 

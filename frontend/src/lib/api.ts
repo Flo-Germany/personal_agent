@@ -146,6 +146,8 @@ function isAgentEvent(value: unknown): value is AgentEvent {
       return true;
     case "assistant_delta":
       return typeof value.content === "string";
+    case "assistant_thinking":
+      return typeof value.content === "string";
     case "assistant_end":
       return value.content === undefined || typeof value.content === "string";
     case "assistant_reset":
@@ -200,6 +202,9 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
     case "assistant_delta":
       callbacks.onAssistantDelta(event.content);
       return false;
+    case "assistant_thinking":
+      callbacks.onThinking(event.content);
+      return false;
     case "assistant_end":
       callbacks.onAssistantEnd(event.content);
       return false;
@@ -238,7 +243,11 @@ function dispatchEvent(event: AgentEvent, callbacks: StreamCallbacks): boolean {
       });
       return true;
     case "final":
-      callbacks.onFinal(event.reply, event.conversation_id, event.streamed);
+      callbacks.onFinal(event.reply, event.conversation_id, event.streamed, {
+        text: event.thinking,
+        ms: event.thinking_ms,
+        tokens: event.thinking_tokens,
+      });
       return true;
     case "error":
       callbacks.onError(event.message);

@@ -87,6 +87,7 @@ config/settings.json   Backend, Ollama, identity, memory, vision, and tool setti
 config/personality.md  Compa's editable personality and character sheet
 memory/                Knowledge base, image index, and local data (gitignored)
 scripts/build_windows.ps1  Stages the Python runtime and builds the click-to-run app
+scripts/measure_thinking.py  Measures thinking latency/throughput per model
 ```
 
 ## Prerequisites
@@ -137,6 +138,8 @@ startup, so restart uvicorn after changing it.
     "max_retries": 1,
     "keep_alive_seconds": 1800,
     "warmup_on_startup": true,
+    "thinking": "auto",
+    "thinking_min_chars": 160,
     "model_quantization": "q4_K_M",
     "context_window": 24576,
     "system_prompt_mode": "auto"
@@ -239,6 +242,17 @@ are added only when the message mentions them. This removes roughly nine schemas
 step (about 22 → 35 generated tokens/s). Switching tool lists forces Ollama to
 re-evaluate the whole prompt, so the always-on base covers the common
 chat↔GUI transitions. Set it to `false` to always send the full schema list.
+
+`ollama.thinking` controls the hidden reasoning phase of thinking-capable
+models: `"auto"` (default) thinks on turns that need a plan and skips greetings
+and one-line lookups, `"low"`/`"medium"`/`"high"` request that budget for every
+turn, and `"off"` never asks. Non-thinking tags such as
+`qwen3-vl:8b-instruct` never receive the field. `ollama.thinking_min_chars`
+(default `160`) is the length at which `"auto"` considers a request a real task.
+The reasoning is streamed to the UI, shown in a collapsible
+**Thought for 3.4 s** button above the answer, and kept with the message, but it
+is never sent back to the model. See
+[thinking and reasoning visibility](#thinking-and-reasoning-visibility).
 
 The reply language is chosen only from the latest user message, or from an
 explicit request in the current conversation. Standing language-preference lines
@@ -1274,6 +1288,8 @@ time it runs.
 
 
 
+## Local model throughput
+
 Generation speed depends far more on prompt length and GPU contention than on
 tool schemas or streaming. Measured with `qwen3-vl:8b-instruct` Q4_K_M on the
 RX 9070 XT reference machine:
@@ -1297,6 +1313,97 @@ cause of single-digit speeds; the diagnosis report detects this and names the
 competing process. Response streaming keeps the perceived latency low while the
 model generates. KV-cache quantization (`OLLAMA_KV_CACHE_TYPE=q8_0`) measured
 the same as the default f16 cache and is not enabled.
+
+## Thinking and reasoning visibility
+
+Thinking-capable tags (`qwen3-vl:8b`, `qwen3:8b`, gpt-oss) stream a hidden
+reasoning phase before the answer. Compa now treats that as a first-class part
+of the turn:
+
+- **Live:** the status row shows the reasoning text and a running timer while the
+  model thinks, so a slow first token never looks like a stuck request.
+- **After the answer:** a compact **Thought for 3.4 s** button sits above the
+  reply. Expanding it shows the reasoning; the token count is an estimate from
+  the number of streamed reasoning chunks, because Ollama reports only a
+  combined `eval_count`.
+- **Metrics:** the token footer adds a `Thinking` row (duration and estimated
+  tokens) and relabels `First token` to `First answer token`, so the reasoning
+  phase is not silently mixed into generation speed.
+- **History:** the reasoning is stored with the message and returned by
+  `/chat/history`, so the button still works when switching conversations
+  within the running backend (history itself is in-memory). It is capped at
+  20,000 characters and is **never sent back to the model**.
+
+Nothing is shown for non-thinking tags such as the default
+`qwen3-vl:8b-instruct`, because there is no reasoning to show.
+
+### Enabling it
+
+```jsonc
+"ollama": {
+  "model": "qwen3-vl:8b",   // a tag whose capabilities include "thinking"
+  "thinking": "auto",        // off | auto | low | medium | high
+  "thinking_min_chars": 160  // "auto" treats longer requests as real tasks
+}
+```
+
+`auto` thinks on requests that ask for a plan, a comparison, a calculation, or
+that are long enough to be real work, and skips greetings and one-line
+commands. The capability is read from Ollama's `/api/tags` and cached; a model
+without the capability never receives the `think` field.
+
+### What it costs (measured)
+
+`scripts/measure_thinking.py` reproduces this. From the repository root:
+
+```powershell
+backend\.venv\Scripts\python.exe scripts\measure_thinking.py --list-models
+backend\.venv\Scripts\python.exe scripts\measure_thinking.py `
+  --model qwen3-vl:8b-instruct --think none `
+  --model qwen3-vl:8b --think low --think medium
+```
+
+Measured on the RX 9070 XT reference machine with Ollama 0.40.11, one model
+loaded at a time, `num_ctx=8192`, temperature 0, and no output cap (the app does
+not set `num_predict`):
+
+| Model / thinking | Prompt | Reasoning | First answer | Total |
+| --- | --- | --- | --- | --- |
+| `8b-instruct` | arithmetic | none | 0.16 s | 0.4 s |
+| `8b-instruct` | multi-step counting | none | 0.21 s | 3.7 s |
+| `8b-instruct` | agentic plan | none | 0.22 s | 4.6 s |
+| `8b`, `think=false` | arithmetic | 5.5 s | 8.7 s | 8.8 s |
+| `8b`, `think=medium` | multi-step counting | 12.4 s | 20.9 s | 26.9 s |
+| `8b`, `think=medium` | agentic plan | 74.4 s | 74.5 s | 83.9 s |
+
+Two findings matter more than the exact numbers:
+
+1. **Reasoning is the dominant latency**, far above prompt evaluation. On hard
+   requests the hidden phase produced 1.7k-11.7k characters and took 12-74 s,
+   while the same prompts are answered by the instruct model with the first
+   token after ~0.2 s.
+2. **`think=false` and `think=low` are not a reliable off switch on this
+   build.** `qwen3-vl:8b` still emitted 600-1,100 characters of reasoning with
+   either value. With a tight `num_predict` budget that reasoning can consume
+   the whole budget and leave no answer at all. Compa therefore never sets a
+   small `num_predict`, and the reliable way to avoid paying for reasoning is to
+   point `ollama.model` at a non-thinking tag.
+
+### Getting speed without losing quality
+
+- Use `qwen3-vl:8b-instruct` for everyday chat, file, and GUI work. It answered
+  the arithmetic and counting prompts correctly and starts tens to hundreds of
+  times sooner on all three.
+- Use a thinking tag together with `"thinking": "auto"` for analysis, planning,
+  or debugging turns where a wrong answer is expensive.
+- Keep exactly one chat model warm. Two 6.5 GB models do not fit in 8.4 GB of
+  VRAM; when both were loaded during measurement, throughput collapsed and
+  requests stalled. `keep_alive_seconds` already keeps the one configured model
+  resident.
+- Do not chase speed by capping `num_predict` on a thinking model. The cap
+  truncates the reasoning, not the answer.
+- Reasoning is streamed, so the wall-clock cost is the same, but the UI shows
+  progress, elapsed time, and the reasoning itself instead of an opaque spinner.
 
 ## Known limitation
 

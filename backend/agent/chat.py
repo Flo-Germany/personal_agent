@@ -54,6 +54,9 @@ _MODEL_READ_CHARS = 12000
 # Wait for a quiet moment before extracting facts, so the learning call does
 # not compete with a rapid follow-up message.
 LEARNING_IDLE_SECONDS = 3.0
+# Reasoning text shown in a collapsible UI block and kept with the message.
+# Capped so an extreme thinking phase cannot bloat memory or an SSE frame.
+_THINKING_STORE_LIMIT = 20000
 
 _PLAN_STEP = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 _ACTION_PROMISE = re.compile(
@@ -169,6 +172,25 @@ _DIAGNOSIS_HINT = re.compile(
     r"\b(?:diagnos\w*|health|benchmark|hardware|temperature|thermal|"
     r"smart\w*|overheat\w*|slow|performance|uptime|event log|"
     r"gesundheit|leistung|langsam|temperatur|diagnose)\b",
+    re.IGNORECASE,
+)
+# Requests that benefit from a hidden reasoning phase. Kept deliberately broad
+# so that "auto" thinking never sacrifices quality to save latency.
+_THINKING_HINT = re.compile(
+    r"\b(?:why|how|explain|compare|difference|plan|steps?|debug|analyz\w*|"
+    r"analys\w*|design|optimi\w*|trade-?offs?|prove|derive|architect\w*|"
+    r"refactor|strategy|estimate|calculate|solve|reason\w*|root cause|"
+    r"warum|wieso|erklär\w*|vergleich\w*|unterschied\w*|plan\w*|"
+    r"schritt\w*|analysier\w*|entwirf\w*|optimier\w*|beweis\w*|"
+    r"berechne\w*|rechne\w*|strategie|löse|ursache)\b",
+    re.IGNORECASE,
+)
+# "auto" must not spend thinking tokens on greetings and acknowledgements.
+_SMALL_TALK = re.compile(
+    r"^\s*(?:hi|hey|hello|hallo|moin|servus|guten (?:morgen|tag|abend)|"
+    r"good (?:morning|evening)|how are you|wie geht(?:'s| es)?(?: dir)?|"
+    r"danke|thanks|thank you|ok(?:ay)?|yes|no|ja|nein|bitte|please)\b"
+    r"[!.,?\s]*$",
     re.IGNORECASE,
 )
 
@@ -660,6 +682,11 @@ class StreamOutcome(NamedTuple):
 
     completion: Any
     streamed_content: str | None
+    # Reasoning models emit a hidden thinking phase before the answer. It is
+    # shown in the UI but never sent back to the model.
+    thinking: str | None = None
+    thinking_ms: float | None = None
+    thinking_tokens: int | None = None
 
 
 class TurnCancelled(Exception):
@@ -1340,7 +1367,17 @@ class ChatService:
                 "The agent could not finish the request.",
                 status_code=502,
             )
-        self._store.append(conversation_id, "assistant", reply)
+        thinking_fields = self._thinking_fields(
+            [outcome.thinking] if outcome.thinking else [],
+            outcome.thinking_ms,
+            outcome.thinking_tokens,
+        )
+        self._store.append(
+            conversation_id,
+            "assistant",
+            reply,
+            **thinking_fields,
+        )
         self._turn_plans.pop(conversation_id, None)
         yield {
             "type": "final",
@@ -1351,6 +1388,7 @@ class ChatService:
                 and self._normalize_reply(outcome.streamed_content).strip()
                 == reply
             ),
+            **thinking_fields,
         }
 
     def _execute_tool(
@@ -1416,6 +1454,25 @@ class ChatService:
         round_index = 0
         force_summary = False
         read_repeat: dict[str, Any] = {"signature": None, "count": 0}
+        # Reasoning across the whole turn, attached to the visible answer.
+        turn_thinking: list[str] = []
+        turn_thinking_ms = 0.0
+        turn_thinking_tokens = 0
+
+        def collect_thinking(result: StreamOutcome) -> dict[str, Any]:
+            """Accumulate one round's reasoning and return the stored fields."""
+            nonlocal turn_thinking_ms, turn_thinking_tokens
+            if result.thinking:
+                turn_thinking.append(result.thinking)
+            if result.thinking_ms is not None:
+                turn_thinking_ms += result.thinking_ms
+            if result.thinking_tokens:
+                turn_thinking_tokens += result.thinking_tokens
+            return self._thinking_fields(
+                turn_thinking,
+                turn_thinking_ms or None,
+                turn_thinking_tokens or None,
+            )
 
         while True:
             self._raise_if_cancelled(conversation_id)
@@ -1482,6 +1539,8 @@ class ChatService:
                     }
                 else:
                     raise LLMError("Ollama returned an empty response.")
+
+            thinking_fields = collect_thinking(outcome)
 
             # Some Hermes/Ollama combinations emit the tool call as JSON text
             # instead of a structured tool_calls item. Execute it, but never
@@ -1722,7 +1781,12 @@ class ChatService:
                         "The model returned a malformed response. Please try again."
                     )
                 reply = content.strip()
-                self._store.append(conversation_id, "assistant", reply)
+                self._store.append(
+                    conversation_id,
+                    "assistant",
+                    reply,
+                    **thinking_fields,
+                )
                 self._turn_plans.pop(conversation_id, None)
                 yield {
                     "type": "final",
@@ -1732,6 +1796,7 @@ class ChatService:
                         streamed_content is not None
                         and self._normalize_reply(streamed_content).strip() == reply
                     ),
+                    **thinking_fields,
                 }
                 return
 
@@ -1777,9 +1842,15 @@ class ChatService:
                     summary = (
                         getattr(choices[0].message, "content", "") or ""
                     )
+                thinking_fields = collect_thinking(outcome)
                 reply = self._normalize_reply(summary).strip()
                 if reply and not self._looks_like_raw_tool_call(reply):
-                    self._store.append(conversation_id, "assistant", reply)
+                    self._store.append(
+                        conversation_id,
+                        "assistant",
+                        reply,
+                        **thinking_fields,
+                    )
                     self._turn_plans.pop(conversation_id, None)
                     yield {
                         "type": "final",
@@ -1792,6 +1863,7 @@ class ChatService:
                             ).strip()
                             == reply
                         ),
+                        **thinking_fields,
                     }
                     return
 
@@ -1904,13 +1976,19 @@ class ChatService:
                 reply = (
                     f"Which editor or program should I use to open {file_name}?"
                 )
-                self._store.append(conversation_id, "assistant", reply)
+                self._store.append(
+                    conversation_id,
+                    "assistant",
+                    reply,
+                    **thinking_fields,
+                )
                 self._turn_plans.pop(conversation_id, None)
                 yield {
                     "type": "final",
                     "conversation_id": conversation_id,
                     "reply": reply,
                     "streamed": False,
+                    **thinking_fields,
                 }
                 return
 
@@ -2284,6 +2362,8 @@ class ChatService:
         completion_tokens: int | None = None,
         tokens_per_second: float | None = None,
         first_token_ms: float | None = None,
+        thinking_ms: float | None = None,
+        thinking_tokens: int | None = None,
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "type": "metrics",
@@ -2293,6 +2373,13 @@ class ChatService:
         }
         if first_token_ms is not None:
             event["first_token_ms"] = round(first_token_ms, 1)
+        if thinking_ms is not None:
+            event["thinking_ms"] = round(thinking_ms, 1)
+            # Ollama has no separate thinking token count, so this is the number
+            # of streamed thinking chunks; close enough for a live readout and
+            # always labeled as an estimate in the UI.
+            if thinking_tokens is not None:
+                event["thinking_tokens"] = thinking_tokens
         if completion_tokens is not None:
             event["completion_tokens"] = completion_tokens
         if tokens_per_second is not None:
@@ -2333,6 +2420,57 @@ class ChatService:
             event["total_ms"] = round(float(total_ns) / 1_000_000, 1)
         return event
 
+    def _thinking_mode(self, history: list[dict[str, Any]]) -> bool | str | None:
+        """Return the value for Ollama's ``think`` field, or None to omit it.
+
+        ``off`` disables it, ``low``/``medium``/``high`` request a budget, and
+        ``auto`` thinks on turns that need a plan while skipping short,
+        conversational turns so the first visible token arrives sooner.
+        Non-thinking models never receive the field at all.
+        """
+        setting = self._settings.ollama.thinking
+        if setting == "off":
+            return False
+
+        supports = getattr(self._client, "supports_thinking", None)
+        if not callable(supports):
+            return None
+        try:
+            if not supports(self._settings.ollama.model):
+                return None
+        except Exception:  # noqa: BLE001 - a probe must never fail the turn
+            logger.debug("Thinking capability probe failed", exc_info=True)
+            return None
+
+        if setting in {"low", "medium", "high"}:
+            return setting
+        return True if self._should_think(history) else False
+
+    def _should_think(self, history: list[dict[str, Any]]) -> bool:
+        """Decide whether an auto-thinking turn is worth the latency.
+
+        Short greetings, acknowledgements, and one-line lookups go straight to
+        the answer. Anything that asks for a plan, compares options, reasons
+        about numbers, or is long enough to be a real task gets thinking.
+        """
+        request = self._last_user_message_in(history).strip()
+        if not request:
+            return False
+        if _SMALL_TALK.match(request):
+            return False
+        if len(request) >= self._settings.ollama.thinking_min_chars:
+            return True
+        if _THINKING_HINT.search(request):
+            return True
+        return request.count("?") + request.count("\n") >= 2
+
+    @staticmethod
+    def _last_user_message_in(history: list[dict[str, Any]]) -> str:
+        for message in reversed(history):
+            if message.get("role") == "user":
+                return str(message.get("content", ""))
+        return ""
+
     def _stream_completion(
         self,
         conversation_id: str,
@@ -2351,6 +2489,7 @@ class ChatService:
         )
 
         stream_chat = getattr(self._client, "stream_chat", None)
+        thinking_mode = self._thinking_mode(history)
         if stream_chat is None:
             completion = self._create_completion(
                 history,
@@ -2358,11 +2497,13 @@ class ChatService:
                 nudge_text=nudge_text,
                 tool_choice=tool_choice,
                 include_tools=include_tools,
+                think=thinking_mode,
             )
             self._raise_if_cancelled(conversation_id)
             choices = getattr(completion, "choices", None) or []
             message = choices[0].message if choices else None
             content = (getattr(message, "content", "") or "") if message else ""
+            thinking = (getattr(message, "thinking", "") or "") if message else ""
             if content.strip():
                 yield {
                     "type": "status",
@@ -2384,13 +2525,22 @@ class ChatService:
                     "conversation_id": conversation_id,
                     "content": content,
                 }
-            return StreamOutcome(completion, content or None)
+            return StreamOutcome(
+                completion,
+                content or None,
+                thinking=thinking or None,
+            )
 
         content_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[Any] = []
         started = False
         token_count = 0
+        thinking_tokens = 0
         first_token_at: float | None = None
+        first_thinking_at: float | None = None
+        last_thinking_at: float | None = None
+        thinking_announced = False
         last_live_at = time.monotonic()
         metrics_data: dict[str, Any] = {}
         request_started = time.monotonic()
@@ -2401,13 +2551,36 @@ class ChatService:
             tools=self._tool_schemas(history) if include_tools else None,
             tool_choice=tool_choice,
             temperature=self._settings.ollama.temperature,
+            think=thinking_mode,
         )
 
         try:
             for chunk in chunks:
                 self._raise_if_cancelled(conversation_id)
                 message = chunk.get("message") or {}
+                thinking_delta = message.get("thinking") or ""
                 delta = message.get("content") or ""
+
+                if thinking_delta:
+                    now = time.monotonic()
+                    if first_thinking_at is None:
+                        first_thinking_at = now
+                    last_thinking_at = now
+                    thinking_tokens += 1
+                    thinking_parts.append(thinking_delta)
+                    if not thinking_announced:
+                        thinking_announced = True
+                        yield {
+                            "type": "status",
+                            "conversation_id": conversation_id,
+                            "phase": "thinking",
+                            "message": "Thinking...",
+                        }
+                    yield {
+                        "type": "assistant_thinking",
+                        "conversation_id": conversation_id,
+                        "content": thinking_delta,
+                    }
 
                 if delta:
                     now = time.monotonic()
@@ -2497,6 +2670,13 @@ class ChatService:
                     logger.debug("Closing the Ollama stream failed", exc_info=True)
 
         full_content = "".join(content_parts)
+        full_thinking = "".join(thinking_parts).strip()
+        thinking_end = first_token_at or last_thinking_at
+        thinking_ms = (
+            (thinking_end - first_thinking_at) * 1000
+            if first_thinking_at is not None and thinking_end is not None
+            else None
+        )
         if started:
             yield {
                 "type": "assistant_end",
@@ -2513,6 +2693,8 @@ class ChatService:
                     if first_token_at is not None
                     else None
                 ),
+                thinking_ms=thinking_ms,
+                thinking_tokens=thinking_tokens or None,
             )
 
         return StreamOutcome(
@@ -2527,6 +2709,9 @@ class ChatService:
                 ]
             ),
             full_content or None,
+            thinking=full_thinking or None,
+            thinking_ms=thinking_ms,
+            thinking_tokens=thinking_tokens or None,
         )
 
     def _create_completion(
@@ -2537,6 +2722,7 @@ class ChatService:
         nudge_text: str | None = None,
         tool_choice: str = "auto",
         include_tools: bool = True,
+        think: bool | str | None = None,
     ) -> Any:
         model, messages = self._completion_messages(
             history,
@@ -2551,6 +2737,7 @@ class ChatService:
                 tools=self._tool_schemas(history) if include_tools else None,
                 tool_choice=tool_choice,
                 temperature=self._settings.ollama.temperature,
+                think=think,
             )
         except Exception as exc:  # noqa: BLE001 - translated for the API
             raise self._request_error(exc, model) from exc
@@ -2806,6 +2993,28 @@ class ChatService:
             "summary": summary,
             "result": result,
         }
+
+    @staticmethod
+    def _thinking_fields(
+        parts: list[str],
+        thinking_ms: float | None,
+        thinking_tokens: int | None,
+    ) -> dict[str, Any]:
+        """Bundle the turn's reasoning for the store, the ``final`` event, and
+        the UI. The text is capped so one long reasoning phase cannot bloat the
+        in-memory conversation or the SSE frame."""
+        text = "\n\n".join(part.strip() for part in parts if part and part.strip())
+        if len(text) > _THINKING_STORE_LIMIT:
+            text = text[:_THINKING_STORE_LIMIT].rstrip() + "\n[...]"
+
+        fields: dict[str, Any] = {}
+        if text:
+            fields["thinking"] = text
+        if thinking_ms is not None:
+            fields["thinking_ms"] = round(thinking_ms, 1)
+        if thinking_tokens:
+            fields["thinking_tokens"] = thinking_tokens
+        return fields
 
     def _last_user_message(self, conversation_id: str) -> str:
         for message in reversed(self._store.load(conversation_id)):

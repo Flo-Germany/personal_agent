@@ -121,6 +121,15 @@ class OllamaSettings(BaseModel):
     # Preload the model and the stable prompt prefix when the backend starts.
     # The first real message then only evaluates its new user text.
     warmup_on_startup: bool = False
+    # Reasoning models stream a hidden "thinking" phase before the answer.
+    # "off" never asks for it, "auto" enables it when the model advertises the
+    # capability, and "low"/"medium"/"high" request that thinking budget.
+    # Non-thinking models ignore this (the field is not sent at all).
+    thinking: Literal["off", "auto", "low", "medium", "high"] = "auto"
+    # Thinking is only worth its latency on turns that need a plan. Turns that
+    # are short, purely conversational, or a direct tool call skip it even when
+    # the model supports it. Set to 0 to think on every turn.
+    thinking_min_chars: int = Field(default=160, ge=0, le=10_000)
     # Recommended model quantization; avoid Q8/FP16 variants on limited VRAM.
     model_quantization: str = Field(default="q4_K_M", min_length=1, max_length=40)
     # Ollama defaults to a small context window unless told otherwise. The

@@ -14,6 +14,10 @@ export type TokenMetrics = {
   eval_ms?: number;
   load_ms?: number;
   total_ms?: number;
+  /** Time spent in the model's hidden reasoning phase. */
+  thinking_ms?: number;
+  /** Streamed thinking chunks; Ollama does not expose a separate count. */
+  thinking_tokens?: number;
 };
 
 export type ToolStatusState =
@@ -50,6 +54,10 @@ export type ToolStatusData = {
   exitCode?: number;
   metrics?: string;
   metricsDetail?: string;
+  /** Live reasoning text while a thinking model is reasoning. */
+  thinking?: string;
+  /** When the live reasoning started, for the elapsed counter. */
+  thinkingStartedAt?: number;
   tasks?: TaskStep[];
   plannedTotal?: number;
   startedAt?: number;
@@ -196,6 +204,14 @@ export type ChatMessage = {
   diagnosis?: DiagnosisReportData;
   metrics?: TokenMetrics;
   streaming?: boolean;
+  /** Reasoning the model emitted before the answer. */
+  thinking?: string;
+  thinkingMs?: number;
+  thinkingTokens?: number;
+  /** True while reasoning tokens are still arriving. */
+  thinkingStreaming?: boolean;
+  /** When the reasoning started, for the live counter. */
+  thinkingStartedAt?: number;
 };
 
 export type Identity = {
@@ -207,6 +223,9 @@ export type Identity = {
 export type HistoryMessage = {
   role: "user" | "assistant";
   content: string;
+  thinking?: string | null;
+  thinking_ms?: number | null;
+  thinking_tokens?: number | null;
 };
 
 export type ActionItem = {
@@ -279,6 +298,12 @@ export type AgentAssistantDeltaEvent = {
   content: string;
 };
 
+export type AgentAssistantThinkingEvent = {
+  type: "assistant_thinking";
+  conversation_id?: string;
+  content: string;
+};
+
 export type AgentAssistantEndEvent = {
   type: "assistant_end";
   conversation_id?: string;
@@ -328,6 +353,9 @@ export type AgentFinalEvent = {
   conversation_id?: string;
   reply: string;
   streamed?: boolean;
+  thinking?: string;
+  thinking_ms?: number;
+  thinking_tokens?: number;
 };
 
 export type AgentErrorEvent = {
@@ -343,6 +371,7 @@ export type AgentEvent =
   | AgentAssistantEvent
   | AgentAssistantStartEvent
   | AgentAssistantDeltaEvent
+  | AgentAssistantThinkingEvent
   | AgentAssistantEndEvent
   | AgentAssistantResetEvent
   | AgentMetricsEvent
@@ -362,6 +391,7 @@ export type StreamCallbacks = {
   ) => void;
   onAssistantStart: () => void;
   onAssistantDelta: (content: string) => void;
+  onThinking: (content: string) => void;
   onAssistantEnd: (content?: string) => void;
   onAssistantReset: () => void;
   onMetrics: (metrics: TokenMetrics) => void;
@@ -372,6 +402,7 @@ export type StreamCallbacks = {
     reply: string,
     conversationId?: string,
     streamed?: boolean,
+    thinking?: { text?: string; ms?: number; tokens?: number },
   ) => void;
   onError: (message: string) => void;
 };
