@@ -86,6 +86,7 @@ backend/             FastAPI backend
 config/settings.json   Backend, Ollama, identity, memory, vision, and tool settings
 config/personality.md  Compa's editable personality and character sheet
 memory/                Knowledge base, image index, and local data (gitignored)
+scripts/build_windows.ps1  Stages the Python runtime and builds the click-to-run app
 ```
 
 ## Prerequisites
@@ -1081,6 +1082,30 @@ backend/.venv/Scripts/python.exe backend/tests/live_real_apps.py --scenario all
 It denies Send/Delete/Format actions, isolates Chrome in a throwaway profile,
 discards Outlook drafts through COM, and closes only its own windows.
 
+### Phase 21: autonomous experiments and refinement
+
+`backend/tests/autonomous_experiments.py` runs real CLI, GUI, multi-step, and
+clarification experiments against a live backend and scores each one on
+accuracy, performance, and UI/UX evidence. `autonomous_refine.py` turns failed
+runs into a builder-ready bundle, restarts the backend or packaged app, and
+reruns the failing ids. Reports, full SSE transcripts, annotated GUI
+screenshots, and failure bundles are written under `build/experiments/`.
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m tests.autonomous_experiments --category static --category cli --category edge
+.\.venv\Scripts\python.exe -m tests.autonomous_experiments --category gui --include-gui
+.\.venv\Scripts\python.exe -m tests.autonomous_refine --iterations 3 --focus-failures
+```
+
+The GUI suite moves the real mouse and keyboard and must only run while the
+desktop is idle. The engine starts an isolated backend on port 8010 with
+`keep_alive_seconds=0` and its own data folder; use
+`--service external --base-url http://127.0.0.1:8000` to evaluate the running
+packaged app instead. The architecture, scoring matrix, restart mechanism, and
+honest limits are documented in
+[`docs/autonomous-loop.md`](docs/autonomous-loop.md).
+
 ## Frontend
 
 Ollama must be running. The desktop app starts the FastAPI backend itself as a
@@ -1092,27 +1117,30 @@ npm install
 npm run tauri dev
 ```
 
-For a terminal-free standalone window, build with the Tauri CLI. It runs the
-frontend build and embeds `dist` into the binary, so Vite does not need to run:
+For a terminal-free app, use the packaging script. It stages a private Python
+runtime, validates the backend, builds the Tauri shell, and assembles a folder
+whose only entry point is an `.exe`:
 
 ```powershell
-cd frontend
-npm run tauri build -- --no-bundle
-.\src-tauri\target\release\personal-agent.exe
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
-Use `npm run tauri build` without `--no-bundle` to also create an installer.
+Then double-click `build\Personal Agent\Personal Agent.exe`. The window appears
+immediately while the backend and Ollama start hidden in the background. Add
+`-Zip` for a portable archive or `-Installer` to also build the NSIS installer.
+See [Windows app build](#windows-app-build) for details.
+
 Do not use a plain `cargo build --release` for the distributable app: that can
 leave the development URL in the binary and show `ERR_CONNECTION_REFUSED` when
 Vite is not running.
 
 The app reuses a healthy backend if one is already listening on port 8000.
-Otherwise it starts `backend\.venv\Scripts\python.exe -m uvicorn` with
-`CREATE_NO_WINDOW`, redirects its output to
+Otherwise it starts the bundled runtime, redirects its output to
 `%LOCALAPPDATA%\com.personalagent.desktop\logs`, and stops the whole backend
 process tree when the app is quit. Launcher diagnostics are in `launcher.log` in
-the same folder. Set `PERSONAL_AGENT_BACKEND` to the path of a packaged backend
-executable to use it instead.
+the same folder. During development it falls back to
+`backend\.venv\Scripts\python.exe -m uvicorn`; set `PERSONAL_AGENT_BACKEND` to
+the path of a packaged backend executable to override it.
 
 The app starts hidden in the system tray. Click the tray icon to show or hide the
 chat window; right-click it for **Show / Hide** and **Quit**. Closing the window
@@ -1180,7 +1208,71 @@ The Tauri capabilities grant only `shell:allow-open`,
 window hide/drag permissions. The asset protocol is enabled in
 `src-tauri/tauri.conf.json` with a local-file read scope.
 
-## Local model throughput
+## Windows app build
+
+`scripts\build_windows.ps1` turns the repository into a click-to-run Windows
+app: the Tauri shell embeds the frontend, and the FastAPI backend ships with a
+private embeddable CPython runtime plus the exact `site-packages` of
+`backend\.venv`. The target machine does not need Python, Node.js, Rust, or a
+terminal.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+# optional: -Zip (portable archive), -Installer (NSIS installer)
+```
+
+The build machine still needs the prerequisites above: `backend\.venv` with
+`requirements.txt` installed, Node.js, and the Rust toolchain with the C++
+build tools. Only the target machine is dependency-free.
+
+Output:
+
+```text
+build\Personal Agent\Personal Agent.exe   the only thing the user clicks
+build\Personal Agent\backend\             FastAPI sources
+build\Personal Agent\backend-runtime\     Python + all dependencies
+build\Personal Agent\config\              default settings and personality
+```
+
+The script refuses to build if it cannot import every backend dependency and if
+the bundled backend does not answer `/health` on a test port, so a broken
+runtime is caught before the app is assembled. The Tauri shell is built with
+the normal release profile, including the embedded frontend. The staged payload
+is passed to the bundler as a build-time config override, so a plain
+`npm run tauri dev` on a fresh checkout still works without a staged runtime.
+
+On first launch the app:
+
+1. shows the chat window immediately (the header reads **Starting** until the
+   backend is ready);
+2. starts Ollama from `%LOCALAPPDATA%\Programs\Ollama\ollama app.exe` if it is
+   installed but not running;
+3. starts the bundled backend with no console window and waits for `/health`;
+4. copies `config\settings.json` and `config\personality.md` into the user data
+   folder on first run.
+
+The bundled backend runs from the install folder but writes only to
+`%LOCALAPPDATA%\com.personalagent.desktop\data` (`config`, `memory`,
+`knowledge_base.md`, the vision index, screenshots, and diagnosis charts).
+Launcher and backend logs are in
+`%LOCALAPPDATA%\com.personalagent.desktop\logs`. Edit the copied
+`config\settings.json` or `personality.md` there and restart the app to apply
+changes. Closing the window hides the app to the tray; **Quit** in the tray menu
+stops the backend too.
+
+Target requirements:
+
+- Windows 10 or 11, 64-bit
+- Microsoft Edge WebView2 runtime (preinstalled on Windows 11; the NSIS
+  installer can bootstrap it)
+- Ollama with the configured model (`ollama pull qwen3-vl:8b-instruct`)
+
+The folder is about 1.3 GB unpacked because local vision/CLIP, OCR, and
+matplotlib dependencies are included; the NSIS installer compresses it. The
+executable is not code-signed, so SmartScreen may ask for confirmation the first
+time it runs.
+
+
 
 Generation speed depends far more on prompt length and GPU contention than on
 tool schemas or streaming. Measured with `qwen3-vl:8b-instruct` Q4_K_M on the

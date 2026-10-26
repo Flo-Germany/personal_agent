@@ -10,13 +10,59 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "settings.json"
+
+
+def _resolve_data_root() -> Path:
+    """Return the writable folder for settings, memory, and generated files.
+
+    In a source checkout this is the repository root. The packaged desktop app
+    lives in a read-only install folder, so its launcher sets
+    ``PERSONAL_AGENT_DATA_DIR`` to a per-user location such as
+    ``%LOCALAPPDATA%\\com.personalagent.desktop\\data``.
+    """
+    raw = os.environ.get("PERSONAL_AGENT_DATA_DIR", "").strip()
+    if not raw:
+        return PROJECT_ROOT
+
+    try:
+        path = Path(os.path.expandvars(raw)).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path.resolve()
+    except OSError:
+        # Never fail the whole backend because the data folder is unavailable;
+        # the source checkout remains a usable fallback for development.
+        return PROJECT_ROOT
+
+
+DATA_ROOT = _resolve_data_root()
+
+
+def _default_config_path() -> Path:
+    """Prefer the user-editable config in the data folder when it exists."""
+    candidates = (
+        DATA_ROOT / "config" / "settings.json",
+        PROJECT_ROOT / "config" / "settings.json",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0]
+
+
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 _DEFAULT_ENV = {
     "OLLAMA_FLASH_ATTENTION": "1",
     "HF_HUB_DISABLE_PROGRESS_BARS": "1",
     "TRANSFORMERS_NO_ADVISORY_WARNINGS": "1",
 }
+
+
+def resolve_data_path(path: Path) -> Path:
+    """Resolve a possibly relative data path against the writable data root."""
+    if path.is_absolute():
+        return path
+    return DATA_ROOT / path
 
 
 def _load_dotenv(path: Path) -> None:
@@ -48,7 +94,9 @@ def _load_dotenv(path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
-_load_dotenv(PROJECT_ROOT / ".env")
+_load_dotenv(DATA_ROOT / ".env")
+if DATA_ROOT != PROJECT_ROOT:
+    _load_dotenv(PROJECT_ROOT / ".env")
 for _env_key, _env_value in _DEFAULT_ENV.items():
     os.environ.setdefault(_env_key, _env_value)
 
@@ -121,9 +169,7 @@ class MemorySettings(BaseModel):
     learn_from_chats: bool = True
 
     def resolved_knowledge_path(self) -> Path:
-        if self.knowledge_base_path.is_absolute():
-            return self.knowledge_base_path
-        return PROJECT_ROOT / self.knowledge_base_path
+        return resolve_data_path(self.knowledge_base_path)
 
 
 class ToolSettings(BaseModel):
@@ -168,9 +214,7 @@ class VisionSettings(BaseModel):
     screen_max_tokens: int = Field(default=700, ge=64, le=8192)
 
     def resolved_index_path(self) -> Path:
-        if self.index_path.is_absolute():
-            return self.index_path
-        return PROJECT_ROOT / self.index_path
+        return resolve_data_path(self.index_path)
 
     def resolved_scan_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -244,9 +288,7 @@ class AutomationSettings(BaseModel):
     validation_tolerance_px: int = Field(default=8, ge=1, le=100)
 
     def resolved_screenshot_dir(self) -> Path:
-        if self.screenshot_dir.is_absolute():
-            return self.screenshot_dir
-        return PROJECT_ROOT / self.screenshot_dir
+        return resolve_data_path(self.screenshot_dir)
 
 
 class Settings(BaseModel):
@@ -268,6 +310,11 @@ class Settings(BaseModel):
     def resolved_personality_path(self) -> Path:
         if self.personality_file.is_absolute():
             return self.personality_file
+        # The launcher copies the bundled personality into the data folder so
+        # users can edit it without touching the installed files.
+        data_candidate = DATA_ROOT / self.personality_file
+        if data_candidate.exists():
+            return data_candidate
         return PROJECT_ROOT / self.personality_file
 
 

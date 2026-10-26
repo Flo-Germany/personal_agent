@@ -15,7 +15,7 @@ export const API_BASE_URL =
 export const CONVERSATION_STORAGE_KEY = "personal-agent.conversation-id";
 
 export const NETWORK_ERROR_MESSAGE =
-  "I couldn't reach the local backend. Make sure FastAPI is running on 127.0.0.1:8000.";
+  "I couldn't reach the local backend. It may still be starting - wait a moment and try again. If this keeps happening, check the launcher log in %LOCALAPPDATA%\\com.personalagent.desktop\\logs.";
 export const STREAM_CLOSED_MESSAGE =
   "The agent connection closed before it finished. Please try again.";
 
@@ -345,7 +345,7 @@ export async function fetchIdentity(
  */
 export async function waitForBackend(
   signal?: AbortSignal,
-  timeoutMs = 15_000,
+  timeoutMs = 60_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
 

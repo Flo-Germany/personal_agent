@@ -22,6 +22,8 @@ export const AppHeader = memo(function AppHeader({
   onRefresh,
   onClear,
 }: AppHeaderProps) {
+  const offline = identity === null && !isBusy;
+
   return (
     <header
       data-tauri-drag-region="deep"
@@ -34,23 +36,29 @@ export const AppHeader = memo(function AppHeader({
           {identity?.name ?? "AI Agent"}
         </h1>
         <p className="truncate text-[10.5px] text-white/35">
-          {identity ? `${identity.model} · Local` : "Local · Private"}
+          {identity
+            ? `${identity.model} · Local`
+            : offline
+              ? "Local backend not reachable - see logs"
+              : "Starting local backend…"}
         </p>
       </div>
 
       <span
         className={`hidden items-center gap-1.5 rounded-full border border-white/[0.06] px-2 py-1 text-[10px] text-white/40 min-[400px]:flex ${
-          isWorking ? "bg-violet-300/[0.07]" : "bg-white/[0.025]"
+          isWorking || !identity ? "bg-violet-300/[0.07]" : "bg-white/[0.025]"
         }`}
       >
         <span
           className={`size-1.5 rounded-full ${
-            isWorking
-              ? "animate-pulse bg-violet-300"
+            isWorking || !identity
+              ? offline
+                ? "bg-rose-300"
+                : "animate-pulse bg-violet-300"
               : "bg-emerald-300/90"
           }`}
         />
-        {isWorking ? "Working" : "Ready"}
+        {!identity ? (offline ? "Offline" : "Starting") : isWorking ? "Working" : "Ready"}
       </span>
 
       <button

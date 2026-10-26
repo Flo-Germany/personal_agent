@@ -286,6 +286,23 @@ def test_stream_action_required_then_approve(tmp_path: Path) -> None:
         assert final["reply"] == "Created it."
         assert target.is_dir()
 
+        # The approved batch executes before the first event is yielded, but
+        # the UI still needs a per-tool start event before its result so the
+        # task list can render the action. This was a Phase 21 finding.
+        start_index = next(
+            index
+            for index, event in enumerate(resumed_events)
+            if event["type"] == "status"
+            and event.get("phase") == "tool_started"
+            and event.get("tool") == "create_folder"
+        )
+        result_index = next(
+            index
+            for index, event in enumerate(resumed_events)
+            if event["type"] == "tool_result" and event.get("tool") == "create_folder"
+        )
+        assert start_index < result_index
+
         cleared = client.get(f"/chat/pending/{conversation_id}")
         assert cleared.json()["pending"] is None
 

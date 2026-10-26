@@ -24,7 +24,7 @@ from typing import Any
 
 import psutil
 
-from settings import PROJECT_ROOT
+from settings import DATA_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -1163,7 +1163,7 @@ def run_diagnosis(
 
     if output_dir is None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        output_dir = PROJECT_ROOT / "memory" / "diagnostics" / f"{stamp}-{os.getpid()}"
+        output_dir = DATA_ROOT / "memory" / "diagnostics" / f"{stamp}-{os.getpid()}"
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -22,7 +22,7 @@ from agent.chat import ChatService, ConfirmationRequired, LLMError
 from agent.prompt import load_personality
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
-from settings import Settings, load_settings
+from settings import DATA_ROOT, Settings, load_settings
 from tools.executor import ToolExecutor
 from tools.vision_tools import VisionService
 
@@ -240,6 +240,21 @@ def create_app(
             personality=personality,
             model=settings.ollama.model,
         )
+
+    @app.get("/diagnostics/config")
+    async def diagnostics_config() -> dict[str, Any]:
+        """Expose non-secret runtime knobs for local evaluation harnesses."""
+        return {
+            "agent_name": settings.agent_name,
+            "model": settings.ollama.model,
+            "ollama_base_url": settings.ollama.base_url,
+            "keep_alive_seconds": settings.ollama.keep_alive_seconds,
+            "context_window": settings.ollama.context_window,
+            "dynamic_tools": settings.agent.dynamic_tools,
+            "vision_enabled": settings.vision.enabled,
+            "data_root": str(DATA_ROOT),
+            "log_level": logging.getLevelName(logging.getLogger().level),
+        }
 
     @app.get("/vision/status")
     async def vision_status() -> dict[str, Any]:

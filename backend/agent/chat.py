@@ -985,6 +985,32 @@ class ChatService:
                     ),
                 }
 
+                # The batch above runs before the first event is yielded so an
+                # approved action is never lost if the client disconnects.
+                # Emit the per-action start events afterwards, before the
+                # results, so the UI can build a complete task list with the
+                # exact labels instead of only a batch-level "Approved" row.
+                if approved:
+                    for call in pending.calls:
+                        name = call["function"]["name"]
+                        arguments = call["function"]["arguments"]
+                        parsed_arguments = arguments
+                        if isinstance(parsed_arguments, str):
+                            try:
+                                parsed_arguments = json.loads(parsed_arguments or "{}")
+                            except json.JSONDecodeError:
+                                parsed_arguments = {}
+                        if not isinstance(parsed_arguments, dict):
+                            parsed_arguments = {}
+                        yield {
+                            "type": "status",
+                            "conversation_id": conversation_id,
+                            "phase": "tool_started",
+                            "tool": name,
+                            "arguments": parsed_arguments,
+                            "message": _tool_status_message(name, parsed_arguments),
+                        }
+
                 for call, result in results:
                     yield self._tool_result_event(
                         conversation_id,
