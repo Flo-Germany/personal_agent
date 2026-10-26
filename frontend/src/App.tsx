@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "./components/AppHeader";
 import { ApprovalCard } from "./components/ApprovalCard";
@@ -7,11 +7,13 @@ import { ChatComposer } from "./components/ChatComposer";
 import { DisplayPickerCard } from "./components/DisplayPickerCard";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem } from "./components/MessageItem";
+import { ModelSettings } from "./components/ModelSettings";
 import { SearchResults } from "./components/SearchResults";
 import { ToolStatus } from "./components/ToolStatus";
 import { useAgentChat } from "./hooks/useAgentChat";
 
 function App() {
+  const [view, setView] = useState<"chat" | "settings">("chat");
   const {
     messages,
     identity,
@@ -106,8 +108,15 @@ function App() {
           canClear={!isEmpty}
           onRefresh={handleRefresh}
           onClear={handleClear}
+          onOpenSettings={() => setView("settings")}
         />
 
+        {view === "settings" ? (
+          <div className="min-h-0 flex-1">
+            <ModelSettings onClose={() => setView("chat")} />
+          </div>
+        ) : (
+          <>
         <main
           aria-live="polite"
           className="relative min-w-0 flex-1 overflow-y-auto"
@@ -173,6 +182,8 @@ function App() {
           isLoadingHistory={isLoadingHistory}
           pending={pendingAction !== null}
         />
+          </>
+        )}
       </div>
     </div>
   );

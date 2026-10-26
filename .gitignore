@@ -40,6 +40,10 @@ build/Personal Agent/*
 !build/Personal Agent/Personal Agent.exe
 # Harness reports written when a test runs from backend/.
 backend/build/
+# Phase 22 engine runtime, models, and state in a dev checkout.
+engine-data/
+# VS Code counter/extension artifacts.
+.VSCodeCounter/
 
 # --- Secrets / environment ---
 .env

@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { Settings2 } from "lucide-react";
 
 import type { Identity } from "../types";
 import { hideToTray } from "../lib/window";
@@ -12,6 +13,7 @@ type AppHeaderProps = {
   canClear: boolean;
   onRefresh: () => void;
   onClear: () => void;
+  onOpenSettings: () => void;
 };
 
 export const AppHeader = memo(function AppHeader({
@@ -21,6 +23,7 @@ export const AppHeader = memo(function AppHeader({
   canClear,
   onRefresh,
   onClear,
+  onOpenSettings,
 }: AppHeaderProps) {
   const offline = identity === null && !isBusy;
 
@@ -60,6 +63,16 @@ export const AppHeader = memo(function AppHeader({
         />
         {!identity ? (offline ? "Offline" : "Starting") : isWorking ? "Working" : "Ready"}
       </span>
+
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        aria-label="Model settings"
+        title="Model settings"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/35 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75"
+      >
+        <Settings2 className="size-4" />
+      </button>
 
       <button
         type="button"

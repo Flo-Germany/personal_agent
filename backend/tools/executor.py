@@ -368,6 +368,12 @@ class ToolExecutor:
         """Clear the killswitch halt and stale SoM snapshots for a new turn."""
         self.automation.reset()
 
+    def release_vision(self) -> None:
+        """Unload a native vision server after a screen task (keep_alive 0)."""
+        release = getattr(self.vision, "release_native_vision", None)
+        if callable(release):
+            release()
+
     def automation_status(self) -> dict[str, Any]:
         return self.automation.status()
 

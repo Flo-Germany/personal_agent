@@ -315,7 +315,9 @@ def test_static_contract_experiment_is_scored_without_a_model(tmp_path: Path) ->
     ctx = ExperimentContext.create(tmp_path, "static")
     checks = experiment.verifier(ctx, TurnResult.empty())
     assert checks
-    assert all(item.dimension in {"ux", "accuracy"} for item in checks)
+    assert all(
+        item.dimension in {"ux", "accuracy", "performance"} for item in checks
+    )
 
 
 def test_report_json_round_trip(tmp_path: Path) -> None:

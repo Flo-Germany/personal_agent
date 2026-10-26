@@ -880,6 +880,10 @@ class ChatService:
         with self._locks_guard:
             return self._locks.setdefault(conversation_id, threading.Lock())
 
+    def set_client(self, client: Any) -> None:
+        """Hot-swap the inference transport after an engine switch."""
+        self._client = client
+
     # ------------------------------------------------------------- interrupt
     def _cancel_event(self, conversation_id: str) -> threading.Event:
         with self._cancel_guard:
@@ -1558,6 +1562,13 @@ class ChatService:
         )
         if name == "search_system":
             self._remember_search_card(conversation_id, result)
+        if name in {"analyze_screen", "analyze_screen_ui"}:
+            release = getattr(self._tools, "release_vision", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception:  # noqa: BLE001 - never fail a tool result
+                    logger.debug("Releasing the vision engine failed", exc_info=True)
         return result
 
     def _align_search_kind(

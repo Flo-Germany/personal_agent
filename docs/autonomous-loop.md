@@ -97,6 +97,13 @@ The `cli` catalog also covers folder search in English and German
 (`cli_find_folder`, `cli_find_folders_de`); a wrong result kind or an accidental
 deep recursion fails the experiment.
 
+Phase 22 adds `scripts/stress_engine.py`, which runs the llama.cpp path
+end-to-end outside the experiment catalog: install the pinned runtime, download
+a small GGUF through the manager API, hot-swap, run a real CLI turn, verify the
+artifact, force two more swaps, and restore the previous model. The static
+contract also checks the runtime pin, VRAM/layer planner, CPU fallback, hot-swap
+flush, checksum path, and the Model Manager UI.
+
 The harness does not pretend to judge aesthetics with a threshold. It fails
 regressions it can prove and leaves the screenshots and event transcripts for
 the builder to inspect.

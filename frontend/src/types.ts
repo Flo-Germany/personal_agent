@@ -284,6 +284,116 @@ export type Identity = {
   model: string;
 };
 
+export type EngineHardware = {
+  gpu_name: string;
+  vram_gb: number;
+  ram_gb: number;
+  cpu: string;
+  platform: string;
+  vulkan: boolean;
+  source: string;
+  cpu_fallback?: boolean;
+  cpu_note?: string;
+};
+
+export type EngineRuntimeStatus = {
+  installed: boolean;
+  version: string;
+  directory: string;
+  server: string;
+  size_bytes: number;
+};
+
+export type ModelFileInfo = {
+  role: string;
+  filename: string;
+  size: number;
+  sha256: string;
+  url: string;
+};
+
+export type CatalogModel = {
+  id: string;
+  name: string;
+  task: "text" | "vision";
+  family: string;
+  parameters: string;
+  quantization: string;
+  badge: string;
+  min_vram_gb: number;
+  description: string;
+  context: number;
+  total_bytes: number;
+  files: ModelFileInfo[];
+  installed: boolean;
+  active: boolean;
+  fit: "gpu" | "partial" | "cpu";
+  likely_fits_vram: boolean;
+};
+
+export type EngineServerStatus = {
+  role: string;
+  running: boolean;
+  model_id?: string;
+  port?: number;
+  n_gpu_layers?: number;
+  context?: number;
+  uptime_seconds?: number;
+  log?: string;
+};
+
+export type EngineStatus = {
+  engine: "ollama" | "llamacpp";
+  hardware: EngineHardware;
+  runtime: EngineRuntimeStatus;
+  active: { text: string; vision: string };
+  installed: string[];
+  text_model: string | null;
+  vision_model: string | null;
+  text_plan: {
+    n_gpu_layers: number;
+    total_layers: number;
+    weights_gb: number;
+    kv_gb: number;
+    budget_gb: number;
+    vram_gb: number;
+    fully_on_gpu: boolean;
+    reason: string;
+  } | null;
+  servers: Record<string, EngineServerStatus>;
+  runtime_job: {
+    id: string;
+    state: string;
+    downloaded: number;
+    total: number;
+    percent: number;
+    error: string;
+  } | null;
+};
+
+export type InstallProgress = {
+  id: string;
+  model_id: string;
+  state: "queued" | "downloading" | "verifying" | "done" | "error" | "cancelled";
+  downloaded: number;
+  total: number;
+  speed_bps: number;
+  eta_seconds: number | null;
+  file: string;
+  message: string;
+  error: string;
+  percent: number;
+};
+
+export type RuntimeProgress = {
+  id: string;
+  state: string;
+  downloaded: number;
+  total: number;
+  percent: number;
+  error: string;
+};
+
 export type HistoryMessage = {
   role: "user" | "assistant";
   content: string;

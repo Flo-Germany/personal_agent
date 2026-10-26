@@ -1457,6 +1457,115 @@ Two findings matter more than the exact numbers:
 - Reasoning is streamed, so the wall-clock cost is the same, but the UI shows
   progress, elapsed time, and the reasoning itself instead of an opaque spinner.
 
+## Phase 22: native llama.cpp engine and Model Manager
+
+Ollama remains the default transport while the native engine is validated, but
+the backend now ships a complete second inference stack that can be selected
+with one setting:
+
+```jsonc
+"engine": {
+  "type": "llamacpp",            // or "ollama" (default during migration)
+  "text_model": "qwen3-0.6b-q4",
+  "vision_model": "qwen3-vl-2b-q4",
+  "gpu_layers": null,            // null = calculate from VRAM
+  "vram_override_gb": null,      // override the detected budget
+  "vram_reserve_gb": 1.5,        // desktop/driver headroom
+  "context_window": null,        // null = model catalog value
+  "start_timeout_seconds": 180
+}
+```
+
+### What runs on the machine
+
+- `backend/engine/runtime.py` installs the pinned prebuilt llama.cpp Vulkan
+  build (`b11900`, SHA256-pinned) into the app data folder. No Rust, CUDA, or
+  Vulkan SDK is needed on the target machine; the same build also runs on CPU
+  because llama.cpp selects its AVX2/AVX-512 kernels at runtime.
+- `backend/engine/hardware.py` profiles the GPU and RAM. VRAM comes from the
+  Windows display-class registry (`HardwareInformation.qwMemorySize`), with a
+  `vulkaninfo` heap parse as fallback, so startup does not wait 30-60 s for a
+  full Vulkan enumeration.
+- `backend/engine/gguf.py` reads GGUF metadata (layers, heads, embedding size)
+  without loading weights. `plan_gpu_layers` converts weights + KV cache +
+  reserve into an `n_gpu_layers` value: 0 means CPU, a partial number means a
+  hybrid offload, and the full layer count means everything fits.
+- `backend/engine/server.py` owns `llama-server` per role. Switching a model
+  kills the old process tree first (a hard VRAM flush; the driver reclaims the
+  allocation on exit), waits for the port, then starts the new weights. The
+  text role stays warm between turns; the vision role is stopped after use.
+- `backend/engine/client.py` speaks llama-server's OpenAI-compatible API and
+  translates streaming deltas (content, `reasoning_content`, tool calls,
+  usage/timings) into the chunks the agent loop already consumes. Tool calling
+  works through `--jinja` and the selected model's template.
+
+### Model Manager
+
+`Settings > Models` (the gear icon in the header) is a full manager, not a demo:
+
+- **Text and vision dropdowns** list installed models; selecting one triggers
+  the hot swap and reports the layer plan.
+- **Engine switch** (Ollama / llama.cpp · Vulkan) applies immediately, persists
+  to the settings file, and rebinds chat without a restart.
+- **Curated catalog** with the requested badges (High-End/Mid-Range/Low-End),
+  parameter count, quantization, size, context, and a VRAM-fit label.
+- **[Installed] / [Install]** per model, with a live progress bar (bytes,
+  speed, ETA), cancel, and delete for inactive models.
+- **Runtime install** button with its own progress stream.
+- **SHA256 verification** on every file; a mismatch deletes the download and
+  surfaces the error. Partial downloads resume with HTTP Range.
+
+Downloads are chunked (1 MB), streamed to the UI over SSE
+(`/models/progress/{job}`), and stored under
+`%LOCALAPPDATA%\com.personalagent.desktop\data\engine-data\models`. The runtime
+lives next to it under `engine-data\runtime`.
+
+### API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /engine/status` | Hardware, runtime, active models, layer plan, live servers |
+| `GET /models/catalog` | Curated catalog + installed/active/fit flags |
+| `POST /models/install` | Start an asynchronous download; returns a job id |
+| `GET /models/progress/{id}` | SSE bytes/speed/ETA/state |
+| `POST /models/cancel` | Cancel a download (keeps the partial file) |
+| `POST /models/active` | Hot-swap `{task, model_id}` and return the layer plan |
+| `POST /engine/type` | Switch `ollama` ↔ `llamacpp` live and rebind the chat client |
+| `DELETE /models/{id}` | Remove weights (refused for the active model) |
+| `POST /engine/runtime/install` | Install the pinned llama.cpp build |
+| `GET /engine/runtime/progress/{id}` | SSE runtime download progress |
+
+### Stress test
+
+`scripts/stress_engine.py` exercises the whole path against a running backend
+whose `engine.type` is `llamacpp`: install the runtime, install a small GGUF,
+hot-swap to it, run a real file-creating CLI turn through the agent, verify the
+file, force two more swaps, and restore the previous model.
+
+```powershell
+backend\.venv\Scripts\python.exe scripts\stress_engine.py --base-url http://127.0.0.1:8001
+```
+
+Measured on this machine with `qwen3-0.6b-q4`: 397 MB download, checksum
+verified, 28/28 layers on the RX 9070 XT, first answer in 0.57 s, and swaps in
+2.3-2.8 s each.
+
+### Honest status
+
+- Screen analysis is routed through llama.cpp when the native engine is
+  selected: images are sent as OpenAI `image_url` parts, the server starts with
+  the model's `mmproj`, and the vision process is stopped after the screen tool
+  finishes (`keep_alive 0`).
+- `engine.type` can be switched live in Settings > Models or with
+  `POST /engine/type`; the choice is written to the active settings file and the
+  chat client is rebound immediately. Switching to llama.cpp requires the
+  runtime plus an installed text model.
+- Ollama remains the default until a full GUI pass on the native engine. Selecting
+  Ollama keeps the old vision adapter as a fallback; selecting llama.cpp never
+  silently falls back to Ollama vision, so failures are visible.
+- Re-run `tests/live_real_apps.py` (real Outlook/Chrome/Explorer) on the native
+  engine before removing the Ollama dependency from the shipped build.
+
 ## Known limitation
 
 `qwen3-vl:8b-instruct` is the default because it follows the full identity,

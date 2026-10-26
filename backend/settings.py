@@ -300,6 +300,24 @@ class AutomationSettings(BaseModel):
         return resolve_data_path(self.screenshot_dir)
 
 
+class EngineSettings(BaseModel):
+    """Phase 22 native engine. Ollama stays selectable during migration."""
+
+    # llama.cpp speaks the same OpenAI subset as the Ollama adapter, so the
+    # agent loop is unchanged; this switch only selects the transport.
+    type: Literal["ollama", "llamacpp"] = "ollama"
+    # Leave auto planning on unless you want to pin a layer count.
+    gpu_layers: int | None = Field(default=None, ge=0, le=512)
+    vram_override_gb: float | None = Field(default=None, gt=0, le=512)
+    # Keep room for the desktop and driver before filling VRAM.
+    vram_reserve_gb: float = Field(default=1.5, ge=0, le=32)
+    text_model: str = "qwen3-0.6b-q4"
+    vision_model: str = "qwen3-vl-2b-q4"
+    # Empty means the model catalog context (16k for vision, 32k for text).
+    context_window: int | None = Field(default=None, ge=2048, le=131072)
+    start_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
+
+
 class Settings(BaseModel):
     agent_name: str = Field(default="Nova", min_length=1, max_length=80)
     # Personality lives in a dedicated, user-editable Markdown file. The inline
@@ -315,6 +333,7 @@ class Settings(BaseModel):
     tools: ToolSettings = Field(default_factory=ToolSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
     automation: AutomationSettings = Field(default_factory=AutomationSettings)
+    engine: EngineSettings = Field(default_factory=EngineSettings)
 
     def resolved_personality_path(self) -> Path:
         if self.personality_file.is_absolute():
@@ -332,7 +351,8 @@ def load_settings(path: Path | None = None) -> Settings:
     config_path = path or DEFAULT_CONFIG_PATH
 
     if config_path.exists():
-        with config_path.open(encoding="utf-8") as handle:
+        # utf-8-sig tolerates a BOM added by Windows editors.
+        with config_path.open(encoding="utf-8-sig") as handle:
             return Settings.model_validate(json.load(handle))
 
     return Settings()

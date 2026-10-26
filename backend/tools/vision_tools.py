@@ -576,6 +576,7 @@ class VisionService:
         ollama_base_url: str = "http://127.0.0.1:11434/v1",
         keep_alive_seconds: int = 0,
         context_window: int | None = None,
+        vision_engine: Any | None = None,
     ) -> None:
         self.settings = settings
         self.embedder = embedder or ClipEmbedder(settings.embed_model)
@@ -584,6 +585,10 @@ class VisionService:
         # Using the same context size as chat keeps Ollama from unloading and
         # reloading the runner for every screen analysis.
         self.context_window = context_window
+        # Phase 22.5: when the native engine is selected, screen analysis uses
+        # llama-server's OpenAI-compatible multimodal endpoint instead of
+        # Ollama's native ``images`` array.
+        self.vision_engine = vision_engine
         self.store = ImageVectorStore(
             settings.resolved_index_path(),
             settings.embed_model,
@@ -1249,7 +1254,155 @@ class VisionService:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         return encoded, image.width, image.height
 
+    def set_engine(self, engine: Any | None) -> None:
+        """Bind the Phase 22 engine so vision can use llama-server."""
+        self.vision_engine = engine
+
+    def _engine_type(self) -> str:
+        engine = self.vision_engine
+        return str(getattr(getattr(engine, "settings", None), "type", "ollama"))
+
+    def release_native_vision(self) -> None:
+        """Unload the llama.cpp vision server after a screen task."""
+        if self.vision_engine is None or self._engine_type() != "llamacpp":
+            return
+        try:
+            self.vision_engine.release_vision()
+        except Exception:  # noqa: BLE001 - unloading must never fail a turn
+            logger.debug("Could not release the vision engine", exc_info=True)
+
+    def _ask_native_vision(
+        self,
+        question: str,
+        image_b64: str,
+        *,
+        system_prompt: str | None = None,
+        instruction: str | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Ask the llama.cpp multimodal server (OpenAI image_url format)."""
+        engine = self.vision_engine
+        if engine is None:
+            raise RuntimeError("The llama.cpp vision engine is not configured.")
+
+        try:
+            base_url = engine.ensure_vision()
+        except Exception as exc:  # noqa: BLE001 - surfaced as a vision error
+            raise RuntimeError(
+                "The llama.cpp vision model is not ready. Install and select a "
+                f"vision model in Settings > Models. ({exc})"
+            ) from exc
+
+        endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        instruction = instruction or (
+            "Answer in the language of the user's question, directly from the "
+            "screenshot. Give only the final answer, without chain-of-thought "
+            "or reasoning text."
+        )
+
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"{question}\n\n{instruction}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_b64}"
+                        },
+                    },
+                ],
+            }
+        )
+
+        payload = {
+            "model": "vision",
+            "messages": messages,
+            "stream": False,
+            "temperature": 0.2,
+            "max_tokens": int(max_tokens or self.settings.screen_max_tokens),
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.settings.screen_timeout_seconds
+            ) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "The llama.cpp vision request timed out after "
+                f"{self.settings.screen_timeout_seconds:.0f} seconds"
+            ) from exc
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"llama.cpp vision request failed with HTTP {exc.code}: {detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Could not reach the llama.cpp vision endpoint at {endpoint}: "
+                f"{exc.reason}"
+            ) from exc
+
+        choices = body.get("choices") or []
+        message = (choices[0].get("message") if choices else {}) or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "\n".join(
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict)
+            )
+        text = str(content or "").strip()
+        if not text:
+            raise RuntimeError("llama.cpp returned an empty vision response.")
+        return text
+
     def _ask_vision_model(
+        self,
+        question: str,
+        image_b64: str,
+        *,
+        system_prompt: str | None = None,
+        tools: Sequence[dict[str, Any]] | None = None,
+        instruction: str | None = None,
+        max_tokens: int | None = None,
+        model: str | None = None,
+        context_window: int | None = None,
+    ) -> str:
+        if self._engine_type() == "llamacpp":
+            return self._ask_native_vision(
+                question,
+                image_b64,
+                system_prompt=system_prompt,
+                instruction=instruction,
+                max_tokens=max_tokens,
+            )
+        return self._ask_ollama_vision(
+            question,
+            image_b64,
+            system_prompt=system_prompt,
+            tools=tools,
+            instruction=instruction,
+            max_tokens=max_tokens,
+            model=model,
+            context_window=context_window,
+        )
+
+    def _ask_ollama_vision(
         self,
         question: str,
         image_b64: str,
@@ -1523,6 +1676,12 @@ class VisionService:
                     "set vision.screen_model accordingly, or use an Ollama "
                     "version older than 0.30.0 if you must use "
                     "llama3.2-vision."
+                )
+            elif self._engine_type() == "llamacpp":
+                hint = (
+                    "Install and select a vision model in Settings > Models "
+                    "(weights plus mmproj), then retry. If it persists, check "
+                    "the llama-vision log in the app data folder."
                 )
             else:
                 hint = (

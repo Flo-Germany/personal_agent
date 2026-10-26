@@ -66,6 +66,16 @@
     "pre_action_validation": true,
     "validation_tolerance_px": 8
   },
+  "engine": {
+    "type": "ollama",
+    "gpu_layers": null,
+    "vram_override_gb": null,
+    "vram_reserve_gb": 1.5,
+    "text_model": "qwen3-0.6b-q4",
+    "vision_model": "qwen3-vl-2b-q4",
+    "context_window": null,
+    "start_timeout_seconds": 180
+  },
   "vision": {
     "enabled": true,
     "embed_model": "clip-ViT-B-32",

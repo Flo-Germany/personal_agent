@@ -110,6 +110,12 @@ def audit_frontend() -> list[Check]:
     search_ui = _read("frontend/src/components/SearchResults.tsx")
     os_tools = _read("backend/tools/os_tools.py")
     schemas = _read("backend/tools/schemas.py")
+    engine_service = _read("backend/engine/service.py")
+    engine_hardware = _read("backend/engine/hardware.py")
+    engine_catalog = _read("backend/engine/catalog.py")
+    engine_server = _read("backend/engine/server.py")
+    model_settings = _read("frontend/src/components/ModelSettings.tsx")
+    main_py = _read("backend/main.py")
 
     checks = [
         check(
@@ -263,6 +269,96 @@ def audit_frontend() -> list[Check]:
             "accuracy",
             '"kind"' in schemas and '"folders"' in schemas,
             "the search schema exposes kind=folders",
+        ),
+        check(
+            "engine_runtime_is_pinned",
+            "accuracy",
+            "RUNTIME_TAG" in _read("backend/engine/runtime.py")
+            and "sha256" in _read("backend/engine/runtime.py").lower(),
+            "the llama.cpp build and archive hash are pinned",
+        ),
+        check(
+            "engine_layers_are_planned",
+            "performance",
+            "plan_gpu_layers" in engine_hardware
+            and "n_gpu_layers" in engine_hardware,
+            "VRAM-aware n_gpu_layers planning exists",
+        ),
+        check(
+            "engine_has_cpu_fallback",
+            "accuracy",
+            "no dedicated VRAM" in engine_hardware
+            or "running on CPU" in engine_hardware,
+            "the planner falls back to CPU without VRAM",
+        ),
+        check(
+            "engine_hot_swap_flushes",
+            "accuracy",
+            "vram_flushed" in engine_service
+            and "servers.stop(task)" in engine_service,
+            "switching a model stops the old server first",
+        ),
+        check(
+            "engine_models_are_checksummed",
+            "accuracy",
+            "sha256" in engine_catalog and "sha256" in _read(
+                "backend/engine/downloads.py"
+            ),
+            "catalog entries and downloads carry SHA256 verification",
+        ),
+        check(
+            "engine_vision_unloads",
+            "ux",
+            "keep_alive: 0" in model_settings
+            or "release" in engine_server,
+            "vision models are unloaded after use",
+        ),
+        check(
+            "ui_model_manager_exists",
+            "ux",
+            bool(model_settings.strip())
+            and "Install llama.cpp runtime" in model_settings,
+            "frontend/src/components/ModelSettings.tsx",
+        ),
+        check(
+            "ui_model_manager_routed",
+            "ux",
+            "ModelSettings" in app,
+            "App.tsx renders the model manager",
+        ),
+        check(
+            "api_exposes_engine_and_models",
+            "accuracy",
+            '"/engine/status"' in main_py
+            and '"/models/catalog"' in main_py
+            and '"/models/active"' in main_py,
+            "engine and model endpoints are wired",
+        ),
+        check(
+            "vision_uses_openai_image_url",
+            "accuracy",
+            "_ask_native_vision" in _read("backend/tools/vision_tools.py")
+            and '"image_url"' in _read("backend/tools/vision_tools.py"),
+            "native vision sends image_url parts, not Ollama images",
+        ),
+        check(
+            "vision_passes_mmproj",
+            "accuracy",
+            "mmproj_path=self.store.mmproj_path(entry)" in engine_service,
+            "ensure_vision starts llama-server with the projector",
+        ),
+        check(
+            "engine_type_switches_at_runtime",
+            "accuracy",
+            '"/engine/type"' in main_py and "def set_type" in engine_service,
+            "engine.type can change without a restart",
+        ),
+        check(
+            "vision_is_released_after_use",
+            "ux",
+            "release_vision" in _read("backend/agent/chat.py")
+            and "release_native_vision" in _read("backend/tools/vision_tools.py"),
+            "screen tools unload the vision server (keep_alive 0)",
         ),
     ]
     return checks

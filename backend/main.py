@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -19,7 +20,9 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from agent.approvals import ApprovalError, ApprovalNotFound
 from agent.chat import ChatService, ConfirmationRequired, LLMError
+from agent.ollama_client import NativeOllamaClient
 from agent.prompt import load_personality
+from engine import EngineService, get_entry
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
 from settings import DATA_ROOT, Settings, load_settings
@@ -75,6 +78,18 @@ class InterruptRequest(BaseModel):
     conversation_id: UUID
 
 
+class ModelAction(BaseModel):
+    model_id: str = Field(min_length=1, max_length=120)
+
+
+class ActiveModelRequest(ModelAction):
+    task: Literal["text", "vision"]
+
+
+class EngineTypeRequest(BaseModel):
+    type: Literal["ollama", "llamacpp"]
+
+
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -118,6 +133,7 @@ def create_app(
     store: ConversationStore | None = None,
     chat_service: ChatService | None = None,
     vision_service: VisionService | None = None,
+    engine_service: EngineService | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     store = store or ConversationStore(
@@ -125,15 +141,36 @@ def create_app(
     )
     knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
     knowledge.ensure_file()
+    owned_chat_service = chat_service is None
+    engine = engine_service or EngineService(
+        settings.engine, DATA_ROOT / "engine-data"
+    )
     vision = vision_service or VisionService(
         settings.vision,
         ollama_base_url=settings.ollama.base_url,
         keep_alive_seconds=settings.ollama.keep_alive_seconds,
         context_window=settings.ollama.context_window,
+        vision_engine=engine,
     )
+    vision.set_engine(engine)
 
-    owned_chat_service = chat_service is None
+    ollama_client = NativeOllamaClient(
+        settings.ollama.base_url,
+        timeout=settings.ollama.timeout_seconds,
+        num_ctx=settings.ollama.context_window,
+        keep_alive=settings.ollama.keep_alive_seconds,
+        max_retries=settings.ollama.max_retries,
+    )
     if chat_service is None:
+        engine_client = None
+        if settings.engine.type == "llamacpp":
+            try:
+                engine_client = engine.text_client()
+            except Exception as exc:  # noqa: BLE001 - fall back, never brick chat
+                logger.warning(
+                    "llama.cpp engine unavailable (%s); falling back to Ollama",
+                    exc,
+                )
         chat_service = ChatService(
             settings,
             store,
@@ -143,6 +180,7 @@ def create_app(
                 vision=vision,
                 automation=settings.automation,
             ),
+            client=engine_client or ollama_client,
         )
 
     @asynccontextmanager
@@ -162,6 +200,7 @@ def create_app(
             yield
         finally:
             await run_in_threadpool(vision.stop)
+            await run_in_threadpool(engine.shutdown)
 
     app = FastAPI(
         title="Personal Agent API",
@@ -170,6 +209,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.vision = vision
+    app.state.engine = engine
 
     # The Tauri webview and Vite dev server are the only allowed origins.
     app.add_middleware(
@@ -248,10 +288,13 @@ def create_app(
     async def identity() -> IdentityResponse:
         """Expose the configured assistant identity to the UI."""
         personality = await run_in_threadpool(load_personality, settings)
+        model = settings.ollama.model
+        if settings.engine.type == "llamacpp":
+            model = engine.active_id("text") or model
         return IdentityResponse(
             name=settings.agent_name,
             personality=personality,
-            model=settings.ollama.model,
+            model=model,
         )
 
     @app.get("/diagnostics/config")
@@ -267,9 +310,151 @@ def create_app(
             "context_window": settings.ollama.context_window,
             "dynamic_tools": settings.agent.dynamic_tools,
             "vision_enabled": settings.vision.enabled,
+            "engine": settings.engine.type,
+            "engine_text_model": engine.active_id("text"),
+            "engine_vision_model": engine.active_id("vision"),
+            "engine_vram_gb": engine.hardware.vram_gb,
             "data_root": str(DATA_ROOT),
             "log_level": logging.getLevelName(logging.getLogger().level),
         }
+
+    # ------------------------------------------------------- Phase 22 engine
+    @app.get("/engine/status")
+    async def engine_status() -> dict[str, Any]:
+        """Hardware profile, runtime, active models, and live servers."""
+        return await run_in_threadpool(engine.status)
+
+    @app.get("/models/catalog")
+    async def models_catalog() -> dict[str, Any]:
+        return {
+            "models": await run_in_threadpool(engine.catalog),
+            "hardware": engine.hardware.as_dict(),
+            "engine": settings.engine.type,
+        }
+
+    @app.post("/models/install")
+    async def models_install(payload: ModelAction) -> dict[str, Any]:
+        try:
+            job = engine.install_model(payload.model_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return job.as_dict()
+
+    @app.get("/models/progress/{job_id}")
+    async def models_progress(job_id: str) -> StreamingResponse:
+        """SSE stream of bytes, speed, and ETA for one install job."""
+
+        async def events() -> AsyncIterator[str]:
+            while True:
+                job = engine.job(job_id)
+                if job is None:
+                    yield _sse({"type": "error", "detail": "unknown job"})
+                    return
+                yield _sse({"type": "progress", **job.as_dict()})
+                if job.state in {"done", "error", "cancelled"}:
+                    return
+                await asyncio.sleep(0.3)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/models/cancel")
+    async def models_cancel(payload: dict[str, str]) -> dict[str, bool]:
+        job_id = str(payload.get("job_id") or "")
+        return {"cancelled": engine.store.cancel(job_id)}
+
+    @app.post("/models/active")
+    async def models_active(payload: ActiveModelRequest) -> dict[str, Any]:
+        """Hot-swap the active model with a hard VRAM flush."""
+        try:
+            result = await run_in_threadpool(
+                engine.switch, payload.task, payload.model_id
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if payload.task == "text" and hasattr(chat_service, "set_client"):
+            client = None
+            if settings.engine.type == "llamacpp":
+                try:
+                    client = await run_in_threadpool(engine.text_client)
+                except Exception as exc:  # noqa: BLE001 - keep chat usable
+                    logger.warning("Could not bind the llama.cpp client: %s", exc)
+            chat_service.set_client(client or ollama_client)
+        return result
+
+    @app.delete("/models/{model_id}")
+    async def models_delete(model_id: str) -> dict[str, bool]:
+        try:
+            entry = get_entry(model_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": await run_in_threadpool(engine.delete_model, entry.id)}
+
+    @app.post("/engine/runtime/install")
+    async def engine_runtime_install() -> dict[str, Any]:
+        job = engine.install_runtime()
+        return {
+            "id": job.id,
+            "state": job.state,
+            "downloaded": job.downloaded,
+            "total": job.total,
+        }
+
+    @app.post("/engine/type")
+    async def engine_type(payload: EngineTypeRequest) -> dict[str, Any]:
+        """Switch between Ollama and llama.cpp without restarting the app."""
+        try:
+            result = await run_in_threadpool(engine.set_type, payload.type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if hasattr(chat_service, "set_client"):
+            client = None
+            if payload.type == "llamacpp":
+                try:
+                    client = await run_in_threadpool(engine.text_client)
+                except Exception as exc:  # noqa: BLE001 - keep chat usable
+                    logger.warning("Could not bind the llama.cpp client: %s", exc)
+            chat_service.set_client(client or ollama_client)
+        return result
+
+    @app.get("/engine/runtime/progress/{job_id}")
+    async def engine_runtime_progress(job_id: str) -> StreamingResponse:
+        async def events() -> AsyncIterator[str]:
+            while True:
+                job = engine.runtime_job(job_id)
+                if job is None:
+                    yield _sse({"type": "error", "detail": "unknown job"})
+                    return
+                percent = (
+                    round(100 * job.downloaded / job.total, 1) if job.total else 0
+                )
+                yield _sse(
+                    {
+                        "type": "progress",
+                        "id": job.id,
+                        "state": job.state,
+                        "downloaded": job.downloaded,
+                        "total": job.total,
+                        "percent": percent,
+                        "error": job.error,
+                    }
+                )
+                if job.state in {"done", "error"}:
+                    return
+                await asyncio.sleep(0.3)
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/vision/status")
     async def vision_status() -> dict[str, Any]:
