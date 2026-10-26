@@ -104,6 +104,13 @@ artifact, force two more swaps, and restore the previous model. The static
 contract also checks the runtime pin, VRAM/layer planner, CPU fallback, hot-swap
 flush, checksum path, and the Model Manager UI.
 
+The `edge` catalog also gates model identity and user knowledge:
+`self_model_identity` checks that the agent names the model and engine that are
+actually serving it (metrics carry the runtime label), while
+`self_user_knowledge_empty` and `self_user_knowledge_recall` check that "what do
+you know about me?" is answered about the user, admits an empty profile, and
+repeats facts the user just shared.
+
 The harness does not pretend to judge aesthetics with a threshold. It fails
 regressions it can prove and leaves the screenshots and event transcripts for
 the builder to inspect.
