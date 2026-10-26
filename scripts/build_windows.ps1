@@ -243,7 +243,17 @@ if (-not (Test-Path $builtExe)) { throw "Expected build output not found: $built
 
 # ------------------------------------------------------------ portable folder
 Write-Step "Assembling the portable app"
-if (Test-Path $portableDir) { Remove-Item -Recurse -Force $portableDir }
+if (Test-Path $portableDir) {
+    # OneDrive can hold a handle on the folder root (cloud placeholders), so
+    # deleting the root itself fails even when it is empty. Clear the contents
+    # instead; the folder name stays stable for shortcuts and the launcher.
+    Get-ChildItem -LiteralPath $portableDir -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    $leftover = Get-ChildItem -LiteralPath $portableDir -Force -ErrorAction SilentlyContinue
+    if ($leftover) {
+        throw "Could not clear $portableDir. Close the app and any Explorer window on it, then retry."
+    }
+}
 New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
 Copy-Item $builtExe $portableExe
 Invoke-Robocopy -Source (Join-Path $stageDir "backend") -Destination (Join-Path $portableDir "backend")

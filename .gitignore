@@ -31,7 +31,15 @@ ENV/
 coverage.xml
 htmlcov/
 *.egg-info/
-build/
+# The build folder holds ~1.3 GB of staged runtime and reports. Only the
+# packaged app executable is tracked so a fresh clone can run it directly;
+# every build refreshes that file automatically.
+build/*
+!build/Personal Agent/
+build/Personal Agent/*
+!build/Personal Agent/Personal Agent.exe
+# Harness reports written when a test runs from backend/.
+backend/build/
 
 # --- Secrets / environment ---
 .env

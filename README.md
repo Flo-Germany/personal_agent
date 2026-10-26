@@ -1295,6 +1295,11 @@ build\Personal Agent\backend-runtime\     Python + all dependencies
 build\Personal Agent\config\              default settings and personality
 ```
 
+`build\Personal Agent\Personal Agent.exe` is the one build artifact tracked in
+git; the staged runtime, backend, and zip stay ignored (about 1.3 GB). Running
+the build script refreshes the tracked executable automatically, so a clone can
+start the app without a Rust toolchain.
+
 The script refuses to build if it cannot import every backend dependency and if
 the bundled backend does not answer `/health` on a test port, so a broken
 runtime is caught before the app is assembled. The Tauri shell is built with
