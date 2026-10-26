@@ -422,14 +422,18 @@ export const ModelSettings = memo(function ModelSettings({
                 <Cpu className="size-3.5" />
               </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[11.5px] text-white/80">
+                <p className="text-[11.5px] leading-4 text-white/80">
                   {hardware?.gpu_name || "No Vulkan GPU detected"}
                   {hardware?.vram_gb
                     ? ` · ${hardware.vram_gb.toFixed(1)} GB VRAM`
                     : " · CPU only"}
                 </p>
-                <p className="truncate text-[10px] text-white/30">
-                  {hardware?.ram_gb.toFixed(1)} GB RAM · {hardware?.cpu}
+                <p
+                  className="text-[10px] leading-4 text-white/30"
+                  title={hardware?.cpu}
+                >
+                  {hardware?.cpu_cores ?? 0} CPU cores ·{" "}
+                  {hardware?.ram_gb.toFixed(1)} GB RAM
                 </p>
               </div>
               {status && !status.runtime.installed && (
@@ -455,7 +459,7 @@ export const ModelSettings = memo(function ModelSettings({
               <span className="text-[10px] tracking-wide text-white/30 uppercase">
                 Inference engine
               </span>
-              <div className="flex overflow-hidden rounded-lg border border-white/[0.08] bg-black/20">
+              <div className="flex overflow-hidden rounded-md border border-white/[0.07] bg-black/20">
                 {(
                   [
                     ["ollama", "Ollama"],
@@ -468,21 +472,16 @@ export const ModelSettings = memo(function ModelSettings({
                     aria-pressed={status?.engine === value}
                     disabled={busy !== null}
                     onClick={() => void switchEngine(value)}
-                    className={`px-2.5 py-1 text-[10px] transition-colors duration-150 ease-out disabled:opacity-40 ${
+                    className={`px-2 py-[2px] text-[10px] transition-colors duration-150 ease-out disabled:opacity-40 ${
                       status?.engine === value
-                        ? "bg-violet-300/15 text-violet-100/90"
-                        : "text-white/40 hover:text-white/70"
+                        ? "bg-white/[0.08] text-white/80"
+                        : "text-white/35 hover:text-white/60"
                     }`}
                   >
                     {label}
                   </button>
                 ))}
               </div>
-              <span className="text-[10px] text-white/25">
-                {status?.engine === "llamacpp"
-                  ? "Native Vulkan / CPU inference"
-                  : "Ollama daemon"}
-              </span>
             </div>
 
             {status?.servers.text?.running && (

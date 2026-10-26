@@ -39,6 +39,7 @@ class HardwareProfile:
     vram_bytes: int = 0
     ram_bytes: int = 0
     cpu: str = ""
+    cpu_cores: int = 0
     platform: str = ""
     vulkan: bool = False
     source: str = "unknown"
@@ -57,6 +58,7 @@ class HardwareProfile:
             "vram_gb": self.vram_gb,
             "ram_gb": self.ram_gb,
             "cpu": self.cpu,
+            "cpu_cores": self.cpu_cores,
             "platform": self.platform,
             "vulkan": self.vulkan,
             "source": self.source,
@@ -212,6 +214,7 @@ def detect_hardware(vram_override_gb: float | None = None) -> HardwareProfile:
     cpu = platform.processor() or ""
     profile = HardwareProfile(
         cpu=cpu.strip() or "unknown CPU",
+        cpu_cores=psutil.cpu_count(logical=False) or psutil.cpu_count() or 0,
         ram_bytes=int(psutil.virtual_memory().total),
         platform=f"{platform.system()} {platform.release()}",
     )

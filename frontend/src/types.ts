@@ -289,6 +289,7 @@ export type EngineHardware = {
   vram_gb: number;
   ram_gb: number;
   cpu: string;
+  cpu_cores?: number;
   platform: string;
   vulkan: boolean;
   source: string;
