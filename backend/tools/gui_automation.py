@@ -268,6 +268,19 @@ def _live_chat_state(
     return profile, live_name, live_title
 
 
+_workspace_manager: Any = None
+
+
+def _workspace() -> Any:
+    """Shared isolated-workspace manager for background capture and input."""
+    global _workspace_manager
+    if _workspace_manager is None:
+        from tools.workspace import WorkspaceManager
+
+        _workspace_manager = WorkspaceManager()
+    return _workspace_manager
+
+
 def _encode_image(path: str) -> str:
     return base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
@@ -316,12 +329,16 @@ class GUIAutomationService:
         self._target_title: str | None = None
         self._target_hwnd: int | None = None
         self._target_pid: int | None = None
+        # Set when the last analyze_screen_ui used an isolated window. Typing
+        # then goes through window messages instead of the global keyboard.
+        self._background_target: Any = None
 
     # ------------------------------------------------------------- lifecycle
     def reset(self) -> None:
         """Clear the halt and stale snapshots for a new user turn."""
         self.guard.reset()
         self.store.clear()
+        self._background_target = None
         reset_cache = getattr(self.parser, "reset", None)
         if callable(reset_cache):
             try:
@@ -872,6 +889,8 @@ class GUIAutomationService:
         *,
         display: int | None = None,
         window_title: str | None = None,
+        hwnd: int | None = None,
+        headless: bool = False,
     ) -> dict[str, Any]:
         if not self.settings.enabled:
             return {
@@ -893,10 +912,14 @@ class GUIAutomationService:
 
         requested_title = window_title or self._preferred_window_title
         try:
-            result = self.parser.snapshot(
-                display=display,
-                window_title=requested_title,
-            )
+            snapshot_args: dict[str, Any] = {
+                "display": display,
+                "window_title": requested_title,
+            }
+            if hwnd or headless:
+                snapshot_args["hwnd"] = hwnd
+                snapshot_args["headless"] = headless
+            result = self.parser.snapshot(**snapshot_args)
         except Exception as exc:  # noqa: BLE001 - report a readable tool error
             logger.exception("Set-of-Mark capture failed")
             return {
@@ -925,6 +948,7 @@ class GUIAutomationService:
 
         snapshot: SOMSnapshot = result["snapshot"]
         self.store.put(snapshot)
+        self._background_target = snapshot if snapshot.input_mode == "background" else None
         self._last_analysis = snapshot.to_public()
         self._last_screenshot = snapshot.screenshot
         live_context = self.context.capture()
@@ -970,6 +994,7 @@ class GUIAutomationService:
             "process_id": snapshot.process_id,
             "process_name": snapshot.process_name,
             "window_foreground": window_foreground,
+            "input_mode": snapshot.input_mode,
             "detection": snapshot.detection,
             "uia_scanned": snapshot.uia_scanned,
             "uia_verified": snapshot.uia_accepted,
@@ -1225,6 +1250,9 @@ class GUIAutomationService:
         assert snapshot is not None and element is not None
         x, y = element.center
 
+        if snapshot.input_mode == "background":
+            return self._background_click(snapshot, element, button, clicks)
+
         before = self._windows()
         loop = self._loop_result(snapshot, element, before)
         if loop is not None:
@@ -1371,6 +1399,13 @@ class GUIAutomationService:
             return {"ok": False, "error": "GUI automation is disabled."}
         if self.guard.halted:
             return self._halted_result()
+
+        if self._background_target is not None:
+            return self._background_type(
+                self._background_target,
+                text,
+                press_enter=press_enter,
+            )
 
         target_ok, target_error = self._ensure_input_target()
         if not target_ok:
@@ -1683,6 +1718,82 @@ class GUIAutomationService:
         return result
 
     # ------------------------------------------------------------- helpers
+    def _background_click(
+        self,
+        snapshot: SOMSnapshot,
+        element: Any,
+        button: str,
+        clicks: int,
+    ) -> dict[str, Any]:
+        """Post a click into the isolated window; never touches the cursor."""
+        hwnd = int(snapshot.window_handle or 0)
+        if not hwnd:
+            return {
+                "ok": False,
+                "error": "The background snapshot has no window handle.",
+            }
+        try:
+            result = _workspace().click(
+                hwnd,
+                element.center[0],
+                element.center[1],
+                button=button,
+                clicks=clicks,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Background click failed")
+            return {"ok": False, "error": f"Could not click the element: {exc}"}
+
+        self._record_action("click", snapshot.window_title, element, {"mode": "background"})
+        return {
+            "ok": True,
+            "snapshot_id": snapshot.snapshot_id,
+            "element": element.to_public(),
+            "point": [element.center[0], element.center[1]],
+            "button": button,
+            "clicks": clicks,
+            "mode": "background",
+            "focused_text_field": False,
+            "cursor_moved": bool(result.get("cursor_moved")),
+            "recent_actions": self._recent_actions(),
+            "message": (
+                f"Clicked #{element.id} {element.name!r} in the isolated window "
+                f"via {result.get('via')}. Your cursor did not move."
+            ),
+            "next_step": (
+                "Call keyboard_type_text to fill the field, or continue with the "
+                "next element from the same snapshot. The window stays isolated; "
+                "call isolated_workspace release when the task is done."
+            ),
+        }
+
+    def _background_type(
+        self,
+        snapshot: SOMSnapshot,
+        text: str,
+        *,
+        press_enter: bool = False,
+    ) -> dict[str, Any]:
+        hwnd = int(snapshot.window_handle or 0)
+        if not hwnd:
+            return {"ok": False, "error": "The background snapshot has no window handle."}
+        try:
+            result = _workspace().type_text(hwnd, text, press_enter=press_enter)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Background typing failed")
+            return {"ok": False, "error": f"Could not type into the window: {exc}"}
+        return {
+            "ok": True,
+            "mode": "background",
+            "characters": result.get("characters", 0),
+            "target_hwnd": result.get("target_hwnd"),
+            "via": result.get("via"),
+            "message": (
+                f"Typed {result.get('characters', 0)} character(s) into the "
+                "isolated window without taking keyboard focus."
+            ),
+        }
+
     def _require_element(
         self,
         snapshot_id: str,

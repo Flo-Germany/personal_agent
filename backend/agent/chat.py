@@ -139,6 +139,9 @@ _GUI_TOOL_NAMES = {
     "get_desktop_context",
     "analyze_screen_ui",
     "analyze_screen",
+    "ui_query",
+    "ui_action",
+    "isolated_workspace",
     "move_cursor_to",
     "click_element",
     "keyboard_type_text",
@@ -468,6 +471,8 @@ def _model_facing_tool_result(name: str, result: dict[str, Any]) -> str:
     try:
         if name == "analyze_screen_ui" and result.get("ok"):
             projected: Any = _compact_som_result(result)
+        elif name == "ui_query" and result.get("ok"):
+            projected = _compact_ui_tree(result)
         elif name == "get_desktop_context" and result.get("ok"):
             projected = _compact_desktop_context(result)
         elif (
@@ -484,6 +489,40 @@ def _model_facing_tool_result(name: str, result: dict[str, Any]) -> str:
     except Exception:  # noqa: BLE001 - never lose a result over projection
         logger.debug("Could not compact tool result %s", name, exc_info=True)
         return json.dumps(result, ensure_ascii=False, default=str)
+
+
+def _compact_ui_tree(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep the UIA fields the planner needs, drop rectangles and empty nodes."""
+    elements = [
+        item
+        for item in result.get("elements") or []
+        if isinstance(item, dict)
+        and (item.get("name") or item.get("patterns"))
+    ]
+    projection = {
+        "ok": result.get("ok"),
+        "window": {
+            "title": (result.get("window") or {}).get("title"),
+            "handle": (result.get("window") or {}).get("hwnd"),
+            "process_id": (result.get("window") or {}).get("process_id"),
+        },
+        "count": result.get("count"),
+        "interactable": result.get("interactable"),
+        "truncated": result.get("truncated"),
+        "input_mode": result.get("input_mode"),
+        "elements": [
+            {
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "type": item.get("control_type"),
+                "automation_id": item.get("automation_id"),
+                "patterns": item.get("patterns"),
+                **({"disabled": True} if item.get("enabled") is False else {}),
+            }
+            for item in elements
+        ],
+    }
+    return projection
 
 
 def _compact_read_file(result: dict[str, Any]) -> dict[str, Any]:

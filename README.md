@@ -485,8 +485,11 @@ The agent can use eighteen tools:
 | `read_window_content` | No | Read text from an open app via Windows UI Automation |
 | `analyze_screen` | No | Capture one display in memory and ask the local `qwen3-vl:8b-instruct` model a question; with several displays the user picks which one first |
 | `get_desktop_context` | No | Foreground window, process/parent chain, visible/minimized windows, dialogs, and the focused UI control |
-| `analyze_screen_ui` | No | UIA-verified Set-of-Mark map: element IDs/names/centers, verification source, app guide and shortcuts, numbered screenshot, local name match or vision suggestion, focused-control and window state |
-| `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element |
+| `analyze_screen_ui` | No | UIA-verified Set-of-Mark map: element IDs/names/centers, verification source, app guide and shortcuts, numbered screenshot, local name match or vision suggestion, focused-control and window state; `headless=true` captures an isolated window with PrintWindow |
+| `ui_query` | No | Background UIA tree: element IDs, control types, names, automation ids, rectangles and supported patterns, with a query filter |
+| `ui_action` | Yes | Invoke/set_value/toggle/select/expand/scroll/type/click an element via UIA patterns; no focus change and no cursor movement |
+| `isolated_workspace` | Yes | Attach a window to a private virtual desktop (or off-screen), capture it, and restore it afterwards |
+| `move_cursor_to` | Yes | Highlight, then glide the physical cursor to a detected element (foreground fallback) |
 | `click_element` | Yes | Highlight, glide, and click a detected element; physical input aborts instantly |
 | `keyboard_type_text` | Yes | Type into the focused field with synthetic keys or layout-safe clipboard paste |
 | `keyboard_press_keys` | Yes | Press Enter, Tab, Escape, arrows, or a key combination such as Ctrl+S |
@@ -1666,6 +1669,49 @@ serves screen analysis). It can be switched back to the 2B variant in
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\visual_qa.ps1
+```
+
+## Phase 26: universal background app control
+
+The agent can now drive arbitrary applications without moving the physical
+cursor, stealing keyboard focus, or switching the user's desktop. The route
+order is strict; full details are in
+[docs/background-automation.md](docs/background-automation.md).
+
+**Priority 1: UI Automation.** `ui_query` returns the target window's control
+tree (type, name, automation id, rectangle, and the patterns the element really
+supports). `ui_action` then uses those patterns - `invoke`, `set_value`,
+`toggle`, `select`, `expand`/`collapse`, `scroll_into_view`, `type`, or a
+message-based `click` - which run out-of-process and work while the window is
+covered, minimised, or on another virtual desktop. Element ids are scoped to one
+query, so a stale id fails loudly instead of clicking the wrong control.
+
+**Priority 2: isolated workspace.** For custom-drawn apps with no usable tree,
+`isolated_workspace attach` moves the window to a second virtual desktop through
+the documented `IVirtualDesktopManager`, or off-screen when no second desktop
+exists and creation is unsupported. `analyze_screen_ui(headless=true)` then
+captures that window with `PrintWindow` and runs the full Set-of-Mark pipeline on
+its pixels; `click_element` and `keyboard_type_text` post window messages into
+it. `isolated_workspace release` puts the window back where it was. The cursor
+and the visible desktop are never used.
+
+**Priority 3: visible input** (`move_cursor_to`, foreground `click_element`) is
+reserved for explicit user consent or a documented fallback when both background
+routes fail.
+
+The virtual-desktop *creation* interface is undocumented and version-dependent;
+on Windows 11 25H2 it crashes in pyvda, so creation runs in a crash-isolated
+worker and the workspace falls back to the off-screen backend. Moves and
+restores use the documented COM API and are verified. Background typing prefers
+`ValuePattern`; where an app ignores synthetic input, the tool reports why
+instead of silently typing into the wrong place.
+
+```text
+backend tests: 434 (12 new for UIA/workspace/SoM routing)
+live acceptance: scripts\live_phase26.py - all checks pass
+  attach (offscreen) -> PrintWindow ink 0.965 -> 27 UIA nodes / 16 interactable
+  set_value + invoke with cursor_moved=false -> headless SoM suggested id 10
+  background click + WM_CHAR typing -> release restored the window
 ```
 
 ## Known limitation

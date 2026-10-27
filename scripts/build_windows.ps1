@@ -167,7 +167,7 @@ Invoke-Robocopy -Source (Join-Path $repo "config") -Destination (Join-Path $stag
 Write-Step "Verifying the bundled runtime"
 $env:PYTHONNOUSERSITE = "1"
 $env:PYTHONUTF8 = "1"
-$importCheck = "import fastapi, uvicorn, numpy, PIL, cv2, psutil, matplotlib; import pywinauto, mss, pynput, rapidocr_onnxruntime; import torch, sentence_transformers; print('imports ok')"
+$importCheck = "import fastapi, uvicorn, numpy, PIL, cv2, psutil, matplotlib; import pywinauto, mss, pynput, rapidocr_onnxruntime; import pyvda, comtypes; import torch, sentence_transformers; print('imports ok')"
 & (Join-Path $runtimeDir "python.exe") -c $importCheck
 if ($LASTEXITCODE -ne 0) {
     throw "The bundled Python runtime cannot import the backend dependencies."

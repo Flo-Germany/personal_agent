@@ -24,3 +24,8 @@ onnxruntime==1.31.0
 # System diagnosis: resource/process metrics and chart rendering.
 psutil==7.2.2
 matplotlib==3.11.2
+
+# Background app control: documented virtual-desktop moves (creation is
+# attempted in an isolated worker because pyvda uses undocumented COM).
+pyvda==0.4.2
+comtypes==1.4.17

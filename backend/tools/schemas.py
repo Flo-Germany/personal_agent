@@ -784,6 +784,22 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                             "display when several are connected."
                         ),
                     },
+                    "headless": {
+                        "type": "boolean",
+                        "description": (
+                            "Analyse the window from an isolated workspace "
+                            "(PrintWindow) instead of the screen. Attach the "
+                            "window with isolated_workspace first. Clicks and "
+                            "typing then stay in the background."
+                        ),
+                    },
+                    "window_handle": {
+                        "type": "integer",
+                        "description": (
+                            "Native handle of the isolated window. Optional when "
+                            "window_title identifies exactly one attached window."
+                        ),
+                    },
                 },
                 "required": ["question"],
                 "additionalProperties": False,
@@ -795,7 +811,9 @@ TOOL_SCHEMAS: list[ToolSchema] = [
         "function": {
             "name": "move_cursor_to",
             "description": (
-                "Move the physical cursor smoothly and visibly to an element "
+                "Foreground fallback only. Prefer ui_query + ui_action, which act in the "
+        "background without focus or cursor movement. Move the physical cursor "
+        "smoothly and visibly to an element "
                 "from a fresh analyze_screen_ui snapshot. Shows a brief red "
                 "highlight first, then glides linearly. This only moves the "
                 "pointer: it does not click or focus a field. Requires user "
@@ -839,7 +857,10 @@ TOOL_SCHEMAS: list[ToolSchema] = [
         "function": {
             "name": "click_element",
             "description": (
-                "Click an element from a fresh analyze_screen_ui snapshot. "
+                "Click an element from a fresh analyze_screen_ui snapshot. When "
+                "the snapshot came from an isolated workspace (input_mode "
+                "background), this posts a window message and never moves the "
+                "cursor; otherwise it is the visible foreground route. "
                 "Requires user approval. The backend shows a red highlight, "
                 "glides the cursor, and clicks. Physical mouse or keyboard "
                 "input aborts instantly and halts all GUI tools for the turn. "
@@ -967,6 +988,167 @@ TOOL_SCHEMAS: list[ToolSchema] = [
                     },
                 },
                 "required": ["keys"],
+                "additionalProperties": False,
+            },
+        },
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "ui_query",
+            "description": (
+                "PRIORITY 1 for controlling any app: read its Windows UI "
+                "Automation tree without focusing it. Returns every element "
+                "with a short id, control type, name, automation id, class, "
+                "rectangle, enabled/offscreen flags and the UIA patterns it "
+                "really supports. Use this first for buttons, fields, menus, "
+                "tabs, lists and toggles; it works while the window is "
+                "unfocused, covered, minimised or on another virtual desktop. "
+                "Pass a window title or a window handle. Ids are valid until "
+                "the next ui_query for that window. Query a phrase to narrow a "
+                "large tree (for example 'save' or 'address')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window": {
+                        "type": "string",
+                        "description": "Exact or partial title of the target window.",
+                    },
+                    "window_handle": {
+                        "type": "integer",
+                        "description": (
+                            "Native window handle when it is already known "
+                            "(for example from isolated_workspace attach)."
+                        ),
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Optional case-insensitive filter on element name, "
+                            "automation id or control type."
+                        ),
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 6,
+                        "description": "Maximum tree depth (default 4).",
+                    },
+                    "max_nodes": {
+                        "type": "integer",
+                        "minimum": 10,
+                        "maximum": 220,
+                        "description": "Maximum elements to return (default 120).",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ui_action",
+            "description": (
+                "PRIORITY 1: act on an element from a fresh ui_query by its UIA "
+                "pattern. No focus change and no cursor movement. Actions: "
+                "invoke (buttons, links, menu items), set_value (text fields, "
+                "document value), toggle (checkboxes), select (tabs, list "
+                "items, radio buttons), expand/collapse (combos, tree nodes), "
+                "scroll_into_view, get_text, focus (only when the user asked "
+                "for keyboard focus), type (ValuePattern or WM_SETTEXT), and "
+                "click (posts a mouse message at the element when no pattern "
+                "exists). Prefer invoke/set_value/toggle over click. Requires "
+                "approval for anything that changes state."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "element_id": {
+                        "type": "string",
+                        "description": "Element id from the latest ui_query (for example 'u7').",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "invoke",
+                            "set_value",
+                            "toggle",
+                            "select",
+                            "expand",
+                            "collapse",
+                            "scroll_into_view",
+                            "focus",
+                            "get_text",
+                            "click",
+                            "type",
+                        ],
+                        "description": "The pattern action to perform.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Text for set_value or type.",
+                    },
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right"],
+                        "description": "Mouse button for click (default left).",
+                    },
+                    "clicks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2,
+                        "description": "Click count for click (default 1).",
+                    },
+                },
+                "required": ["element_id", "action"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "isolated_workspace",
+            "description": (
+                "PRIORITY 2 setup: move a window into a private workspace so it "
+                "can be analysed and driven without touching your screen. Uses "
+                "a different Windows virtual desktop when available, otherwise "
+                "moves the window off-screen on the current desktop. Operations "
+                "run in that workspace and the physical cursor never moves. "
+                "Actions: status (capabilities and attached windows), attach "
+                "(move a window by title or handle), capture (PrintWindow PNG "
+                "of the isolated window), release (restore the window to its "
+                "original position/desktop). Attach requires approval. After "
+                "attach, call analyze_screen_ui with headless=true and the same "
+                "window title/handle for Set-of-Mark vision."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "attach", "capture", "release"],
+                    },
+                    "window": {
+                        "type": "string",
+                        "description": "Window title for attach/capture/release.",
+                    },
+                    "window_handle": {
+                        "type": "integer",
+                        "description": "Window handle for attach/capture/release.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Optional name for a newly created virtual desktop."
+                        ),
+                    },
+                },
+                "required": ["action"],
                 "additionalProperties": False,
             },
         },

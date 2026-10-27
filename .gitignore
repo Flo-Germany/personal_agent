@@ -73,3 +73,7 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+# Phase 26 dev-time runtime artifacts (DATA_ROOT is the repo in a checkout)
+/screenshots/
+/automation/

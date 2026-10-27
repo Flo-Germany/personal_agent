@@ -295,6 +295,14 @@ class DisplayBounds:
         }
 
 
+class _WindowShim:
+    """Minimal stand-in for a pygetwindow handle when the window is isolated."""
+
+    def __init__(self, hwnd: int, title: str) -> None:
+        self._hWnd = int(hwnd)
+        self.title = title
+
+
 @dataclass(frozen=True)
 class UIElement:
     id: int
@@ -356,6 +364,9 @@ class SOMSnapshot:
     process_id: int | None = None
     process_name: str = ""
     window_rect: tuple[int, int, int, int] | None = None
+    # "foreground" for the normal screen path, "background" when the window was
+    # captured from an isolated workspace and input must stay off the cursor.
+    input_mode: str = "foreground"
 
     def element(self, element_id: int) -> UIElement | None:
         return next((item for item in self.elements if item.id == element_id), None)
@@ -383,6 +394,7 @@ class SOMSnapshot:
             "process_id": self.process_id,
             "process_name": self.process_name,
             "window_rect": list(self.window_rect) if self.window_rect else None,
+            "input_mode": self.input_mode,
             "elements": [item.to_public() for item in self.elements],
             "coordinate_map": self.coordinate_map(),
             "annotated_ids": list(self.annotated_ids),
@@ -684,6 +696,25 @@ def _activate_window(window: Any) -> None:
         window.activate()
     except Exception:  # noqa: BLE001 - activation is best effort
         logger.debug("Could not activate target window", exc_info=True)
+
+
+def _window_title_handle(hwnd: int) -> str:
+    import ctypes
+
+    length = ctypes.windll.user32.GetWindowTextLengthW(int(hwnd))
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    ctypes.windll.user32.GetWindowTextW(int(hwnd), buffer, length + 1)
+    return buffer.value
+
+
+def _window_rect_handle(hwnd: int) -> tuple[int, int, int, int] | None:
+    import ctypes
+    import ctypes.wintypes as wt
+
+    rect = wt.RECT()
+    if not ctypes.windll.user32.GetWindowRect(int(hwnd), ctypes.byref(rect)):
+        return None
+    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
 
 def _window_rect(window: Any) -> tuple[int, int, int, int] | None:
@@ -1261,85 +1292,121 @@ class SOMParser:
         display: int | None = None,
         window_title: str | None = None,
         activate: bool = True,
+        hwnd: int | None = None,
+        headless: bool = False,
     ) -> dict[str, Any]:
         monitors = _monitors()
         if not monitors:
             return {"ok": False, "error": "No display is available."}
 
-        window = _find_window(window_title)
-        actual_title = str(getattr(window, "title", "") or "").strip()
-        if window_title and window is None:
-            titles = [str(item.title).strip() for item in _visible_windows()][:20]
-            return {
-                "ok": False,
-                "error": (
-                    f"No visible window matches {window_title!r}. "
-                    f"Open windows: {titles}"
-                ),
-                "open_windows": titles,
-            }
-
-        if window is not None and activate:
-            target = int(getattr(window, "_hWnd", 0) or 0) or None
-            # Only activate when the window is not already foreground. If
-            # Windows refuses the foreground switch (a background process
-            # cannot always steal focus), do not burn half a second waiting.
-            if target is None:
-                _activate_window(window)
-                time.sleep(0.05)
-            elif _foreground_handle() != target:
-                _activate_window(window)
-                deadline = time.monotonic() + 0.15
-                while (
-                    _foreground_handle() != target
-                    and time.monotonic() < deadline
-                ):
-                    time.sleep(0.02)
-
-        hwnd = int(getattr(window, "_hWnd", 0) or 0) or None
-        target_foreground = bool(hwnd) and _foreground_handle() == hwnd
-
-        monitor: DisplayBounds | None = None
-        if display is not None:
-            try:
-                chosen = int(display)
-            except (TypeError, ValueError):
-                return {"ok": False, "error": "Display must be a 1-based number."}
-            if chosen < 1 or chosen > len(monitors):
+        headless_handle = int(hwnd or 0) if headless else 0
+        if headless_handle:
+            rect = _window_rect_handle(headless_handle)
+            if rect is None:
                 return {
                     "ok": False,
-                    "error": f"Display {chosen} is not available.",
-                    "displays": [item.to_public() for item in monitors],
+                    "error": f"Window {headless_handle} no longer exists.",
                 }
-            monitor = monitors[chosen - 1]
+            actual_title = _window_title_handle(headless_handle)
+            window: Any = _WindowShim(headless_handle, actual_title)
+            monitor = DisplayBounds(
+                index=1,
+                left=rect[0],
+                top=rect[1],
+                width=max(1, rect[2] - rect[0]),
+                height=max(1, rect[3] - rect[1]),
+                primary=False,
+            )
+            capture_rect = rect
+            try:
+                from tools.workspace import WorkspaceManager
+
+                image = WorkspaceManager.capture_image(headless_handle)
+            except Exception as exc:  # noqa: BLE001 - report a readable error
+                return {
+                    "ok": False,
+                    "error": f"Could not capture the isolated window: {exc}",
+                }
+            fingerprint = _screen_fingerprint(image)
+            foreground = 0
+            target_foreground = False
         else:
-            rect = _window_rect(window) if window is not None else None
-            if rect is not None:
-                monitor = _display_for_rect(monitors, *rect)
-            if monitor is None:
-                monitor = next(
-                    (item for item in monitors if item.primary),
-                    monitors[0],
-                )
+            window = _find_window(window_title)
+            actual_title = str(getattr(window, "title", "") or "").strip()
+            if window_title and window is None:
+                titles = [str(item.title).strip() for item in _visible_windows()][:20]
+                return {
+                    "ok": False,
+                    "error": (
+                        f"No visible window matches {window_title!r}. "
+                        f"Open windows: {titles}"
+                    ),
+                    "open_windows": titles,
+                }
 
-        # Capture only the target window when it fits on the selected display.
-        # A 4K display grab is several times more expensive to capture,
-        # downscale, and encode than the window itself.
-        capture_rect = (
-            monitor.left,
-            monitor.top,
-            monitor.right,
-            monitor.bottom,
-        )
-        window_rect = _window_rect(window) if window is not None else None
-        if window_rect is not None:
-            clipped = _clip_rect(window_rect, monitor)
-            if clipped[2] - clipped[0] >= 40 and clipped[3] - clipped[1] >= 40:
-                capture_rect = clipped
+            if window is not None and activate:
+                target = int(getattr(window, "_hWnd", 0) or 0) or None
+                # Only activate when the window is not already foreground. If
+                # Windows refuses the foreground switch (a background process
+                # cannot always steal focus), do not burn half a second waiting.
+                if target is None:
+                    _activate_window(window)
+                    time.sleep(0.05)
+                elif _foreground_handle() != target:
+                    _activate_window(window)
+                    deadline = time.monotonic() + 0.15
+                    while (
+                        _foreground_handle() != target
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.02)
 
-        image = _capture_region(capture_rect)
-        fingerprint = _screen_fingerprint(image)
-        foreground = _foreground_handle()
+            hwnd = headless_handle or int(getattr(window, "_hWnd", 0) or 0) or None
+            target_foreground = (
+                bool(hwnd) and not headless_handle and _foreground_handle() == hwnd
+            )
+
+            monitor: DisplayBounds | None = None
+            if display is not None:
+                try:
+                    chosen = int(display)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "Display must be a 1-based number."}
+                if chosen < 1 or chosen > len(monitors):
+                    return {
+                        "ok": False,
+                        "error": f"Display {chosen} is not available.",
+                        "displays": [item.to_public() for item in monitors],
+                    }
+                monitor = monitors[chosen - 1]
+            else:
+                rect = _window_rect(window) if window is not None else None
+                if rect is not None:
+                    monitor = _display_for_rect(monitors, *rect)
+                if monitor is None:
+                    monitor = next(
+                        (item for item in monitors if item.primary),
+                        monitors[0],
+                    )
+
+            # Capture only the target window when it fits on the selected display.
+            # A 4K display grab is several times more expensive to capture,
+            # downscale, and encode than the window itself.
+            capture_rect = (
+                monitor.left,
+                monitor.top,
+                monitor.right,
+                monitor.bottom,
+            )
+            window_rect = _window_rect(window) if window is not None else None
+            if window_rect is not None:
+                clipped = _clip_rect(window_rect, monitor)
+                if clipped[2] - clipped[0] >= 40 and clipped[3] - clipped[1] >= 40:
+                    capture_rect = clipped
+
+            image = _capture_region(capture_rect)
+            fingerprint = _screen_fingerprint(image)
+            foreground = _foreground_handle()
 
         reused = self._reusable(
             image=image,
@@ -1386,7 +1453,7 @@ class SOMParser:
         combined: list[DetectedElement] = list(uia_elements)
         ocr_stats: dict[str, Any] = {}
         if len(uia_elements) < self.settings.uia_min_elements:
-            if target_foreground:
+            if target_foreground or headless_handle:
                 ocr_elements, ocr_stats = _ocr_elements(
                     image,
                     self.settings,
@@ -1476,6 +1543,7 @@ class SOMParser:
             process_id=process_id,
             process_name=process_name,
             window_rect=window_rect_live,
+            input_mode="background" if headless_handle else "foreground",
         )
         self.store.put(snapshot)
         self._remember(
@@ -1509,11 +1577,16 @@ class SOMParser:
                 f"OCR: {ocr_stats.get('accepted', 0)} labels. Bring the target "
                 "window to the front or pass its exact window_title."
             )
-        if not target_foreground:
+        if not target_foreground and not headless_handle:
             message += (
                 " The target window is not foreground, so the screenshot may "
                 "show another window; bring it to the front before relying on "
                 "the image."
+            )
+        if headless_handle:
+            message += (
+                " Captured from an isolated window; clicks and typing use "
+                "background input and never move your cursor."
             )
 
         return {

@@ -70,6 +70,11 @@ class ToolExecutor:
             schema["function"]["name"]: schema["function"].get("parameters", {})
             for schema in TOOL_SCHEMAS
         }
+        from tools.uia_driver import UiaDriver
+        from tools.workspace import WorkspaceManager
+
+        self.uia = UiaDriver()
+        self.workspace = WorkspaceManager()
 
         tool_settings = settings
 
@@ -159,16 +164,115 @@ class ToolExecutor:
             question: str,
             display: int | None = None,
             window_title: str | None = None,
+            headless: bool = False,
+            window_handle: int | None = None,
             _screen_context: dict[str, Any] | None = None,
             **_ignored: Any,
         ) -> dict[str, Any]:
             # The screen context is accepted for parity with analyze_screen;
             # SoM grounding uses its own short JSON instruction.
-            return self.automation.analyze(
-                question,
-                display=display,
-                window_title=window_title,
+            hwnd = int(window_handle) if window_handle else None
+            if headless:
+                # Attaching moves the user's window, so it must stay an explicit,
+                # approved isolated_workspace call. Never attach implicitly here.
+                attached = self.workspace.status().get("workspaces") or []
+                if hwnd is None and window_title:
+                    match = next(
+                        (
+                            item
+                            for item in attached
+                            if window_title.casefold() in str(item.get("title", "")).casefold()
+                        ),
+                        None,
+                    )
+                    hwnd = int(match["hwnd"]) if match else None
+                elif hwnd is not None and not any(int(item["hwnd"]) == hwnd for item in attached):
+                    hwnd = None
+                if hwnd is None:
+                    return {
+                        "ok": False,
+                        "needs_attach": True,
+                        "error": (
+                            "headless=true only works on a window that is already "
+                            "in an isolated workspace. Call isolated_workspace with "
+                            "action=attach for this window first, then retry."
+                        ),
+                    }
+            analyze_args: dict[str, Any] = {
+                "display": display,
+                "window_title": window_title,
+            }
+            if headless or hwnd is not None:
+                analyze_args.update(hwnd=hwnd, headless=headless)
+            return self.automation.analyze(question, **analyze_args)
+
+        def ui_query(
+            window: str | None = None,
+            window_handle: int | None = None,
+            query: str | None = None,
+            depth: int = 4,
+            max_nodes: int = 120,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.uia.tree(
+                title=window,
+                hwnd=int(window_handle) if window_handle else None,
+                query=query,
+                depth=depth,
+                max_nodes=max_nodes,
             )
+
+        def ui_action(
+            element_id: str,
+            action: str,
+            value: str | None = None,
+            button: str = "left",
+            clicks: int = 1,
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            return self.uia.act(
+                str(element_id),
+                action,
+                value=value,
+                button=button,
+                clicks=clicks,
+            )
+
+        def isolated_workspace(
+            action: str,
+            window: str | None = None,
+            window_handle: int | None = None,
+            name: str = "Compa workspace",
+            **_ignored: Any,
+        ) -> dict[str, Any]:
+            action = str(action or "").strip().lower()
+            hwnd = int(window_handle) if window_handle else None
+            if action == "status":
+                return self.workspace.status()
+            if action == "attach":
+                return self.workspace.attach(hwnd=hwnd, title=window, name=name)
+            if action == "capture":
+                if hwnd is None:
+                    resolved = self.uia.resolve_window(title=window)
+                    hwnd = int(resolved["hwnd"])
+                return self.workspace.capture(hwnd)
+            if action == "release":
+                if hwnd is None and window:
+                    attached = self.workspace.status().get("workspaces") or []
+                    match = next(
+                        (
+                            item
+                            for item in attached
+                            if window.casefold() in str(item.get("title", "")).casefold()
+                        ),
+                        None,
+                    )
+                    hwnd = int(match["hwnd"]) if match else None
+                return self.workspace.release(hwnd)
+            return {
+                "ok": False,
+                "error": "action must be status, attach, capture or release.",
+            }
 
         def move_cursor_to(
             snapshot_id: str,
@@ -321,6 +425,9 @@ class ToolExecutor:
             "analyze_screen": analyze_screen,
             "get_desktop_context": lambda **_ignored: self.automation.get_context(),
             "analyze_screen_ui": analyze_screen_ui,
+            "ui_query": ui_query,
+            "ui_action": ui_action,
+            "isolated_workspace": isolated_workspace,
             "move_cursor_to": move_cursor_to,
             "click_element": click_element,
             "keyboard_type_text": keyboard_type_text,
