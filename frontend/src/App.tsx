@@ -9,6 +9,7 @@ import { DisplayPickerCard } from "./components/DisplayPickerCard";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem } from "./components/MessageItem";
 import { ModelSettings } from "./components/ModelSettings";
+import { SettingsView } from "./components/SettingsView";
 import { ModernPalette } from "./components/ModernPalette";
 import { SearchResults } from "./components/SearchResults";
 import { ToolStatus } from "./components/ToolStatus";
@@ -271,10 +272,17 @@ function App() {
   );
 
   const settingsView = (
-    <ModelSettings
-      extra={desktopSection}
+    <SettingsView
+      identity={identity}
       onClose={() => setView("chat")}
-      onModelChanged={() => void refreshIdentity()}
+      permissions={desktopSection}
+      engine={
+        <ModelSettings
+          embedded
+          onClose={() => setView("chat")}
+          onModelChanged={() => void refreshIdentity()}
+        />
+      }
     />
   );
 

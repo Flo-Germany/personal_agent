@@ -103,12 +103,15 @@ type ModelSettingsProps = {
   onModelChanged: () => void;
   /** Shell integration block rendered above the model sections. */
   extra?: React.ReactNode;
+  /** Hide the panel header when embedded in the two-pane settings shell. */
+  embedded?: boolean;
 };
 
 export const ModelSettings = memo(function ModelSettings({
   onClose,
   onModelChanged,
   extra,
+  embedded = false,
 }: ModelSettingsProps) {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [models, setModels] = useState<CatalogModel[]>([]);
@@ -387,6 +390,7 @@ export const ModelSettings = memo(function ModelSettings({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {!embedded && (
       <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.055] px-4 py-3 sm:px-5">
         <Settings2 className="size-4 text-white/45" />
         <h2 className="text-[13px] font-medium text-white/90">Settings</h2>
@@ -402,8 +406,9 @@ export const ModelSettings = memo(function ModelSettings({
           <X className="size-4" />
         </button>
       </div>
+      )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+      <div className={`min-h-0 flex-1 overflow-y-auto ${embedded ? "px-1 py-1" : "px-4 py-4 sm:px-5"}`}>
         <div className="mx-auto w-full max-w-3xl space-y-4">
           {error && (
             <p className="rounded-lg border border-rose-300/20 bg-rose-400/[0.06] px-3 py-2 text-[10.5px] text-rose-100/80">
@@ -411,7 +416,7 @@ export const ModelSettings = memo(function ModelSettings({
             </p>
           )}
 
-          {extra}
+          {!embedded && extra}
 
           {status?.engine === "ollama" && (
             <p className="rounded-lg border border-amber-300/15 bg-amber-300/[0.05] px-3 py-2 text-[10.5px] leading-4 text-amber-100/70">
