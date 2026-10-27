@@ -156,6 +156,55 @@ def build_knowledge_block(knowledge: str) -> str:
     )
 
 
+def build_style_block(settings: Settings) -> str:
+    """Language and communication-style instructions chosen in Settings."""
+    languages = {"de": "German", "en": "English", "zh": "Chinese"}
+    styles = {
+        "concise": (
+            "Answer briefly and directly. Prefer one or two short paragraphs; "
+            "skip introductions and repeated summaries."
+        ),
+        "conversational": (
+            "Write like a thoughtful, competent friend: natural sentences, "
+            "plain language, no corporate tone, no filler."
+        ),
+        "technical": (
+            "Be precise and technical. Use exact names, versions, commands and "
+            "numbers; keep explanations structured and compact."
+        ),
+    }
+    parts: list[str] = []
+    language = getattr(settings.agent, "language", "auto")
+    if language in languages:
+        parts.append(
+            f"Reply in {languages[language]} unless the user explicitly asks "
+            "for another language in this message."
+        )
+    style = getattr(settings.agent, "communication_style", "conversational")
+    if style in styles:
+        parts.append(styles[style])
+    autonomy = {
+        "cautious": (
+            "Work in small, verifiable steps. Describe the change before any "
+            "tool call that modifies files, apps or settings, and ask before "
+            "continuing when the next step is not obviously safe."
+        ),
+        "balanced": (
+            "Plan briefly, then act. Use read-only tools freely; propose the "
+            "plan and wait for approval before changing anything."
+        ),
+        "autonomous": (
+            "Carry multi-step tasks through end to end without asking between "
+            "routine steps. Still stop for destructive actions, credentials, "
+            "money, or anything ambiguous."
+        ),
+    }
+    level = getattr(settings.agent, "autonomy", "balanced")
+    if level in autonomy:
+        parts.append(autonomy[level])
+    return " ".join(parts)
+
+
 def build_system_prompt(
     settings: Settings,
     knowledge: str = "",
@@ -170,6 +219,7 @@ def build_system_prompt(
         "running entirely on the user's machine.",
         "You are talking directly with the user through a small desktop chat window.",
         build_identity_block(settings, now=now, project_root=project_root),
+        build_style_block(settings),
     ]
 
     runtime_model = (getattr(settings, "runtime_model", "") or "").strip()

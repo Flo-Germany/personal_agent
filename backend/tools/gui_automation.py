@@ -1273,6 +1273,8 @@ class GUIAutomationService:
         if loop is not None:
             return loop
 
+        if not self._foreground_allowed():
+            return self._foreground_blocked()
         try:
             with self.guard.execution():
                 self.pointer.click(
@@ -1597,6 +1599,8 @@ class GUIAutomationService:
                 "error": "Text is too long; type at most 8000 characters.",
             }
 
+        if not self._foreground_allowed():
+            return self._foreground_blocked()
         before = self._windows()
         try:
             with self.guard.execution():
@@ -1822,6 +1826,20 @@ class GUIAutomationService:
             "message": (
                 f"Typed {result.get('characters', 0)} character(s) into the "
                 "isolated window without taking keyboard focus."
+            ),
+        }
+
+    def _foreground_allowed(self) -> bool:
+        return bool(getattr(self.settings, "allow_foreground_fallback", True))
+
+    def _foreground_blocked(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "background_only": True,
+            "error": (
+                "The physical cursor fallback is disabled in Settings > "
+                "Permissions. Use ui_query/ui_action or isolated_workspace "
+                "instead, or enable the fallback explicitly."
             ),
         }
 

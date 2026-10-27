@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -27,7 +28,7 @@ from agent.prompt import load_personality
 from engine import EngineService, get_entry
 from memory.knowledge import KnowledgeBase
 from memory.store import ConversationStore
-from settings import DATA_ROOT, Settings, load_settings
+from settings import DATA_ROOT, DEFAULT_CONFIG_PATH, Settings, load_settings
 from tools.executor import ToolExecutor
 from tools.vision_tools import VisionService
 
@@ -91,6 +92,49 @@ ALLOWED_ORIGINS = [
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: UUID | None = None
+
+
+class EditableSettings(BaseModel):
+    """The subset of settings the UI may change, with validation."""
+
+    agent_name: str | None = Field(default=None, min_length=1, max_length=60)
+    language: Literal["auto", "de", "en", "zh"] | None = None
+    communication_style: Literal["concise", "conversational", "technical"] | None = None
+    autonomy: Literal["cautious", "balanced", "autonomous"] | None = None
+    context_window: int | None = Field(default=None, ge=2048, le=131072)
+    keep_alive_seconds: int | None = Field(default=None, ge=-1, le=86_400)
+    cpu_threads: int | None = Field(default=None, ge=1, le=256)
+    process_priority: Literal["eco", "normal", "high"] | None = None
+    gpu_layers: int | None = Field(default=None, ge=0, le=512)
+    vram_override_gb: float | None = Field(default=None, gt=0, le=512)
+    vision_max_width: int | None = Field(default=None, ge=640, le=3840)
+    uia_depth: int | None = Field(default=None, ge=2, le=60)
+    allow_foreground_fallback: bool | None = None
+
+
+class KnowledgeContent(BaseModel):
+    content: str = Field(default="", max_length=200_000)
+
+
+def _editable_snapshot(settings: Settings, config_file: Path) -> dict[str, Any]:
+    return {
+        "agent_name": settings.agent_name,
+        "language": settings.agent.language,
+        "communication_style": settings.agent.communication_style,
+        "autonomy": settings.agent.autonomy,
+        "context_window": settings.engine.context_window or settings.ollama.context_window,
+        "keep_alive_seconds": settings.ollama.keep_alive_seconds,
+        "cpu_threads": settings.engine.cpu_threads,
+        "process_priority": settings.engine.process_priority,
+        "gpu_layers": settings.engine.gpu_layers,
+        "vram_override_gb": settings.engine.vram_override_gb,
+        "vision_max_width": settings.automation.screenshot_max_width,
+        "uia_depth": settings.automation.max_element_depth,
+        "allow_foreground_fallback": settings.automation.allow_foreground_fallback,
+        "config_path": str(config_file),
+        "engine_type": settings.engine.type,
+        "runtime_model": settings.runtime_model,
+    }
 
 
 class ChatResponse(BaseModel):
@@ -169,8 +213,10 @@ def create_app(
     chat_service: ChatService | None = None,
     vision_service: VisionService | None = None,
     engine_service: EngineService | None = None,
+    config_path: Path | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    config_file = config_path or DEFAULT_CONFIG_PATH
     store = store or ConversationStore(
         max_conversations=settings.memory.max_conversations,
     )
@@ -339,6 +385,134 @@ def create_app(
             model=model,
         )
 
+    @app.get("/settings/editable")
+    async def get_editable_settings() -> dict[str, Any]:
+        """Return the settings the UI is allowed to change."""
+        return {"ok": True, "settings": _editable_snapshot(settings, config_file)}
+
+    @app.patch("/settings/editable")
+    async def patch_editable_settings(payload: EditableSettings) -> dict[str, Any]:
+        """Apply and persist the editable settings.
+
+        Engine-related values need a server reload, so the response reports
+        ``restart_required`` instead of pretending they are live.
+        """
+        # exclude_unset keeps an explicit null meaningful: it clears an
+        # optional override (GPU layers, VRAM, CPU threads).
+        changes = payload.model_dump(exclude_unset=True)
+        restart_fields = {
+            "context_window",
+            "keep_alive_seconds",
+            "cpu_threads",
+            "process_priority",
+            "gpu_layers",
+            "vram_override_gb",
+        }
+        restart_required = bool(restart_fields & set(changes))
+
+        if changes.get("agent_name") is not None:
+            settings.agent_name = str(changes["agent_name"]).strip()
+        if changes.get("language") is not None:
+            settings.agent.language = changes["language"]
+        if changes.get("communication_style") is not None:
+            settings.agent.communication_style = changes["communication_style"]
+        if changes.get("autonomy") is not None:
+            settings.agent.autonomy = changes["autonomy"]
+        if changes.get("context_window") is not None:
+            settings.ollama.context_window = int(changes["context_window"])
+            settings.engine.context_window = int(changes["context_window"])
+        if changes.get("keep_alive_seconds") is not None:
+            settings.ollama.keep_alive_seconds = int(changes["keep_alive_seconds"])
+        if "cpu_threads" in changes:
+            value = changes["cpu_threads"]
+            settings.engine.cpu_threads = None if value is None else int(value)
+        if changes.get("process_priority") is not None:
+            settings.engine.process_priority = changes["process_priority"]
+        if "gpu_layers" in changes:
+            value = changes["gpu_layers"]
+            settings.engine.gpu_layers = None if value is None else int(value)
+        if "vram_override_gb" in changes:
+            value = changes["vram_override_gb"]
+            settings.engine.vram_override_gb = (
+                None if value is None else float(value)
+            )
+        if changes.get("vision_max_width") is not None:
+            value = int(changes["vision_max_width"])
+            settings.automation.screenshot_max_width = value
+            settings.vision.screen_max_width = value
+        if changes.get("uia_depth") is not None:
+            settings.automation.max_element_depth = int(changes["uia_depth"])
+        if "allow_foreground_fallback" in changes:
+            settings.automation.allow_foreground_fallback = bool(
+                changes["allow_foreground_fallback"]
+            )
+
+        try:
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text(
+                json.dumps(settings.model_dump(mode="json"), indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - report a readable write error
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not save the settings file: {exc}",
+            ) from exc
+
+        return {
+            "ok": True,
+            "settings": _editable_snapshot(settings, config_file),
+            "restart_required": restart_required,
+            "message": (
+                "Saved. Restart the engine to apply the inference changes."
+                if restart_required
+                else "Saved."
+            ),
+        }
+
+    @app.get("/knowledge")
+    async def get_knowledge() -> dict[str, Any]:
+        content = knowledge.read()
+        return {
+            "ok": True,
+            "path": str(knowledge.path),
+            "content": content,
+            "chars": len(content),
+        }
+
+    @app.put("/knowledge")
+    async def put_knowledge(payload: KnowledgeContent) -> dict[str, Any]:
+        path = knowledge.path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.with_suffix(path.suffix + ".bak").write_text(
+                    path.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+            path.write_text(payload.content, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the knowledge base: {exc}"
+            ) from exc
+        return {"ok": True, "chars": len(payload.content), "path": str(path)}
+
+    @app.delete("/knowledge")
+    async def clear_knowledge() -> dict[str, Any]:
+        path = knowledge.path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                path.with_suffix(path.suffix + ".bak").write_text(
+                    path.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+                path.unlink()
+            knowledge.ensure_file()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=500, detail=f"Could not reset the knowledge base: {exc}"
+            ) from exc
+        return {"ok": True, "content": knowledge.read(), "path": str(path)}
+
     @app.get("/diagnostics/config")
     async def diagnostics_config() -> dict[str, Any]:
         """Expose non-secret runtime knobs for local evaluation harnesses."""
@@ -476,6 +650,34 @@ def create_app(
                 engine.model_label("text")
                 if client is not None
                 else f"Ollama · {settings.ollama.model}"
+            )
+        return result
+
+    @app.post("/engine/restart")
+    async def engine_restart() -> dict[str, Any]:
+        """Reload the inference process so saved tuning takes effect.
+
+        Threads, context, layer count and priority are server arguments, so the
+        running llama-server is stopped and the text client is rebound.
+        """
+        engine.servers.stop_all()
+        try:
+            result = await run_in_threadpool(engine.set_type, settings.engine.type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        if hasattr(chat_service, "set_client"):
+            client = None
+            if settings.engine.type == "llamacpp":
+                try:
+                    client = await run_in_threadpool(engine.text_client)
+                except Exception as exc:  # noqa: BLE001 - keep chat usable
+                    logger.warning("Could not reload the llama.cpp client: %s", exc)
+            chat_service.set_client(client or ollama_client)
+            settings.runtime_model = (
+                engine.model_label("text")
+                if client is not None
+                else f"Ollama - {settings.ollama.model}"
             )
         return result
 

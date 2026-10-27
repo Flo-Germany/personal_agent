@@ -161,6 +161,15 @@ class AgentSettings(BaseModel):
     max_iterations: int = Field(default=60, ge=0)
     # 0 means no hard limit on actions after one approval.
     max_auto_approved_actions: int = Field(default=5, ge=0)
+    # Reply language for proactive messages and answers ("auto" follows the
+    # user's wording; a fixed value keeps the assistant consistent).
+    language: Literal["auto", "de", "en", "zh"] = "auto"
+    communication_style: Literal["concise", "conversational", "technical"] = (
+        "conversational"
+    )
+    # How much the agent does before pausing. Approvals for mutating tools are
+    # never bypassed; this only shapes planning and how often it asks.
+    autonomy: Literal["cautious", "balanced", "autonomous"] = "balanced"
     approval_ttl_seconds: float = Field(default=600.0, gt=0)
     # Successful recoveries and multi-step workflows become durable facts in
     # memory/knowledge_base.md.
@@ -277,6 +286,9 @@ class AutomationSettings(BaseModel):
     # accumulate hundreds of megabytes in memory/screenshots.
     screenshot_keep: int = Field(default=200, ge=10, le=5000)
     visual_fallback: bool = True
+    # Allow the foreground cursor/keyboard path when no background route works.
+    # Turning this off forces ui_query/isolated_workspace only.
+    allow_foreground_fallback: bool = True
     # If UIA exposes fewer than this many verified controls, use the strict OCR
     # fallback. The default of 1 means "only when UIA exposes nothing usable";
     # raise it for custom apps that expose a partial tree.
@@ -307,6 +319,9 @@ class EngineSettings(BaseModel):
     # llama.cpp speaks the same OpenAI subset as the Ollama adapter, so the
     # agent loop is unchanged; this switch only selects the transport.
     type: Literal["ollama", "llamacpp"] = "ollama"
+    # llama-server --threads; None lets the runtime choose.
+    cpu_threads: int | None = Field(default=None, ge=1, le=256)
+    process_priority: Literal["eco", "normal", "high"] = "normal"
     # Leave auto planning on unless you want to pin a layer count.
     gpu_layers: int | None = Field(default=None, ge=0, le=512)
     vram_override_gb: float | None = Field(default=None, gt=0, le=512)

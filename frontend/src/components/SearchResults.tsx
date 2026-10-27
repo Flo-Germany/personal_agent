@@ -110,7 +110,7 @@ function highlightName(name: string, needle: string | null | undefined) {
   return (
     <>
       {name.slice(0, index)}
-      <span className="rounded-[2px] bg-violet-300/10 text-violet-100/95">
+      <span className="rounded-[2px] bg-accent/10 text-accent-ink">
         {name.slice(index, index + query.length)}
       </span>
       {name.slice(index + query.length)}
@@ -137,7 +137,7 @@ function RowAction({
       }}
       aria-label={label}
       title={label}
-      className="flex size-6 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+      className="flex size-6 items-center justify-center rounded text-fg/68 transition-colors duration-150 ease-out hover:bg-fg/[0.08] hover:text-fg/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
     >
       {children}
     </button>
@@ -252,7 +252,7 @@ export const SearchResults = memo(function SearchResults({
         aria-expanded={isFolder && hasChildren ? isOpen : undefined}
       >
         <div
-          className="group flex items-center gap-1 rounded-md pr-1 transition-colors duration-150 ease-out hover:bg-white/[0.03]"
+          className="group flex items-center gap-1 rounded-md pr-1 transition-colors duration-150 ease-out hover:bg-fg/[0.03]"
           style={{ paddingLeft: `${depth * 14 + 4}px` }}
         >
           {isFolder && hasChildren ? (
@@ -260,7 +260,7 @@ export const SearchResults = memo(function SearchResults({
               type="button"
               onClick={() => toggle(node.path)}
               aria-label={isOpen ? `Collapse ${node.name}` : `Expand ${node.name}`}
-              className="flex size-6 shrink-0 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:text-white/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+              className="flex size-6 shrink-0 items-center justify-center rounded text-fg/68 transition-colors duration-150 ease-out hover:text-fg/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
             >
               <ChevronRight
                 className={`size-3 transition-transform duration-150 ease-out ${
@@ -276,20 +276,20 @@ export const SearchResults = memo(function SearchResults({
             type="button"
             onClick={() => void openLocalFile(node.path)}
             title={node.path}
-            className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/40"
+            className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             <Icon
               className={`size-3.5 shrink-0 ${
                 isMatch
                   ? isFolder
-                    ? "text-amber-200/70"
-                    : "text-violet-200/60"
-                  : "text-white/48"
+                    ? "text-warning-ink"
+                    : "text-accent-ink"
+                  : "text-fg/68"
               }`}
             />
             <span
               className={`truncate text-[11px] leading-4 ${
-                isMatch ? "text-white/85" : "text-white/58"
+                isMatch ? "text-fg/85" : "text-fg/68"
               }`}
             >
               {isMatch
@@ -297,17 +297,17 @@ export const SearchResults = memo(function SearchResults({
                 : node.name}
             </span>
             {isFolder && node.children_count ? (
-              <span className="shrink-0 text-[9px] tabular-nums text-white/48">
+              <span className="shrink-0 text-[9px] tabular-nums text-fg/68">
                 {plural(node.children_count, "item")}
               </span>
             ) : null}
             {size ? (
-              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/48 sm:inline">
+              <span className="hidden shrink-0 text-[9px] tabular-nums text-fg/68 sm:inline">
                 {size}
               </span>
             ) : null}
             {age && isMatch ? (
-              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/48 md:inline">
+              <span className="hidden shrink-0 text-[9px] tabular-nums text-fg/68 md:inline">
                 {age}
               </span>
             ) : null}
@@ -348,36 +348,36 @@ export const SearchResults = memo(function SearchResults({
       type="button"
       onClick={() => setFilter(value)}
       aria-pressed={filter === value}
-      className={`rounded-full border px-2 py-1 text-[10px] leading-4 transition-colors duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${
+      className={`rounded-full border px-2 py-1 text-[10px] leading-4 transition-colors duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20 ${
         filter === value
-          ? "border-violet-300/25 bg-violet-300/10 text-violet-100/85"
-          : "border-white/[0.06] bg-white/[0.02] text-white/56 hover:text-white/80"
+          ? "border-accent/25 bg-accent/10 text-accent-ink"
+          : "border-fg/[0.06] bg-fg/[0.02] text-fg/68 hover:text-fg/80"
       }`}
     >
       {label}
-      <span className="ml-1 tabular-nums text-white/54">{count}</span>
+      <span className="ml-1 tabular-nums text-fg/68">{count}</span>
     </button>
   );
 
   return (
     <div className="message-in">
-      <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.018]">
-        <div className="border-b border-white/[0.05] px-2.5 py-2">
+      <div className="overflow-hidden rounded-xl border border-fg/[0.07] bg-fg/[0.018]">
+        <div className="border-b border-fg/[0.05] px-2.5 py-2">
           <div className="flex items-center gap-2">
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/56">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-fg/10 bg-fg/[0.04] text-fg/68">
               <Search className="size-3" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[11.5px] leading-4 font-medium text-white/85">
+              <p className="truncate text-[11.5px] leading-4 font-medium text-fg/85">
                 {queryLabel ? `Search ${queryLabel}` : "Search results"}
               </p>
-              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-white/54">
+              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-fg/68">
                 <span className="truncate">{rootLabel}</span>
                 {duration ? <span className="shrink-0">· {duration}</span> : null}
                 <span className="shrink-0">· {plural(files, "file")}</span>
                 {data.truncated ? (
                   <span
-                    className="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-300/10 px-1 text-amber-100/70"
+                    className="flex shrink-0 items-center gap-0.5 rounded-full bg-warning/10 px-1 text-warning-ink"
                     title="The search hit its time, scan, or result cap. Narrow the root or filters to see more."
                   >
                     <TriangleAlert className="size-2.5" />
@@ -391,10 +391,10 @@ export const SearchResults = memo(function SearchResults({
               onClick={() => void copyAll()}
               aria-label="Copy all matching paths"
               title="Copy all matching paths"
-              className="flex size-6 shrink-0 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+              className="flex size-6 shrink-0 items-center justify-center rounded text-fg/68 transition-colors duration-150 ease-out hover:bg-fg/[0.08] hover:text-fg/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
             >
               {copied ? (
-                <Check className="size-3 text-emerald-300" />
+                <Check className="size-3 text-positive-ink" />
               ) : (
                 <Copy className="size-3" />
               )}
@@ -413,14 +413,14 @@ export const SearchResults = memo(function SearchResults({
               {nodes.map((node) => renderNode(node, 0))}
             </ul>
           ) : (
-            <p className="px-2.5 py-2 text-[10.5px] text-white/56">
+            <p className="px-2.5 py-2 text-[10.5px] text-fg/68">
               No {filter === "folders" ? "folders" : "files"} in these results.
             </p>
           )}
         </div>
 
         {(newest || summary.total_size) && (
-          <div className="flex items-center justify-between gap-3 border-t border-white/[0.05] px-2.5 py-1 text-[9px] text-white/48">
+          <div className="flex items-center justify-between gap-3 border-t border-fg/[0.05] px-2.5 py-1 text-[9px] text-fg/68">
             <span className="truncate">
               {newest
                 ? `Newest: ${newest.split(/[\\/]/).pop()}${newestAge ? ` · ${newestAge}` : ""}`

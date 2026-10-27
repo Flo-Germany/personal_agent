@@ -1,7 +1,91 @@
 @import "tailwindcss";
 
+/*
+ * Phase 28 design tokens.
+ *
+ * Every surface, hairline and text tone resolves through `--compa-*` so the
+ * same component tree renders correctly in both themes. `@theme inline` maps
+ * the tokens into Tailwind utilities (`text-fg/72`, `bg-sunken`, ...).
+ */
+@theme inline {
+  --color-fg: var(--compa-fg);
+  --color-canvas: var(--compa-canvas);
+  --color-surface: var(--compa-surface);
+  --color-raised: var(--compa-raised);
+  --color-sunken: var(--compa-sunken);
+  --color-accent: var(--compa-accent);
+  --color-accent-strong: var(--compa-accent-strong);
+  --color-positive: var(--compa-positive);
+  --color-warning: var(--compa-warning);
+  --color-danger: var(--compa-danger);
+  --color-accent-ink: var(--compa-accent-ink);
+  --color-positive-ink: var(--compa-positive-ink);
+  --color-warning-ink: var(--compa-warning-ink);
+  --color-danger-ink: var(--compa-danger-ink);
+}
+
 :root {
   color-scheme: dark;
+  --compa-fg: #ffffff;
+  --compa-canvas: #000000;
+  --compa-surface: #08080a;
+  --compa-raised: #121216;
+  --compa-sunken: #1b1b20;
+  --compa-accent: #0068e0;
+  --compa-accent-strong: #0056bd;
+  --compa-hairline: rgba(255, 255, 255, 0.1);
+  --compa-veil: rgba(0, 0, 0, 0.88);
+  --compa-track: rgba(255, 255, 255, 0.08);
+  --compa-shadow:
+    0 26px 70px -34px rgba(0, 0, 0, 0.95),
+    0 2px 10px -6px rgba(0, 0, 0, 0.8);
+  --compa-focus: rgba(10, 132, 255, 0.65);
+  --compa-positive: #30d158;
+  --compa-warning: #ff9f0a;
+  --compa-danger: #ff453a;
+  --compa-accent-ink: #69b8ff;
+  --compa-positive-ink: #30d158;
+  --compa-warning-ink: #ffb340;
+  --compa-danger-ink: #ff6b60;
+  --compa-chart-positive: #34d399;
+  --compa-chart-warning: #fbbf24;
+  --compa-chart-danger: #fb7185;
+  --compa-chart-info: #60a5fa;
+  --compa-shadow-strong: rgba(0, 0, 0, 0.9);
+  --compa-shadow-soft: rgba(0, 0, 0, 0.65);
+  --compa-shadow-tight: rgba(0, 0, 0, 0.28);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --compa-fg: #1d1d1f;
+  --compa-canvas: #eef0f4;
+  --compa-surface: #fdfdfe;
+  --compa-raised: #ffffff;
+  --compa-sunken: #e7e9ef;
+  --compa-accent: #0068e0;
+  --compa-accent-strong: #0056bd;
+  --compa-hairline: rgba(18, 22, 32, 0.12);
+  --compa-veil: rgba(252, 252, 253, 0.9);
+  --compa-track: rgba(18, 22, 32, 0.07);
+  --compa-shadow:
+    0 22px 48px -26px rgba(24, 32, 48, 0.26),
+    0 1px 3px rgba(24, 32, 48, 0.07);
+  --compa-focus: rgba(10, 132, 255, 0.55);
+  --compa-positive: #30d158;
+  --compa-warning: #ff9f0a;
+  --compa-danger: #ff453a;
+  --compa-accent-ink: #0056bd;
+  --compa-positive-ink: #0b6b2c;
+  --compa-warning-ink: #8a4300;
+  --compa-danger-ink: #b00020;
+  --compa-chart-positive: #1a9e46;
+  --compa-chart-warning: #b25000;
+  --compa-chart-danger: #d70015;
+  --compa-chart-info: #0a84ff;
+  --compa-shadow-strong: rgba(24, 32, 48, 0.16);
+  --compa-shadow-soft: rgba(24, 32, 48, 0.1);
+  --compa-shadow-tight: rgba(24, 32, 48, 0.16);
 }
 
 html,
@@ -19,7 +103,7 @@ body {
     BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: rgba(255, 255, 255, 0.9);
+  color: color-mix(in oklab, var(--compa-fg) 90%, transparent);
   overflow: hidden;
   text-rendering: optimizeLegibility;
 }
@@ -27,7 +111,7 @@ body {
 /* Browser preview only: the Tauri window itself is transparent. */
 html[data-environment="browser"],
 html[data-environment="browser"] body {
-  background-color: #0a0a0a;
+  background-color: var(--compa-canvas);
 }
 
 button,
@@ -37,19 +121,22 @@ textarea {
 }
 
 ::selection {
-  background: rgba(167, 139, 250, 0.3);
-  color: #fff;
+  background: color-mix(in oklab, var(--compa-accent) 28%, transparent);
+  color: color-mix(in oklab, var(--compa-fg) 96%, transparent);
 }
 
 button:focus-visible,
-a:focus-visible {
-  outline: 2px solid rgba(167, 139, 250, 0.55);
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--compa-focus);
   outline-offset: 2px;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+  scrollbar-color: color-mix(in oklab, var(--compa-fg) 14%, transparent)
+    transparent;
 }
 
 *::-webkit-scrollbar {
@@ -60,12 +147,12 @@ a:focus-visible {
 *::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in oklab, var(--compa-fg) 14%, transparent);
   background-clip: content-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in oklab, var(--compa-fg) 22%, transparent);
   background-clip: content-box;
 }
 
@@ -73,15 +160,15 @@ a:focus-visible {
   background: transparent;
 }
 
-/* Subtle violet-to-emerald gradient ring around the app window. */
+/* Soft accent ring around the classic window. */
 .app-frame {
-  background-color: #141414;
+  background-color: var(--compa-canvas);
   background-image: linear-gradient(
     135deg,
-    rgba(167, 139, 250, 0.55) 0%,
-    rgba(255, 255, 255, 0.1) 28%,
-    rgba(20, 20, 20, 0) 55%,
-    rgba(52, 211, 153, 0.42) 100%
+    color-mix(in oklab, var(--compa-accent) 55%, transparent) 0%,
+    color-mix(in oklab, var(--compa-fg) 10%, transparent) 30%,
+    transparent 58%,
+    color-mix(in oklab, #5ac8fa 38%, transparent) 100%
   );
 }
 
@@ -97,7 +184,17 @@ a:focus-visible {
 }
 
 .message-in {
-  animation: message-in 200ms ease-out both;
+  animation: message-in 220ms ease-out both;
+}
+
+/* Settings-wide motion switch. Framer Motion is reduced via MotionConfig. */
+html[data-motion="off"] *,
+html[data-motion="off"] *::before,
+html[data-motion="off"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -118,7 +215,7 @@ a:focus-visible {
   min-width: 0;
   font-size: 0.875rem;
   line-height: 1.65;
-  color: rgba(255, 255, 255, 0.76);
+  color: color-mix(in oklab, var(--compa-fg) 76%, transparent);
   overflow-wrap: anywhere;
 }
 
@@ -135,7 +232,7 @@ a:focus-visible {
 .markdown-body h3,
 .markdown-body h4 {
   margin: 0;
-  color: rgba(255, 255, 255, 0.95);
+  color: color-mix(in oklab, var(--compa-fg) 95%, transparent);
   font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.01em;
@@ -165,24 +262,28 @@ a:focus-visible {
 }
 
 .markdown-body strong {
-  color: rgba(255, 255, 255, 0.95);
+  color: color-mix(in oklab, var(--compa-fg) 95%, transparent);
   font-weight: 600;
 }
 
 .markdown-body em {
-  color: rgba(255, 255, 255, 0.85);
+  color: color-mix(in oklab, var(--compa-fg) 86%, transparent);
 }
 
 .markdown-body a {
-  color: #6ee7b7;
+  color: var(--compa-accent);
   text-decoration: underline;
-  text-decoration-color: rgba(110, 231, 183, 0.35);
+  text-decoration-color: color-mix(
+    in oklab,
+    var(--compa-accent) 35%,
+    transparent
+  );
   text-underline-offset: 3px;
   transition: color 200ms ease-out;
 }
 
 .markdown-body a:hover {
-  color: #a7f3d0;
+  color: var(--compa-accent-strong);
 }
 
 .markdown-body ul,
@@ -213,7 +314,7 @@ a:focus-visible {
 }
 
 .markdown-body li::marker {
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in oklab, var(--compa-accent) 60%, transparent);
 }
 
 .markdown-body li.task-list-item {
@@ -223,20 +324,29 @@ a:focus-visible {
 
 .markdown-body input[type="checkbox"] {
   margin-right: 0.45rem;
-  accent-color: #34d399;
+  accent-color: var(--compa-accent);
 }
 
 .markdown-body blockquote {
   margin: 0;
-  border-left: 2px solid rgba(255, 255, 255, 0.14);
-  padding-left: 0.75rem;
-  color: rgba(255, 255, 255, 0.55);
+  border-left: 2px solid
+    color-mix(in oklab, var(--compa-accent) 38%, transparent);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: color-mix(in oklab, var(--compa-accent) 4%, transparent);
+  padding: 0.45rem 0.75rem;
+  color: color-mix(in oklab, var(--compa-fg) 58%, transparent);
 }
 
 .markdown-body hr {
   margin: 1rem 0;
   border: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--compa-accent) 30%, transparent),
+    color-mix(in oklab, var(--compa-fg) 7%, transparent) 40%,
+    transparent
+  );
 }
 
 .markdown-body img {
@@ -245,21 +355,21 @@ a:focus-visible {
 }
 
 .markdown-body .md-inline-code {
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid color-mix(in oklab, var(--compa-accent) 14%, transparent);
   border-radius: 0.35rem;
-  background: rgba(255, 255, 255, 0.07);
+  background: color-mix(in oklab, var(--compa-accent) 9%, transparent);
   padding: 0.08rem 0.3rem;
   font-family:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.82em;
-  color: rgba(255, 255, 255, 0.92);
+  color: color-mix(in oklab, var(--compa-fg) 92%, transparent);
 }
 
 .markdown-body pre {
   overflow-x: auto;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--compa-hairline);
   border-radius: 0.75rem;
-  background: #0d0d0f;
+  background: var(--compa-canvas);
   padding: 0.875rem 1rem;
   font-size: 0.78rem;
   line-height: 1.65;
@@ -273,7 +383,7 @@ a:focus-visible {
 
 .markdown-body .md-table-wrap {
   overflow-x: auto;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--compa-hairline);
   border-radius: 0.75rem;
 }
 
@@ -285,16 +395,19 @@ a:focus-visible {
 
 .markdown-body th,
 .markdown-body td {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--compa-hairline);
   padding: 0.45rem 0.7rem;
   text-align: left;
   vertical-align: top;
 }
 
 .markdown-body th {
-  background: rgba(255, 255, 255, 0.035);
-  color: rgba(255, 255, 255, 0.85);
+  background: color-mix(in oklab, var(--compa-fg) 4%, transparent);
+  color: color-mix(in oklab, var(--compa-fg) 62%, transparent);
   font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .markdown-body tr:last-child td {
@@ -302,17 +415,58 @@ a:focus-visible {
 }
 
 .markdown-body tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in oklab, var(--compa-fg) 2%, transparent);
+}
+
+.markdown-body tbody tr:nth-child(even) td {
+  background: color-mix(in oklab, var(--compa-fg) 1.5%, transparent);
 }
 
 /* Tighter rhythm inside user bubbles. */
 .markdown-compact {
-  color: rgba(255, 255, 255, 0.92);
+  color: color-mix(in oklab, var(--compa-fg) 92%, transparent);
   font-size: 0.875rem;
 }
 
 .markdown-compact > * + * {
   margin-top: 0.45rem;
+}
+
+.markdown-compact h2,
+.markdown-compact h3 {
+  display: block;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.markdown-compact h3::before {
+  display: none;
+}
+
+/* Section headings read as structure, not decoration. */
+.markdown-body h2:not(:first-child) {
+  margin-top: 1.15rem;
+}
+
+.markdown-body h2 {
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--compa-hairline);
+}
+
+.markdown-body h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.markdown-body h3::before {
+  content: "";
+  width: 3px;
+  height: 0.82em;
+  border-radius: 999px;
+  background: var(--compa-accent);
+  opacity: 0.75;
+  flex-shrink: 0;
 }
 
 /* Rich local-file cards and image galleries. */
@@ -327,9 +481,9 @@ a:focus-visible {
 
 .markdown-body .file-gallery-panel {
   margin: 0.65rem 0;
-  border: 1px solid rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--compa-hairline);
   border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.018);
+  background: color-mix(in oklab, var(--compa-fg) 2%, transparent);
   padding: 0.5rem;
 }
 
@@ -338,7 +492,7 @@ a:focus-visible {
   align-items: center;
   gap: 0.35rem;
   padding: 0 0.15rem 0.45rem;
-  color: rgba(255, 255, 255, 0.32);
+  color: color-mix(in oklab, var(--compa-fg) 36%, transparent);
   font-size: 0.625rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -390,115 +544,36 @@ a:focus-visible {
 }
 
 /* ------------------------------------------------------------------ */
-/* Answer typography                                                  */
-/* ------------------------------------------------------------------ */
-
-/* Section headings read as structure, not decoration. */
-.markdown-body h2:not(:first-child) {
-  margin-top: 1.15rem;
-}
-
-.markdown-body h2 {
-  padding-bottom: 0.3rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
-}
-
-.markdown-body h3 {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.markdown-body h3::before {
-  content: "";
-  width: 3px;
-  height: 0.82em;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #a78bfa, #34d399);
-  opacity: 0.8;
-  flex-shrink: 0;
-}
-
-.markdown-compact h2,
-.markdown-compact h3 {
-  display: block;
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-.markdown-compact h3::before {
-  display: none;
-}
-
-.markdown-body li::marker {
-  color: rgba(167, 139, 250, 0.55);
-}
-
-.markdown-body blockquote {
-  border-left-color: rgba(167, 139, 250, 0.35);
-  background: rgba(167, 139, 250, 0.035);
-  border-radius: 0 0.5rem 0.5rem 0;
-  padding: 0.45rem 0.75rem;
-}
-
-.markdown-body .md-inline-code {
-  background: rgba(167, 139, 250, 0.1);
-  border-color: rgba(167, 139, 250, 0.14);
-}
-
-.markdown-body th {
-  font-size: 0.72rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.62);
-}
-
-.markdown-body tbody tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.012);
-}
-
-.markdown-body hr {
-  border-top: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    rgba(167, 139, 250, 0.3),
-    rgba(255, 255, 255, 0.07) 40%,
-    transparent
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Inline diagnosis report                                            */
 /* ------------------------------------------------------------------ */
 
 .diagnosis-report {
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 1.1rem;
+  border: 1px solid var(--compa-hairline);
+  border-radius: 1.2rem;
   padding: 0.9rem 1rem 0.75rem;
   background:
     radial-gradient(
       120% 140% at 0% 0%,
-      rgba(167, 139, 250, 0.075),
+      color-mix(in oklab, var(--compa-accent) 7%, transparent),
       transparent 55%
     ),
     radial-gradient(
       100% 120% at 100% 0%,
-      rgba(52, 211, 153, 0.05),
+      color-mix(in oklab, #5ac8fa 6%, transparent),
       transparent 50%
     ),
     linear-gradient(
       165deg,
-      rgba(255, 255, 255, 0.035),
-      rgba(255, 255, 255, 0.012)
+      color-mix(in oklab, var(--compa-fg) 4%, transparent),
+      color-mix(in oklab, var(--compa-fg) 1.5%, transparent)
     );
-  box-shadow: 0 20px 55px -38px rgba(0, 0, 0, 0.95);
+  box-shadow: var(--compa-shadow);
 }
 
 .diagnosis-metric {
-  border: 1px solid rgba(255, 255, 255, 0.055);
-  border-radius: 0.7rem;
-  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--compa-hairline);
+  border-radius: 0.8rem;
+  background: color-mix(in oklab, var(--compa-fg) 2%, transparent);
   padding: 0.55rem 0.6rem;
   min-width: 0;
 }
@@ -507,27 +582,27 @@ a:focus-visible {
   font-size: 9.5px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.38);
+  color: color-mix(in oklab, var(--compa-fg) 40%, transparent);
 }
 
 .diagnosis-chip {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--compa-hairline);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in oklab, var(--compa-fg) 3%, transparent);
   padding: 0.12rem 0.45rem;
   font-size: 9.5px;
   line-height: 1.4;
-  color: rgba(255, 255, 255, 0.6);
+  color: color-mix(in oklab, var(--compa-fg) 62%, transparent);
   white-space: nowrap;
 }
 
 .diagnosis-panel {
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 0.8rem;
-  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid var(--compa-hairline);
+  border-radius: 0.85rem;
+  background: color-mix(in oklab, var(--compa-fg) 2%, transparent);
   padding: 0.6rem 0.7rem 0.55rem;
   min-width: 0;
 }
@@ -540,7 +615,7 @@ a:focus-visible {
   padding: 0.35rem 0.5rem;
   margin: 0;
   list-style: none;
-  background: rgba(255, 255, 255, 0.015);
+  background: color-mix(in oklab, var(--compa-fg) 1.5%, transparent);
 }
 
 .diagnosis-finding::marker {
@@ -554,7 +629,7 @@ a:focus-visible {
   border-radius: 0.45rem;
   padding: 0.25rem 0.45rem;
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.45);
+  color: color-mix(in oklab, var(--compa-fg) 46%, transparent);
   background: transparent;
   border: 0;
   cursor: pointer;
@@ -564,37 +639,32 @@ a:focus-visible {
 }
 
 .diagnosis-link:hover {
-  color: rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.05);
+  color: color-mix(in oklab, var(--compa-fg) 84%, transparent);
+  background: color-mix(in oklab, var(--compa-fg) 5%, transparent);
 }
 
 /* ------------------------------------------------------------------ */
-/* Modern palette (Raycast-style, QD-OLED + Mica)                      */
+/* Modern palette (Raycast-style, QD-OLED + Mica)                     */
 /* ------------------------------------------------------------------ */
 
 .palette-root {
   overflow: hidden;
-  /* Opaque surface used by the expanded sheet and code blocks. */
-  --compa-oled: #000000;
-  /* Alpha veil for the Mica layer: keeps OLED black deep, lets the
-     desktop bleed through softly at the edges and behind the glass. */
-  --compa-veil: rgba(0, 0, 0, 0.88);
-  --compa-line: rgba(255, 255, 255, 0.075);
+  --compa-line: var(--compa-hairline);
 }
 
 .palette-card {
   border-radius: 8px;
   border: 1px solid var(--compa-line);
-  background-color: rgba(0, 0, 0, 0.88);
+  background-color: var(--compa-veil);
   box-shadow:
-    0 28px 80px -34px rgba(0, 0, 0, 0.96),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    0 28px 80px -34px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 color-mix(in oklab, var(--compa-fg) 5%, transparent);
 }
 
-/* Pure #000000 for the strict OLED backdrop (no Mica layer). */
+/* Pure canvas colour for the strict OLED backdrop (no Mica layer). */
 .palette-root[data-backdrop="solid"] .palette-card {
-  background-color: var(--compa-oled);
-  border-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--compa-canvas);
+  border-color: var(--compa-hairline);
 }
 
 /* Mica keeps the native blur; the veil is the only thing in front of it. */
@@ -602,11 +672,7 @@ a:focus-visible {
   backdrop-filter: saturate(115%);
 }
 
-.palette-root[data-backdrop="solid"] ::selection {
-  background: rgba(167, 139, 250, 0.28);
-}
-
-/* Pulsing Set-of-Mark glow: colored frame around the whole palette. */
+/* Pulsing Set-of-Mark glow: accent frame around the whole palette. */
 .palette-glow {
   position: absolute;
   inset: 0;
@@ -614,9 +680,9 @@ a:focus-visible {
   border-radius: 9px;
   pointer-events: none;
   box-shadow:
-    0 0 0 1px rgba(167, 139, 250, 0.5),
-    0 0 26px 2px rgba(167, 139, 250, 0.22),
-    0 0 48px 10px rgba(52, 211, 153, 0.1);
+    0 0 0 1px color-mix(in oklab, var(--compa-accent) 50%, transparent),
+    0 0 26px 2px color-mix(in oklab, var(--compa-accent) 22%, transparent),
+    0 0 48px 10px color-mix(in oklab, #5ac8fa 10%, transparent);
   will-change: opacity;
 }
 
@@ -626,8 +692,8 @@ a:focus-visible {
   inset: 0;
   border-radius: inherit;
   box-shadow:
-    0 0 0 1px rgba(216, 180, 254, 0.7),
-    0 0 34px 5px rgba(139, 92, 246, 0.34);
+    0 0 0 1px color-mix(in oklab, var(--compa-accent) 70%, transparent),
+    0 0 34px 5px color-mix(in oklab, var(--compa-accent) 34%, transparent);
   animation: compa-glow-pulse 1.9s ease-in-out infinite;
 }
 
@@ -656,7 +722,7 @@ a:focus-visible {
   margin-left: 1px;
   vertical-align: -2px;
   border-radius: 1px;
-  background: rgba(216, 180, 254, 0.85);
+  background: var(--compa-accent);
   animation: compa-caret 1s steps(2, start) infinite;
 }
 
@@ -685,8 +751,8 @@ a:focus-visible {
 }
 
 .palette-markdown pre {
-  background: #000 !important;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--compa-canvas) !important;
+  border: 1px solid var(--compa-hairline);
   border-radius: 10px;
 }
 
@@ -696,20 +762,12 @@ a:focus-visible {
 
 /* Browser preview: no OS Mica behind the window, use a soft desktop stand-in. */
 html[data-environment="browser"] .palette-root[data-backdrop="mica"] .palette-card {
-  background-color: rgba(0, 0, 0, 0.72);
+  background-color: var(--compa-veil);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .palette-glow::after,
-  .palette-scroll {
-  scrollbar-width: none;
-}
-
-.palette-scroll::-webkit-scrollbar {
-  display: none;
-}
-
-.palette-caret {
+  .palette-caret {
     animation: none;
   }
 }

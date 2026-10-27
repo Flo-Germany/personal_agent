@@ -171,6 +171,41 @@ function backgroundOf(element: Element, base: Rgba): Rgba {
 }
 
 /**
+ * Sample the actual paint stack under the element.
+ *
+ * The ancestor walk misses siblings that are painted behind the text, such as
+ * the sliding pill of a segmented control. Hit-testing and compositing the
+ * stack bottom-up measures the pixels the user really sees.
+ */
+function paintedBackground(element: Element, base: Rgba): Rgba {
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    return backgroundOf(element, base);
+  }
+  const x = Math.min(
+    Math.max(rect.left + rect.width / 2, 0),
+    window.innerWidth - 1,
+  );
+  const y = Math.min(
+    Math.max(rect.top + rect.height / 2, 0),
+    window.innerHeight - 1,
+  );
+  const stack = document.elementsFromPoint(x, y);
+  if (stack.length === 0) {
+    return backgroundOf(element, base);
+  }
+  let painted = base;
+  // elementsFromPoint returns the topmost element first; paint bottom-up.
+  for (const node of [...stack].reverse()) {
+    const color = resolveColor(getComputedStyle(node).backgroundColor);
+    if (color[3] > 0.01) {
+      painted = composite(color, painted);
+    }
+  }
+  return painted;
+}
+
+/**
  * Measures what the user actually sees: text contrast, horizontal overflow,
  * unlabeled buttons, sub-24px targets and silent truncation.
  */
@@ -194,7 +229,7 @@ export function runDesignAudit(kind: string, baseHex: string): LayoutAudit {
       const alpha = Number.parseFloat(style.opacity);
       if (!Number.isFinite(alpha) || alpha > 0.9) {
         const color = resolveColor(style.color);
-        const background = backgroundOf(element, base);
+        const background = paintedBackground(element, base);
         const foreground = composite(color, background);
         const ratio = contrastRatio(foreground, background);
         const required = fontSize >= 18.66 || (fontSize >= 14 && weight >= 700) ? 3 : 4.5;

@@ -25,18 +25,18 @@ export class ErrorBoundary extends Component<
   render(): ReactNode {
     if (this.state.error) {
       return (
-        <div className="flex h-dvh w-full items-center justify-center bg-[#141414] p-6">
-          <div className="max-w-sm rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 text-center">
-            <p className="text-[13px] font-medium text-white/90">
+        <div className="flex h-dvh w-full items-center justify-center bg-canvas p-6">
+          <div className="max-w-sm rounded-2xl border border-fg/[0.08] bg-fg/[0.02] p-5 text-center">
+            <p className="text-[13px] font-medium text-fg/90">
               Something in the interface broke
             </p>
-            <p className="mt-1.5 text-[11px] leading-5 text-white/54">
+            <p className="mt-1.5 text-[11px] leading-5 text-fg/68">
               {this.state.error.message || "Unknown rendering error"}
             </p>
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-white/80 transition-colors hover:bg-white/[0.08]"
+              className="mt-4 rounded-lg border border-fg/10 bg-fg/[0.04] px-3 py-1.5 text-[11px] text-fg/80 transition-colors hover:bg-fg/[0.08]"
             >
               Reload the window
             </button>

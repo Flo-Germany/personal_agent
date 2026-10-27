@@ -86,16 +86,16 @@ export const ThinkingBlock = memo(function ThinkingBlock({
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         aria-label={expanded ? "Hide thought process" : "Show thought process"}
-        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/[0.05] bg-white/[0.02] px-2 py-[2px] text-[10px] leading-4 text-white/56 transition-colors duration-150 ease-out hover:border-white/[0.1] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-fg/[0.05] bg-fg/[0.02] px-2 py-[2px] text-[10px] leading-4 text-fg/68 transition-colors duration-150 ease-out hover:border-fg/[0.1] hover:text-fg/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
       >
         {streaming ? (
-          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-violet-300/80" />
+          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent/80" />
         ) : (
-          <Brain className="size-2.5 shrink-0 text-violet-200/45" />
+          <Brain className="size-2.5 shrink-0 text-accent-ink" />
         )}
         <span className="truncate font-mono tabular-nums">{label}</span>
         {tokens !== undefined && tokens > 0 && (
-          <span className="shrink-0 font-mono tabular-nums text-white/48">
+          <span className="shrink-0 font-mono tabular-nums text-fg/68">
             · ~{tokens} tok
           </span>
         )}
@@ -107,10 +107,10 @@ export const ThinkingBlock = memo(function ThinkingBlock({
       </button>
 
       {expanded && (
-        <div className="mt-1 max-w-xl overflow-hidden rounded-lg border border-white/[0.05] bg-white/[0.015]">
+        <div className="mt-1 max-w-xl overflow-hidden rounded-lg border border-fg/[0.05] bg-fg/[0.015]">
           <div
             ref={bodyRef}
-            className="max-h-56 overflow-y-auto px-2.5 py-1.5 font-mono text-[10px] leading-4 whitespace-pre-wrap break-words text-white/58"
+            className="max-h-56 overflow-y-auto px-2.5 py-1.5 font-mono text-[10px] leading-4 whitespace-pre-wrap break-words text-fg/68"
           >
             {text.trim() ? text : "…"}
           </div>

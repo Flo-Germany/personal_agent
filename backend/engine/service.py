@@ -373,6 +373,8 @@ class EngineService:
                 n_gpu_layers=plan.n_gpu_layers,
                 port=self.servers.port_for(task),
                 device=self._device(),
+                threads=self.settings.cpu_threads or 0,
+                priority=self.settings.process_priority,
             )
             running = self.servers.ensure(spec, force=True)
             return {
@@ -418,6 +420,8 @@ class EngineService:
                 n_gpu_layers=plan.n_gpu_layers,
                 port=self.servers.port_for("text"),
                 device=self._device(),
+                threads=self.settings.cpu_threads or 0,
+                priority=self.settings.process_priority,
             )
             running = self.servers.ensure(spec)
             client = LlamaServerClient(
@@ -453,6 +457,8 @@ class EngineService:
             n_gpu_layers=plan.n_gpu_layers,
             port=self.servers.port_for("vision"),
             device=self._device(),
+            threads=self.settings.cpu_threads or 0,
+            priority=self.settings.process_priority,
         )
         self.servers.ensure(spec)
         return self.servers.base_url("vision")

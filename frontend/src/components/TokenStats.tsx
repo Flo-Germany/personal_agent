@@ -30,16 +30,16 @@ export const TokenStats = memo(function TokenStats({
         aria-expanded={expanded}
         aria-label={expanded ? "Hide token details" : "Show token details"}
         disabled={details.length === 0}
-        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/[0.05] bg-white/[0.02] px-2 py-[2px] text-[10px] leading-4 text-white/56 transition-colors duration-150 ease-out hover:border-white/[0.1] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20 disabled:hover:border-white/[0.05] disabled:hover:text-white/56"
+        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-fg/[0.05] bg-fg/[0.02] px-2 py-[2px] text-[10px] leading-4 text-fg/68 transition-colors duration-150 ease-out hover:border-fg/[0.1] hover:text-fg/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-fg/20 disabled:hover:border-fg/[0.05] disabled:hover:text-fg/68"
       >
         {streaming ? (
-          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-300/80" />
+          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-positive/80" />
         ) : (
-          <Zap className="size-2.5 shrink-0 text-amber-200/50" />
+          <Zap className="size-2.5 shrink-0 text-warning-ink" />
         )}
         <span className="truncate font-mono tabular-nums">{summary}</span>
         {streaming && (
-          <span className="shrink-0 text-[9px] uppercase tracking-wide text-emerald-200/45">
+          <span className="shrink-0 text-[9px] uppercase tracking-wide text-positive-ink">
             · live
           </span>
         )}
@@ -53,11 +53,11 @@ export const TokenStats = memo(function TokenStats({
       </button>
 
       {expanded && details.length > 0 && (
-        <dl className="mt-1 grid max-w-sm grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-lg border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5 font-mono text-[9.5px] leading-4 text-white/58">
+        <dl className="mt-1 grid max-w-sm grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 rounded-lg border border-fg/[0.05] bg-fg/[0.015] px-2.5 py-1.5 font-mono text-[9.5px] leading-4 text-fg/68">
           {details.map((detail) => (
             <div key={detail.label} className="contents">
-              <dt className="text-white/48">{detail.label}</dt>
-              <dd className="truncate text-right tabular-nums text-white/50">
+              <dt className="text-fg/68">{detail.label}</dt>
+              <dd className="truncate text-right tabular-nums text-fg/68">
                 {detail.value}
               </dd>
             </div>

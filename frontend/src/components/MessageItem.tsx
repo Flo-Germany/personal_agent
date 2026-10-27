@@ -15,7 +15,7 @@ export const MessageItem = memo(function MessageItem({
   if (message.role === "user") {
     return (
       <div className="message-in flex justify-end">
-        <div className="max-w-[86%] rounded-2xl rounded-br-md border border-white/[0.07] bg-white/[0.06] px-3.5 py-2.5 text-white/90">
+        <div className="max-w-[86%] rounded-2xl rounded-br-md border border-fg/[0.07] bg-fg/[0.06] px-3.5 py-2.5 text-fg/90">
           <MarkdownContent
             content={message.content}
             className="markdown-compact"

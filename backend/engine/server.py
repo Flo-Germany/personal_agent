@@ -38,6 +38,8 @@ class ServerSpec:
     n_gpu_layers: int
     port: int
     device: str = ""
+    threads: int = 0
+    priority: str = "normal"
 
     def matches(self, other: "ServerSpec") -> bool:
         return (
@@ -48,6 +50,8 @@ class ServerSpec:
             and self.n_gpu_layers == other.n_gpu_layers
             and self.port == other.port
             and self.device == other.device
+            and self.threads == other.threads
+            and self.priority == other.priority
         )
 
 
@@ -150,6 +154,8 @@ class LlamaServerManager:
             arguments.extend(["--mmproj", str(spec.mmproj_path)])
         if spec.device:
             arguments.extend(["--device", spec.device])
+        if spec.threads > 0:
+            arguments.extend(["--threads", str(spec.threads)])
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = self.log_dir / f"llama-{spec.role}-{stamp}.log"
@@ -166,6 +172,8 @@ class LlamaServerManager:
             stderr=subprocess.STDOUT,
             creationflags=creationflags,
         )
+        if spec.priority != "normal":
+            _apply_priority(getattr(process, "pid", 0), spec.priority)
         running = RunningServer(
             spec=spec,
             process=process,
@@ -314,6 +322,22 @@ class LlamaServerManager:
 
 def _healthy(port: int, timeout: float = 1.5) -> bool:
     return _props(port, timeout=timeout) is not None
+
+
+def _apply_priority(pid: int, priority: str) -> None:
+    """Set the llama-server process priority (eco/normal/high)."""
+    if priority == "normal" or not pid:
+        return
+    try:
+        import psutil
+
+        process = psutil.Process(pid)
+        if priority == "eco":
+            process.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        elif priority == "high":
+            process.nice(psutil.HIGH_PRIORITY_CLASS)
+    except Exception:  # noqa: BLE001 - priority is best effort
+        logger.debug("Could not set process priority %s", priority, exc_info=True)
 
 
 def _props(port: int, timeout: float = 1.5) -> dict[str, Any] | None:

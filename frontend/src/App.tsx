@@ -1,15 +1,16 @@
+import { MotionConfig } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "./components/AppHeader";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { AttachmentBlock } from "./components/AttachmentBlock";
 import { ChatComposer } from "./components/ChatComposer";
-import { DesktopSettingsSection } from "./components/DesktopSettings";
 import { DisplayPickerCard } from "./components/DisplayPickerCard";
 import { EmptyState } from "./components/EmptyState";
 import { MessageItem } from "./components/MessageItem";
 import { ModelSettings } from "./components/ModelSettings";
 import { SettingsView } from "./components/SettingsView";
+import type { SettingsCategory } from "./components/SettingsView";
 import { ModernPalette } from "./components/ModernPalette";
 import { SearchResults } from "./components/SearchResults";
 import { ToolStatus } from "./components/ToolStatus";
@@ -32,15 +33,38 @@ import {
 import type { AnalyzeRequest } from "./lib/desktop";
 import { demoScene } from "./lib/qaFixtures";
 import type { DemoKind } from "./lib/qaFixtures";
+import { applyAppearance, resolveTheme, watchSystemTheme } from "./lib/theme";
 
 const STRESS_DURATION_MS = 3400;
 const DEMO_KINDS: DemoKind[] = ["none", "empty", "reply", "search", "tools", "approval"];
 
 function App() {
   const [view, setView] = useState<"chat" | "settings">("chat");
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>("general");
   const [stress, setStress] = useState(false);
   const [demo, setDemo] = useState<DemoKind>("none");
   const desktop = useDesktop();
+  const themePreference = desktop.settings.theme;
+  const animations = desktop.settings.animations;
+  const resolvedTheme = resolveTheme(themePreference);
+
+  // Paint the shell from the persisted desktop settings as soon as they land.
+  // main.tsx already applied the cached mirror, so this is a confirmation.
+  useEffect(() => {
+    if (!desktop.ready) {
+      return;
+    }
+    applyAppearance(themePreference, animations);
+  }, [desktop.ready, themePreference, animations]);
+
+  useEffect(() => {
+    if (!desktop.ready || themePreference !== "system") {
+      return;
+    }
+    return watchSystemTheme(() => applyAppearance("system", animations));
+  }, [desktop.ready, themePreference, animations]);
+
   const {
     messages: liveMessages,
     identity,
@@ -83,7 +107,7 @@ function App() {
     return () => unlisten?.();
   }, []);
 
-  const auditKind = `${desktop.isModern ? "modern" : "classic"}:${view}:${demo}`;
+  const auditKind = `${desktop.isModern ? "modern" : "classic"}:${resolvedTheme}:${view === "settings" ? settingsCategory : view}:${demo}`;
   const [auditTick, setAuditTick] = useState(0);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -97,7 +121,10 @@ function App() {
       return;
     }
     const timer = window.setTimeout(() => {
-      void publishLayoutAudit(auditKind, desktop.isModern ? "#000000" : "#141414");
+      void publishLayoutAudit(
+        auditKind,
+        resolvedTheme === "light" ? "#eef0f4" : "#000000",
+      );
     }, 900);
     return () => window.clearTimeout(timer);
   }, [auditKind, auditTick, desktop.isModern, desktop.ready, messages.length, pendingAction]);
@@ -195,7 +222,27 @@ function App() {
   // QA hook and future deep links: `--qa view=settings`.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void onUi((next) => setView(next === "settings" ? "settings" : "chat")).then((off) => {
+    void onUi((next) => {
+      if (next.startsWith("settings")) {
+        const category = next.split(":")[1] ?? "general";
+        const allowed: SettingsCategory[] = [
+          "general",
+          "memory",
+          "appearance",
+          "system",
+          "engine",
+          "hardware",
+        ];
+        setSettingsCategory(
+          allowed.includes(category as SettingsCategory)
+            ? (category as SettingsCategory)
+            : "general",
+        );
+        setView("settings");
+        return;
+      }
+      setView("chat");
+    }).then((off) => {
       unlisten = off;
     });
     return () => unlisten?.();
@@ -259,23 +306,21 @@ function App() {
     void interrupt();
   }, [interrupt]);
 
-  const desktopSection = (
-    <DesktopSettingsSection
-      settings={desktop.settings}
-      state={desktop.state}
-      contextMenuCommand={desktop.contextMenuCommand}
-      busy={desktop.busy}
-      error={desktop.error}
-      onUpdate={(patch) => void desktop.update(patch)}
-      onRefreshState={() => void desktop.refreshState()}
-    />
-  );
-
   const settingsView = (
     <SettingsView
       identity={identity}
       onClose={() => setView("chat")}
-      permissions={desktopSection}
+      desktop={{
+        settings: desktop.settings,
+        state: desktop.state,
+        contextMenuCommand: desktop.contextMenuCommand,
+        busy: desktop.busy,
+        error: desktop.error,
+        update: desktop.update,
+        refreshState: desktop.refreshState,
+      }}
+      onIdentityChanged={() => void refreshIdentity()}
+      initialCategory={settingsCategory}
       engine={
         <ModelSettings
           embedded
@@ -294,7 +339,8 @@ function App() {
 
   if (desktop.isModern) {
     return (
-      <ModernPalette
+      <MotionConfig reducedMotion={animations ? "user" : "always"}>
+        <ModernPalette
         messages={messages}
         identity={identity}
         pendingAction={pendingAction}
@@ -316,14 +362,16 @@ function App() {
         onOpenSettings={() => setView("settings")}
         onCloseSettings={() => setView("chat")}
       >
-        {settingsView}
-      </ModernPalette>
+          {settingsView}
+        </ModernPalette>
+      </MotionConfig>
     );
   }
 
   return (
-    <div className="app-frame flex h-dvh w-full min-w-0 flex-col overflow-hidden rounded-[26px] p-px">
-      <div className="flex h-full w-full min-w-0 flex-col overflow-hidden rounded-[25px] bg-[#141414]">
+    <MotionConfig reducedMotion={animations ? "user" : "always"}>
+      <div className="app-frame flex h-dvh w-full min-w-0 flex-col overflow-hidden rounded-[26px] p-px">
+        <div className="flex h-full w-full min-w-0 flex-col overflow-hidden rounded-[25px] bg-surface">
         <AppHeader
           identity={identity}
           isWorking={isStreaming}
@@ -343,8 +391,8 @@ function App() {
               className="relative min-w-0 flex-1 overflow-y-auto"
             >
               {isEmpty && isLoadingHistory ? (
-                <div className="flex min-h-full items-center justify-center gap-2 text-[12px] text-white/54">
-                  <span className="size-3 animate-spin rounded-full border border-white/15 border-t-white/50" />
+                <div className="flex min-h-full items-center justify-center gap-2 text-[12px] text-fg/68">
+                  <span className="size-3 animate-spin rounded-full border border-fg/15 border-t-white/50" />
                   Loading conversation…
                 </div>
               ) : isEmpty ? (
@@ -404,9 +452,10 @@ function App() {
               pending={pendingAction !== null}
             />
           </>
-        )}
+          )}
+        </div>
       </div>
-    </div>
+    </MotionConfig>
   );
 }
 

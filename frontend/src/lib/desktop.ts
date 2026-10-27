@@ -5,6 +5,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 /** Mirror of `DesktopSettings` in `src-tauri/src/desktop.rs`. */
 export type DesktopMode = "classic" | "modern";
 export type DesktopBackdrop = "mica" | "solid";
+export type DesktopTheme = "system" | "light" | "dark";
 
 export type DesktopSettings = {
   shortcut: string;
@@ -12,6 +13,9 @@ export type DesktopSettings = {
   mode: DesktopMode;
   backdrop: DesktopBackdrop;
   context_menu: boolean;
+  theme: DesktopTheme;
+  animations: boolean;
+  start_with_windows: boolean;
 };
 
 export type FrameStats = {
@@ -29,6 +33,7 @@ export type DesktopState = {
   notifications_status: string;
   notification_polls: number;
   context_menu_error: string;
+  startup_error: string;
   backdrop_error: string;
   qa_error: string;
   exited: boolean;
@@ -48,6 +53,9 @@ export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   mode: "classic",
   backdrop: "mica",
   context_menu: false,
+  theme: "system",
+  animations: true,
+  start_with_windows: false,
 };
 
 export const EMPTY_DESKTOP_STATE: DesktopState = {
@@ -56,6 +64,7 @@ export const EMPTY_DESKTOP_STATE: DesktopState = {
   notifications_status: "disabled",
   notification_polls: 0,
   context_menu_error: "",
+  startup_error: "",
   backdrop_error: "",
   qa_error: "",
   exited: false,
@@ -119,12 +128,18 @@ function browserPreviewSnapshot(): DesktopSnapshot {
   const backdrop: DesktopBackdrop =
     params.get("backdrop") === "solid" ? "solid" : "mica";
   const notifications = params.get("notifications") === "on";
+  const themeParam = params.get("theme");
+  const theme: DesktopTheme =
+    themeParam === "light" || themeParam === "dark" ? themeParam : "system";
   return {
     settings: {
       ...DEFAULT_DESKTOP_SETTINGS,
       mode,
       backdrop,
       notifications,
+      theme,
+      animations: params.get("animations") !== "off",
+      start_with_windows: params.get("startup") === "on",
       context_menu: params.get("context_menu") === "on",
     },
     state: {

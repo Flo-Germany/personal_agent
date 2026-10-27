@@ -125,7 +125,7 @@ function CopyButton({ text }: { text: string }) {
       onClick={() => void copy()}
       aria-label={copied ? "Copied" : "Copy code"}
       title={copied ? "Copied" : "Copy code"}
-      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-white/56 transition-all duration-200 ease-out hover:bg-white/5 hover:text-white/70"
+      className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-fg/68 transition-all duration-200 ease-out hover:bg-fg/5 hover:text-fg/80"
     >
       {copied ? (
         <CheckIcon className="size-3" />
@@ -138,9 +138,9 @@ function CopyButton({ text }: { text: string }) {
 
 function CodeBlock({ code, language }: { code: string; language: string | null }) {
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-white/[0.08] bg-[#0d0d0f]">
-      <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1.5">
-        <span className="font-mono text-[10px] tracking-wider text-white/56 uppercase">
+    <div className="my-3 overflow-hidden rounded-xl border border-fg/[0.08] bg-canvas">
+      <div className="flex items-center justify-between border-b border-fg/[0.06] px-3 py-1.5">
+        <span className="font-mono text-[10px] tracking-wider text-fg/68 uppercase">
           {language ?? "code"}
         </span>
         <CopyButton text={code} />

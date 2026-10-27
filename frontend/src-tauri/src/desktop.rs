@@ -44,6 +44,12 @@ pub struct DesktopSettings {
     pub mode: String,
     pub backdrop: String,
     pub context_menu: bool,
+    /// "system" follows Windows, "light"/"dark" pin the appearance.
+    pub theme: String,
+    /// Disable interface motion (CSS transitions and Framer Motion).
+    pub animations: bool,
+    /// Register the app in the per-user Windows Run key.
+    pub start_with_windows: bool,
 }
 
 impl Default for DesktopSettings {
@@ -54,6 +60,9 @@ impl Default for DesktopSettings {
             mode: "classic".to_string(),
             backdrop: "mica".to_string(),
             context_menu: false,
+            theme: "system".to_string(),
+            animations: true,
+            start_with_windows: false,
         }
     }
 }
@@ -63,11 +72,26 @@ impl DesktopSettings {
         self.shortcut = self.shortcut.trim().to_string();
         self.mode = if self.mode == "modern" { "modern" } else { "classic" }.into();
         self.backdrop = if self.backdrop == "solid" { "solid" } else { "mica" }.into();
+        self.theme = match self.theme.as_str() {
+            "light" => "light",
+            "dark" => "dark",
+            _ => "system",
+        }
+        .into();
         self
     }
 
     pub fn is_modern(&self) -> bool {
         self.mode == "modern"
+    }
+
+    /// True when the native window chrome should use the dark Mica variant.
+    fn native_dark(&self, window: &tauri::WebviewWindow) -> bool {
+        match self.theme.as_str() {
+            "light" => false,
+            "dark" => true,
+            _ => !matches!(window.theme(), Ok(tauri::Theme::Light)),
+        }
     }
 }
 
@@ -94,6 +118,7 @@ pub struct RuntimeState {
     pub shortcut_registered: bool,
     pub shortcut_error: String,
     pub context_menu_error: String,
+    pub startup_error: String,
     pub backdrop_error: String,
     pub notifications_status: String,
     pub notifications_polls: u64,
@@ -190,6 +215,10 @@ pub fn write_state(app: &AppHandle) {
             "notification_polls": value.notifications_polls,
             "context_menu_enabled": settings.context_menu,
             "context_menu_error": value.context_menu_error,
+            "start_with_windows": settings.start_with_windows,
+            "startup_error": value.startup_error,
+            "theme": settings.theme,
+            "animations": settings.animations,
             "mode": settings.mode,
             "backdrop": settings.backdrop,
             "backdrop_error": value.backdrop_error,
@@ -336,6 +365,38 @@ fn set_context_menu(_enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "Compa";
+
+/// Register (or remove) Compa in the per-user Windows startup key.
+#[cfg(target_os = "windows")]
+fn set_start_with_windows(enabled: bool) -> Result<(), String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(RUN_KEY)
+        .map_err(|e| format!("Could not open the startup key: {e}"))?;
+    if enabled {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let command = format!("\"{}\" --tray", exe.to_string_lossy());
+        key.set_value(RUN_VALUE, &command)
+            .map_err(|e| format!("Could not enable startup: {e}"))
+    } else {
+        match key.delete_value(RUN_VALUE) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Could not disable startup: {error}")),
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_start_with_windows(_enabled: bool) -> Result<(), String> {
+    Ok(())
+}
+
 /// Read back what the Explorer menu currently points at, for the UI and QA.
 #[cfg(target_os = "windows")]
 pub fn context_menu_command() -> Option<String> {
@@ -354,18 +415,26 @@ pub fn context_menu_command() -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_vibrancy(window: &tauri::WebviewWindow, backdrop: &str) -> Result<(), String> {
+fn apply_vibrancy(
+    window: &tauri::WebviewWindow,
+    backdrop: &str,
+    dark: bool,
+) -> Result<(), String> {
     use window_vibrancy::{apply_mica, clear_mica};
     // clear_vibrancy() is macOS-only; Windows must reset the DWM backdrop type.
     let _ = clear_mica(window);
     if backdrop == "solid" {
         return Ok(());
     }
-    apply_mica(window, Some(true)).map_err(|e| format!("Mica is unavailable: {e}"))
+    apply_mica(window, Some(dark)).map_err(|e| format!("Mica is unavailable: {e}"))
 }
 
 #[cfg(not(target_os = "windows"))]
-fn apply_vibrancy(_window: &tauri::WebviewWindow, _backdrop: &str) -> Result<(), String> {
+fn apply_vibrancy(
+    _window: &tauri::WebviewWindow,
+    _backdrop: &str,
+    _dark: bool,
+) -> Result<(), String> {
     Ok(())
 }
 
@@ -414,7 +483,8 @@ pub fn apply_mode(app: &AppHandle, settings: &DesktopSettings) -> Result<(), Str
         };
         modern_position(&window, MODERN_WIDTH, height);
         round_window(&window, 18.0);
-        apply_vibrancy(&window, &settings.backdrop)
+        let dark = settings.native_dark(&window);
+        apply_vibrancy(&window, &settings.backdrop, dark)
     } else {
         #[cfg(target_os = "windows")]
         {
@@ -500,6 +570,19 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
         }
     }
 
+    if next.start_with_windows != previous.start_with_windows {
+        if let Err(error) = set_start_with_windows(next.start_with_windows) {
+            if notifications_changed {
+                if previous.notifications {
+                    runtime.notifications.start(app.clone());
+                } else {
+                    runtime.notifications.stop();
+                }
+            }
+            return Err(error);
+        }
+    }
+
     if next.context_menu != previous.context_menu {
         if let Err(error) = set_context_menu(next.context_menu) {
             if notifications_changed {
@@ -540,8 +623,18 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
     // really changes; toggling notifications must not move the palette.
     let mode_changed =
         next.mode != previous.mode || next.backdrop != previous.backdrop;
+    let theme_changed = next.theme != previous.theme;
     let backdrop_error = if mode_changed {
         apply_mode(app, &next).err().unwrap_or_default()
+    } else if theme_changed && next.is_modern() {
+        // Re-apply Mica with the new light/dark variant without re-centring.
+        app.get_webview_window("main").map_or_else(
+            || String::new(),
+            |window| {
+                let dark = next.native_dark(&window);
+                apply_vibrancy(&window, &next.backdrop, dark).err().unwrap_or_default()
+            },
+        )
     } else {
         runtime
             .runtime
@@ -666,6 +759,9 @@ fn apply_qa_settings(settings: &mut DesktopSettings, pairs: &[(String, String)])
             "backdrop" => settings.backdrop = value.clone(),
             "notifications" => settings.notifications = parse_bool(value)?,
             "context_menu" => settings.context_menu = parse_bool(value)?,
+            "theme" => settings.theme = value.clone(),
+            "animations" => settings.animations = parse_bool(value)?,
+            "start_with_windows" => settings.start_with_windows = parse_bool(value)?,
             other => return Err(format!("unknown setting '{other}'")),
         }
     }
@@ -825,6 +921,11 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         Ok(()) => String::new(),
         Err(error) => error,
     };
+    // Keep the Run key pointing at the current executable after updates.
+    let startup_error = match set_start_with_windows(settings.start_with_windows) {
+        Ok(()) => String::new(),
+        Err(error) => error,
+    };
     let mode_error = apply_mode(app, &settings).err().unwrap_or_default();
 
     if let Ok(mut current) = runtime.settings.lock() {
@@ -836,6 +937,7 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         state.shortcut_registered = shortcut_registered;
         state.shortcut_error = shortcut_error;
         state.context_menu_error = context_error;
+        state.startup_error = startup_error;
         state.backdrop_error = mode_error;
         state.qa_error = qa_error;
         state.notifications_status = if settings.notifications {
@@ -941,6 +1043,7 @@ pub fn get_desktop_state(runtime: State<'_, DesktopRuntime>) -> serde_json::Valu
             "notifications_status": value.notifications_status,
             "notification_polls": value.notifications_polls,
             "context_menu_error": value.context_menu_error,
+            "startup_error": value.startup_error,
             "backdrop_error": value.backdrop_error,
             "qa_error": value.qa_error,
             "exited": value.exited,
@@ -1073,6 +1176,21 @@ pub fn quit_app(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appearance_defaults_follow_the_system() {
+        let settings = DesktopSettings::default().normalized();
+        assert_eq!(settings.theme, "system");
+        assert!(settings.animations);
+        assert!(!settings.start_with_windows);
+    }
+
+    #[test]
+    fn invalid_theme_falls_back_to_system() {
+        let mut settings = DesktopSettings::default();
+        settings.theme = "solarized".into();
+        assert_eq!(settings.normalized().theme, "system");
+    }
 
     #[test]
     fn default_shortcut_is_ctrl_shift_space() {

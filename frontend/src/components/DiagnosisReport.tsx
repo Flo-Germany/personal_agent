@@ -22,21 +22,21 @@ const SEVERITY: Record<
 > = {
   critical: {
     label: "Critical",
-    dot: "bg-rose-400",
-    text: "text-rose-200",
-    chip: "border-rose-300/20 bg-rose-400/[0.07] text-rose-200/85",
+    dot: "bg-danger",
+    text: "text-danger-ink",
+    chip: "border-danger/25 bg-danger/[0.08] text-danger-ink",
   },
   warning: {
     label: "Warning",
-    dot: "bg-amber-300",
-    text: "text-amber-100",
-    chip: "border-amber-200/20 bg-amber-300/[0.06] text-amber-100/85",
+    dot: "bg-warning",
+    text: "text-warning-ink",
+    chip: "border-warning/25 bg-warning/[0.08] text-warning-ink",
   },
   info: {
     label: "Info",
-    dot: "bg-sky-300",
-    text: "text-sky-100",
-    chip: "border-sky-200/15 bg-sky-300/[0.05] text-sky-100/80",
+    dot: "bg-accent",
+    text: "text-accent-ink",
+    chip: "border-accent/25 bg-accent/[0.08] text-accent-ink",
   },
 };
 
@@ -47,24 +47,24 @@ function severityOf(finding: DiagnosisFinding) {
 function scoreTone(score: number) {
   if (score >= 85) {
     return {
-      stroke: "#34d399",
-      text: "text-emerald-300",
-      dot: "bg-emerald-300",
+      stroke: "var(--compa-chart-positive)",
+      text: "text-positive-ink",
+      dot: "bg-positive",
       label: "Healthy",
     };
   }
   if (score >= 65) {
     return {
-      stroke: "#fbbf24",
-      text: "text-amber-300",
-      dot: "bg-amber-300",
+      stroke: "var(--compa-chart-warning)",
+      text: "text-warning-ink",
+      dot: "bg-warning",
       label: "Needs attention",
     };
   }
   return {
-    stroke: "#fb7185",
-    text: "text-rose-300",
-    dot: "bg-rose-300",
+    stroke: "var(--compa-chart-danger)",
+    text: "text-danger-ink",
+    dot: "bg-danger",
     label: "At risk",
   };
 }
@@ -95,10 +95,10 @@ function prettyName(name?: string): string {
 
 const toneBar = (value: number) =>
   value >= 85
-    ? "from-rose-400/80 to-rose-300/80"
+    ? "from-danger/80 to-danger/80"
     : value >= 60
-      ? "from-amber-400/80 to-amber-300/80"
-      : "from-emerald-400/80 to-emerald-300/70";
+      ? "from-warning/80 to-warning/80"
+      : "from-positive/80 to-positive/70";
 
 function MetricTile({
   label,
@@ -106,7 +106,7 @@ function MetricTile({
   unit,
   detail,
   percent,
-  accent = "bg-white/[0.06]",
+  accent = "bg-fg/[0.06]",
   bar,
 }: {
   label: string;
@@ -124,15 +124,15 @@ function MetricTile({
         <span className="diagnosis-metric-label">{label}</span>
       </div>
       <div className="mt-1.5 flex items-baseline gap-1">
-        <span className="text-[17px] leading-none font-semibold tracking-tight text-white/90 tabular-nums">
+        <span className="text-[17px] leading-none font-semibold tracking-tight text-fg/90 tabular-nums">
           {value}
         </span>
         {unit && (
-          <span className="text-[10px] font-medium text-white/58">{unit}</span>
+          <span className="text-[10px] font-medium text-fg/68">{unit}</span>
         )}
       </div>
       {typeof percent === "number" && (
-        <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+        <div className="mt-2 h-1 overflow-hidden rounded-full bg-fg/[0.06]">
           <div
             className={`h-full rounded-full bg-gradient-to-r ${bar ?? toneBar(percent)}`}
             style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
@@ -140,7 +140,7 @@ function MetricTile({
         </div>
       )}
       {detail && (
-        <div className="mt-1.5 line-clamp-2 text-[10px] leading-snug text-white/56">
+        <div className="mt-1.5 line-clamp-2 text-[10px] leading-snug text-fg/68">
           {detail}
         </div>
       )}
@@ -157,10 +157,10 @@ function SectionHeading({
 }) {
   return (
     <div className="mb-2.5 flex items-baseline justify-between gap-2">
-      <h4 className="m-0 text-[10px] font-semibold tracking-[0.12em] text-white/58 uppercase">
+      <h4 className="m-0 text-[10px] font-semibold tracking-[0.12em] text-fg/68 uppercase">
         {children}
       </h4>
-      {hint && <span className="text-[10px] text-white/54">{hint}</span>}
+      {hint && <span className="text-[10px] text-fg/68">{hint}</span>}
     </div>
   );
 }
@@ -177,29 +177,29 @@ function CoreChart({ values }: { values: number[] }) {
       </SectionHeading>
       <div className="relative flex h-24 items-end gap-[3px]">
         <div
-          className="pointer-events-none absolute inset-x-0 border-t border-dashed border-sky-300/30"
+          className="pointer-events-none absolute inset-x-0 border-t border-dashed border-accent/30"
           style={{ bottom: `${Math.min(100, average)}%` }}
         />
         {values.map((value, index) => (
           <div
             key={index}
             title={`Core ${index + 1}: ${value}%`}
-            className="group relative flex-1 rounded-t-[3px] bg-gradient-to-t from-white/10 to-white/[0.16] transition-colors"
+            className="group relative flex-1 rounded-t-[3px] bg-gradient-to-t from-fg/10 to-fg/[0.16] transition-colors"
             style={{ height: `${Math.max(3, Math.min(100, value))}%` }}
           >
             <span
               className={`absolute inset-0 rounded-t-[3px] bg-gradient-to-t ${
                 value >= 85
-                  ? "from-rose-500/70 to-rose-300/80"
+                  ? "from-danger/70 to-danger/80"
                   : value >= 60
-                    ? "from-amber-500/60 to-amber-300/75"
-                    : "from-emerald-500/55 to-emerald-300/70"
+                    ? "from-warning/60 to-warning/75"
+                    : "from-positive/55 to-positive/70"
               }`}
             />
           </div>
         ))}
       </div>
-      <div className="mt-1.5 flex justify-between text-[9px] tracking-wide text-white/48">
+      <div className="mt-1.5 flex justify-between text-[9px] tracking-wide text-fg/68">
         <span>core 1</span>
         <span>{values.length} logical cores</span>
       </div>
@@ -249,7 +249,7 @@ function TimelineChart({
             x2={width}
             y1={height * fraction}
             y2={height * fraction}
-            stroke="rgba(255,255,255,0.05)"
+            stroke="var(--compa-hairline)"
             strokeWidth="0.4"
           />
         ))}
@@ -261,7 +261,7 @@ function TimelineChart({
         <polyline
           points={line("memory")}
           fill="none"
-          stroke="#60a5fa"
+          stroke="var(--compa-chart-info)"
           strokeWidth="1.1"
           strokeLinejoin="round"
           strokeLinecap="round"
@@ -270,25 +270,25 @@ function TimelineChart({
         <polyline
           points={line("cpu")}
           fill="none"
-          stroke="#34d399"
+          stroke="var(--compa-chart-positive)"
           strokeWidth="1.2"
           strokeLinejoin="round"
           strokeLinecap="round"
         />
         <defs>
           <linearGradient id="diagnosis-cpu-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--compa-chart-positive)" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="var(--compa-chart-positive)" stopOpacity="0" />
           </linearGradient>
         </defs>
       </svg>
-      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9.5px] text-white/56">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9.5px] text-fg/68">
         <span className="flex items-center gap-1">
-          <span className="h-0.5 w-2.5 rounded-full bg-emerald-400" />
+          <span className="h-0.5 w-2.5 rounded-full bg-positive" />
           CPU peak {Math.max(...cpuValues, 0).toFixed(0)}%
         </span>
         <span className="flex items-center gap-1">
-          <span className="h-0.5 w-2.5 rounded-full bg-sky-400" />
+          <span className="h-0.5 w-2.5 rounded-full bg-accent" />
           RAM peak {Math.max(...memoryValues, 0).toFixed(0)}%
         </span>
       </div>
@@ -316,24 +316,24 @@ function StorageSection({
           return (
             <div key={`${volume.device ?? index}`}>
               <div className="mb-1 flex items-baseline justify-between gap-2 text-[11px]">
-                <span className="flex items-center gap-1.5 font-medium text-white/80">
-                  <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-white/60">
+                <span className="flex items-center gap-1.5 font-medium text-fg/80">
+                  <span className="rounded bg-fg/[0.06] px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-fg/74">
                     {volume.device?.replace(/\\$/, "") ?? "?"}
                   </span>
                   {formatGb(volume.free_gb)} GB free
                 </span>
-                <span className="text-white/56 tabular-nums">
+                <span className="text-fg/68 tabular-nums">
                   {formatGb(volume.used_gb)} / {formatGb(volume.total_gb)} GB
                 </span>
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
+              <div className="h-1.5 overflow-hidden rounded-full bg-fg/[0.05]">
                 <div
                   className={`h-full rounded-full bg-gradient-to-r ${
                     percent >= 88
-                      ? "from-rose-500/80 to-rose-300/80"
+                      ? "from-danger/80 to-danger/80"
                       : percent >= 75
-                        ? "from-amber-500/80 to-amber-300/70"
-                        : "from-violet-400/80 to-emerald-300/70"
+                        ? "from-warning/80 to-warning/70"
+                        : "from-accent/80 to-positive/70"
                   }`}
                   style={{ width: `${percent}%` }}
                 />
@@ -342,7 +342,7 @@ function StorageSection({
           );
         })}
         {(!volumes || volumes.length === 0) && (
-          <p className="text-[11px] text-white/56">No volume data.</p>
+          <p className="text-[11px] text-fg/68">No volume data.</p>
         )}
       </div>
       {((disks ?? []).length > 0 || (smart ?? []).length > 0) && (
@@ -354,8 +354,8 @@ function StorageSection({
                 key={`${disk.name ?? "disk"}-${index}`}
                 className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9.5px] ${
                   healthy
-                    ? "border-emerald-300/15 bg-emerald-300/[0.05] text-emerald-200/75"
-                    : "border-amber-300/20 bg-amber-300/[0.06] text-amber-100/80"
+                    ? "border-positive/15 bg-positive/[0.05] text-positive-ink"
+                    : "border-warning/20 bg-warning/[0.06] text-warning-ink"
                 }`}
               >
                 {healthy ? (
@@ -426,7 +426,7 @@ function ProcessList({
       <SectionHeading>{title}</SectionHeading>
       <div className="space-y-1.5">
         {rows.length === 0 && (
-          <p className="text-[11px] text-white/56">No process data.</p>
+          <p className="text-[11px] text-fg/68">No process data.</p>
         )}
         {rows.map((row, index) => {
           const value = Number(row[metric] ?? 0);
@@ -435,20 +435,20 @@ function ProcessList({
               key={`${row.name ?? "process"}-${index}`}
               className="flex items-center gap-2"
             >
-              <span className="w-[38%] truncate text-[10.5px] text-white/70">
+              <span className="w-[38%] truncate text-[10.5px] text-fg/80">
                 {row.name ?? "unknown"}
               </span>
-              <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/[0.05]">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-fg/[0.05]">
                 <div
                   className={`h-full rounded-full ${
                     metric === "memory_gb"
-                      ? "bg-gradient-to-r from-indigo-400/70 to-violet-300/70"
-                      : "bg-gradient-to-r from-amber-500/70 to-orange-300/70"
+                      ? "bg-gradient-to-r from-accent/70 to-accent/50"
+                      : "bg-gradient-to-r from-warning/70 to-warning/40"
                   }`}
                   style={{ width: `${Math.max(3, (value / max) * 100)}%` }}
                 />
               </div>
-              <span className="w-14 text-right text-[10px] text-white/45 tabular-nums">
+              <span className="w-14 text-right text-[10px] text-fg/68 tabular-nums">
                 {format(value)}
               </span>
             </div>
@@ -515,16 +515,16 @@ function Benchmarks({
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
         {entries.map((entry) => (
           <div key={entry.label}>
-            <div className="text-[9.5px] text-white/56">{entry.label}</div>
+            <div className="text-[9.5px] text-fg/68">{entry.label}</div>
             <div className="flex items-baseline gap-1">
-              <span className="text-[12.5px] font-semibold text-white/85 tabular-nums">
+              <span className="text-[12.5px] font-semibold text-fg/85 tabular-nums">
                 {Number(entry.value).toFixed(1)}
               </span>
-              <span className="text-[9px] text-white/56">{entry.unit}</span>
+              <span className="text-[9px] text-fg/68">{entry.unit}</span>
             </div>
-            <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-white/[0.05]">
+            <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-fg/[0.05]">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-sky-400/60 to-violet-300/70"
+                className="h-full rounded-full bg-gradient-to-r from-accent/60 to-accent/70"
                 style={{
                   width: `${Math.max(6, (Number(entry.value) / max) * 100)}%`,
                 }}
@@ -668,27 +668,27 @@ export const DiagnosisReport = memo(function DiagnosisReport({
             >
               {score}
             </span>
-            <span className="mt-0.5 text-[9px] tracking-wide text-white/56">
+            <span className="mt-0.5 text-[9px] tracking-wide text-fg/68">
               / 100
             </span>
           </div>
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-white/56 uppercase">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-fg/68 uppercase">
             <span className={`size-1.5 rounded-full ${tone.dot}`} />
             System diagnosis · {tone.label}
           </div>
-          <h3 className="mt-1 text-[15px] leading-snug font-semibold text-balance text-white/90">
+          <h3 className="mt-1 text-[15px] leading-snug font-semibold text-balance text-fg/90">
             {prettyName(os.caption) || "Windows system"}
             {computer.model ? (
-              <span className="font-normal text-white/58">
+              <span className="font-normal text-fg/68">
                 {" "}
                 · {computer.manufacturer} {computer.model}
               </span>
             ) : null}
           </h3>
-          <p className="mt-0.5 text-[11px] leading-snug text-white/45">
+          <p className="mt-0.5 text-[11px] leading-snug text-fg/68">
             {processor}
             {coreCount ? ` · ${coreCount}` : ""}
             {memory.total_gb ? ` · ${formatGb(memory.total_gb)} GB RAM` : ""}
@@ -732,7 +732,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
           value={String(Math.round(cpu.average_percent ?? 0))}
           unit="%"
           percent={cpu.average_percent ?? 0}
-          accent="bg-emerald-400/80"
+          accent="bg-positive/80"
           detail={
             cpu.per_core
               ? `${Math.round(cpu.per_core.min ?? 0)}–${Math.round(cpu.per_core.max ?? 0)}% per core`
@@ -744,7 +744,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
           value={String(Math.round(memoryPercent))}
           unit="%"
           percent={memoryPercent}
-          accent="bg-sky-400/80"
+          accent="bg-accent/80"
           detail={
             memory.total_gb
               ? `${formatGb(memory.used_gb)} of ${formatGb(memory.total_gb)} GB`
@@ -758,18 +758,18 @@ export const DiagnosisReport = memo(function DiagnosisReport({
           percent={busyGpuPercent >= 25 ? busyGpuPercent : undefined}
           bar={
             busyGpuPercent >= 60
-              ? "from-amber-400/80 to-rose-400/70"
-              : "from-violet-400/70 to-sky-300/70"
+              ? "from-warning/80 to-danger/70"
+              : "from-accent/70 to-accent/70"
           }
           accent={
-            busyGpuPercent >= 60 ? "bg-amber-300/80" : "bg-violet-400/80"
+            busyGpuPercent >= 60 ? "bg-warning/80" : "bg-accent/80"
           }
         />
         <MetricTile
           label="Uptime"
           value={uptime.value}
           unit={uptime.unit}
-          accent="bg-amber-300/80"
+          accent="bg-warning/80"
           detail={os.last_boot ? `boot ${os.last_boot}` : undefined}
         />
       </div>
@@ -795,12 +795,12 @@ export const DiagnosisReport = memo(function DiagnosisReport({
                       <span className={`text-[11.5px] font-semibold ${severity.text}`}>
                         {finding.title ?? severity.label}
                       </span>
-                      <span className="text-[9px] tracking-wide text-white/48 uppercase">
+                      <span className="text-[9px] tracking-wide text-fg/68 uppercase">
                         {severity.label}
                       </span>
                     </div>
                     {finding.detail && (
-                      <p className="mt-0.5 text-[11px] leading-relaxed text-white/50">
+                      <p className="mt-0.5 text-[11px] leading-relaxed text-fg/68">
                         {finding.detail}
                       </p>
                     )}
@@ -882,15 +882,15 @@ export const DiagnosisReport = memo(function DiagnosisReport({
             {events.slice(0, 3).map((event, index) => (
               <li
                 key={`${event.time ?? "event"}-${event.id ?? index}-${index}`}
-                className="flex gap-2 text-[10.5px] text-white/45"
+                className="flex gap-2 text-[10.5px] text-fg/68"
               >
-                <Info className="mt-0.5 size-3 shrink-0 text-white/48" />
+                <Info className="mt-0.5 size-3 shrink-0 text-fg/68" />
                 <span className="min-w-0">
-                  <span className="text-white/60">
+                  <span className="text-fg/74">
                     {event.provider ?? "System"} · {event.level ?? "Error"}
                   </span>
                   {event.message ? (
-                    <span className="block truncate text-white/56">
+                    <span className="block truncate text-fg/68">
                       {event.message}
                     </span>
                   ) : null}
@@ -901,7 +901,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
         </section>
       )}
 
-      <footer className="mt-4 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-2.5">
+      <footer className="mt-4 flex flex-wrap items-center gap-2 border-t border-fg/[0.06] pt-2.5">
         {data.report_file && (
           <>
             <button
@@ -946,14 +946,14 @@ export const DiagnosisReport = memo(function DiagnosisReport({
               <button
                 type="button"
                 onClick={() => void openLocalFile(chart.path)}
-                className="flex w-full items-center gap-2 rounded-lg border border-white/[0.05] bg-white/[0.02] px-2 py-1.5 text-left transition-colors hover:border-white/10 hover:bg-white/[0.04]"
+                className="flex w-full items-center gap-2 rounded-lg border border-fg/[0.05] bg-fg/[0.02] px-2 py-1.5 text-left transition-colors hover:border-fg/10 hover:bg-fg/[0.04]"
                 title={chart.description ?? chart.title ?? fileName(chart.path)}
               >
-                <span className="size-1.5 shrink-0 rounded-full bg-violet-300/60" />
-                <span className="min-w-0 flex-1 truncate text-[10.5px] text-white/55">
+                <span className="size-1.5 shrink-0 rounded-full bg-accent/60" />
+                <span className="min-w-0 flex-1 truncate text-[10.5px] text-fg/68">
                   {chart.title ?? fileName(chart.path)}
                 </span>
-                <ExternalLink className="size-3 shrink-0 text-white/48" />
+                <ExternalLink className="size-3 shrink-0 text-fg/68" />
               </button>
             </li>
           ))}

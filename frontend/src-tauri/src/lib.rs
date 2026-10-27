@@ -524,10 +524,14 @@ pub fn run() {
                 ensure_backend(&handle);
             });
 
-            // The window is created hidden to avoid a white flash.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+            // The window is created hidden to avoid a white flash. Startup
+            // launches (`--tray`) stay in the tray until summoned.
+            let start_hidden = std::env::args().any(|arg| arg == "--tray");
+            if !start_hidden {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
 
             Ok(())

@@ -36,7 +36,14 @@ build/phase24/vision-report.json   per-shot scores and issues
 build/phase24/vision-report.md     readable review
 ```
 
-Useful switches: `-SkipVision`, `-SkipAnimation`, `-Threshold 9`.
+Useful switches: `-SkipVision`, `-SkipAnimation`, `-Threshold 9`, and
+`-Theme dark|light` (Phase 28). Run both themes into separate folders so the
+screenshots do not overwrite each other:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\visual_qa.ps1 -Theme dark  -OutDir build\phase28-dark
+powershell -ExecutionPolicy Bypass -File scripts\visual_qa.ps1 -Theme light -OutDir build\phase28-light
+```
 
 ## The 12 captured states
 
@@ -52,7 +59,7 @@ Useful switches: `-SkipVision`, `-SkipAnimation`, `-Threshold 9`.
 | `modern-search` | status verb and long answer |
 | `modern-tools` | tool state without log spam |
 | `modern-approval` | content-sized window, scrolled to the card |
-| `modern-settings` | 748 px settings sheet inside the palette |
+| `modern-settings` | two-pane settings sheet inside the palette |
 | `modern-notifications` | live WinRT listener (`Listening · N polls`) |
 
 States are produced by `--qa demo=<kind>` fixtures, so no typing or real model
@@ -63,7 +70,8 @@ turn is needed. The fixtures never touch the conversation store.
 1. **Layout audit** (in the webview, read from `desktop-state.json`)
    - `scrollWidth/scrollHeight` may not exceed the viewport (zero overflow).
    - Text contrast is computed from the *rendered* colors: every visible text
-     node is composited over its real background stack, then compared with
+     node is hit-tested and composited over the paint stack under it (so a
+     sliding segmented pill counts as its background), then compared with
      WCAG AA (4.5:1, or 3:1 for large/bold text). The audit reports color,
      background, ratio and selector.
    - Gradient/image backgrounds are excluded from the automatic ratio (a known

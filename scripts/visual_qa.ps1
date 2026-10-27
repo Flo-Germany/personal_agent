@@ -29,6 +29,8 @@ param(
   [string]$OutDir = "build\phase24",
   [switch]$SkipVision,
   [switch]$SkipAnimation,
+  [ValidateSet("dark", "light")]
+  [string]$Theme = "dark",
   [int]$Threshold = 8
 )
 
@@ -177,6 +179,8 @@ $script:appPid = $initial.pid
 $original = [pscustomobject]@{
   mode = $initial.mode
   backdrop = $initial.backdrop
+  theme = if ($initial.theme) { $initial.theme } else { "system" }
+  animations = if ($null -ne $initial.animations) { [bool]$initial.animations } else { $true }
   notifications = [bool]$initial.notifications_enabled
 }
 
@@ -191,27 +195,36 @@ $states = @(
   @{ name = "classic-tools";       mode = "classic"; view = "chat";     demo = "tools" },
   @{ name = "classic-approval";    mode = "classic"; view = "chat";     demo = "approval" },
   @{ name = "classic-settings";    mode = "classic"; view = "settings"; demo = "none" },
+  @{ name = "classic-memory";      mode = "classic"; view = "settings"; demo = "none"; category = "memory" },
   @{ name = "modern-idle";         mode = "modern";  view = "chat";     demo = "empty" },
   @{ name = "modern-reply";        mode = "modern";  view = "chat";     demo = "reply" },
   @{ name = "modern-search";       mode = "modern";  view = "chat";     demo = "search" },
   @{ name = "modern-tools";        mode = "modern";  view = "chat";     demo = "tools" },
   @{ name = "modern-approval";     mode = "modern";  view = "chat";     demo = "approval" },
-  @{ name = "modern-settings";     mode = "modern";  view = "settings"; demo = "none" }
+  @{ name = "modern-settings";     mode = "modern";  view = "settings"; demo = "none" },
+  @{ name = "modern-memory";       mode = "modern";  view = "settings"; demo = "none"; category = "memory" },
+  @{ name = "modern-appearance";   mode = "modern";  view = "settings"; demo = "none"; category = "appearance" },
+  @{ name = "modern-system";       mode = "modern";  view = "settings"; demo = "none"; category = "system" },
+  @{ name = "modern-engine";       mode = "modern";  view = "settings"; demo = "none"; category = "engine" },
+  @{ name = "modern-hardware";     mode = "modern";  view = "settings"; demo = "none"; category = "hardware" }
 )
 
 $audits = [System.Collections.ArrayList]::new()
 $captures = [System.Collections.ArrayList]::new()
 
 foreach ($state in $states) {
+  $viewArg = if ($state.category) { "settings:{0}" -f $state.category } else { $state.view }
+  $auditPane = if ($state.category) { $state.category } elseif ($state.view -eq "settings") { "general" } else { $state.view }
   $qaArgs = @(
     ("mode={0}" -f $state.mode),
-    ("view={0}" -f $state.view),
+    ("view={0}" -f $viewArg),
     ("demo={0}" -f $state.demo),
     ("backdrop=mica"),
+    ("theme={0}" -f $Theme),
     "show",
     "audit"
   )
-  $expectKind = "{0}:{1}:{2}" -f $state.mode, $state.view, $state.demo
+  $expectKind = "{0}:{1}:{2}:{3}" -f $state.mode, $Theme, $auditPane, $state.demo
   Write-Host ("State {0,-18} " -f $state.name) -NoNewline
   try {
     $null = Invoke-Qa -Arguments $qaArgs -Until {
@@ -264,9 +277,9 @@ foreach ($state in $states) {
 # ------------------------------------------------------ notifications capture
 Write-Host "State notifications    " -NoNewline
 try {
-  $null = Invoke-Qa -Arguments @("mode=modern", "view=settings", "demo=none", "notifications=on") -Until {
+  $null = Invoke-Qa -Arguments @("mode=modern", "view=settings", "demo=none", "notifications=on", ("theme={0}" -f $Theme)) -Until {
     param($s)
-    $s.notifications_status -eq "active" -and $s.layout_audit -and $s.layout_audit.kind -eq "modern:settings:none"
+    $s.notifications_status -eq "active" -and $s.layout_audit -and $s.layout_audit.kind -eq ("modern:{0}:general:none" -f $Theme)
   } -TimeoutSeconds 45
 } catch {
   Add-Warning "notifications: Windows did not grant toast access in time"
@@ -316,7 +329,7 @@ $animation = $null
 if (-not $SkipAnimation) {
   $null = Invoke-Qa -Arguments @("mode=modern", "view=chat", "demo=empty") -Until {
     param($s)
-    $s.layout_audit -and $s.layout_audit.kind -eq "modern:chat:empty"
+    $s.layout_audit -and $s.layout_audit.kind -eq ("modern:{0}:chat:empty" -f $Theme)
   }
   Start-Sleep -Milliseconds 500
 
@@ -450,7 +463,9 @@ $restoreArgs = @(
   ("backdrop={0}" -f $original.backdrop),
   "view=chat",
   "demo=none",
-  ("notifications={0}" -f $original.notifications.ToString().ToLower())
+  ("notifications={0}" -f $original.notifications.ToString().ToLower()),
+  ("theme={0}" -f $original.theme),
+  ("animations={0}" -f $original.animations.ToString().ToLower())
 )
 $null = Invoke-Qa -Arguments $restoreArgs -Until {
   param($s)

@@ -55,8 +55,8 @@ function ActionButton({
       title={label}
       className={`flex size-6 items-center justify-center rounded-md transition-all duration-200 ease-out ${
         overlay
-          ? "text-white/75 hover:bg-white/15 hover:text-white"
-          : "text-white/56 hover:bg-white/[0.08] hover:text-white/85"
+          ? "text-fg/80 hover:bg-fg/15 hover:text-fg"
+          : "text-fg/68 hover:bg-fg/[0.08] hover:text-fg/85"
       }`}
     >
       {children}
@@ -153,7 +153,7 @@ export const FileReference = memo(function FileReference({
       </ActionButton>
       <ActionButton label="Copy path" onClick={copyPath} overlay={false}>
         {copied ? (
-          <Check className="size-3.5 text-emerald-300" />
+          <Check className="size-3.5 text-positive-ink" />
         ) : (
           <Copy className="size-3.5" />
         )}
@@ -172,10 +172,10 @@ export const FileReference = memo(function FileReference({
             aria-modal="true"
             aria-label={`Preview ${name}`}
             onClick={(event) => event.stopPropagation()}
-            className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#161616] shadow-[0_30px_90px_rgba(0,0,0,0.7)]"
+            className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-fg/10 bg-surface shadow-[0_30px_90px_var(--compa-shadow-soft)]"
           >
-            <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-xs font-medium text-white/80">
+            <div className="flex items-center gap-2 border-b border-fg/[0.07] px-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg/80">
                 {name}
               </span>
               <span className="flex shrink-0 items-center gap-0.5">
@@ -191,7 +191,7 @@ export const FileReference = memo(function FileReference({
                 </ActionButton>
                 <ActionButton label="Copy path" onClick={copyPath} overlay>
                   {copied ? (
-                    <Check className="size-3.5 text-emerald-300" />
+                    <Check className="size-3.5 text-positive-ink" />
                   ) : (
                     <Copy className="size-3.5" />
                   )}
@@ -227,7 +227,7 @@ export const FileReference = memo(function FileReference({
           onClick={() => setPreviewOpen(true)}
           onKeyDown={handleKeyDown}
           aria-label={`Preview ${name}`}
-          className="file-ref-image group relative block w-44 max-w-full cursor-pointer overflow-hidden rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_12px_34px_-14px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
+          className="file-ref-image group relative block w-44 max-w-full cursor-pointer overflow-hidden rounded-xl border border-fg/[0.08] bg-gradient-to-br from-raised to-surface text-left transition-all duration-200 ease-out hover:border-fg/[0.18] hover:shadow-[0_12px_34px_-14px_var(--compa-shadow-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           <span className="block aspect-[4/3] overflow-hidden bg-black/30">
             <img
@@ -241,12 +241,12 @@ export const FileReference = memo(function FileReference({
           </span>
 
           <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent px-2 pt-6 pb-1.5">
-            <span className="block truncate text-[11px] font-medium text-white/90">
+            <span className="block truncate text-[11px] font-medium text-fg/90">
               {name}
             </span>
           </span>
 
-          <span className="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-lg border border-white/10 bg-black/65 p-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 ease-out pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+          <span className="absolute top-1.5 right-1.5 flex items-center gap-0.5 rounded-lg border border-fg/10 bg-black/65 p-0.5 opacity-0 backdrop-blur-md transition-opacity duration-200 ease-out pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
             <ActionButton
               label="Preview image"
               onClick={() => setPreviewOpen(true)}
@@ -266,7 +266,7 @@ export const FileReference = memo(function FileReference({
             </ActionButton>
             <ActionButton label="Copy path" onClick={copyPath} overlay>
               {copied ? (
-                <Check className="size-3.5 text-emerald-300" />
+                <Check className="size-3.5 text-positive-ink" />
               ) : (
                 <Copy className="size-3.5" />
               )}
@@ -286,17 +286,17 @@ export const FileReference = memo(function FileReference({
       onKeyDown={handleKeyDown}
       aria-label={`Show ${name} in its folder`}
       title="Show in folder"
-      className="file-ref-card group flex w-full max-w-md min-w-0 cursor-pointer items-center gap-2.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] px-3 py-2.5 text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_10px_26px_-18px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
+      className="file-ref-card group flex w-full max-w-md min-w-0 cursor-pointer items-center gap-2.5 rounded-xl border border-fg/[0.08] bg-gradient-to-br from-raised to-surface px-3 py-2.5 text-left transition-all duration-200 ease-out hover:border-fg/[0.18] hover:shadow-[0_10px_26px_-18px_var(--compa-shadow-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.07] bg-white/[0.045] text-white/55 transition-colors duration-200 ease-out group-hover:border-violet-300/15 group-hover:text-violet-200/80">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-fg/[0.07] bg-fg/[0.045] text-fg/68 transition-colors duration-200 ease-out group-hover:border-accent/15 group-hover:text-accent-ink">
         <FileIcon className="size-4" />
       </span>
 
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-white/90">
+        <span className="block truncate text-[12.5px] font-medium text-fg/90">
           {name}
         </span>
-        <span className="mt-0.5 block text-[10px] tracking-wide text-white/56 uppercase">
+        <span className="mt-0.5 block text-[10px] tracking-wide text-fg/68 uppercase">
           {extensionLabel(extension)}
         </span>
       </span>

@@ -68,7 +68,7 @@ function toolVerb(tool?: string, label?: string): string {
 
 /** Minimal three-dot indicator: no labels, no raw tool logs. */
 function WorkingDots({ tone = "violet" }: { tone?: "violet" | "emerald" }) {
-  const color = tone === "emerald" ? "bg-emerald-200/80" : "bg-violet-200/80";
+  const color = tone === "emerald" ? "bg-positive/80" : "bg-accent/80";
   return (
     <span className="flex items-center gap-1" aria-hidden>
       {[0, 1, 2].map((index) => (
@@ -330,7 +330,7 @@ export function ModernPalette({
           data-tauri-drag-region="deep"
           className="flex h-[58px] shrink-0 items-center gap-2.5 px-4"
         >
-          <Search className="size-[15px] shrink-0 text-white/54" strokeWidth={2.2} />
+          <Search className="size-[15px] shrink-0 text-fg/68" strokeWidth={2.2} />
           <input
             ref={inputRef}
             value={value}
@@ -344,7 +344,7 @@ export function ModernPalette({
                 : "Ask Compa, search your PC, or run a command"
             }
             aria-label="Ask Compa"
-            className="min-w-0 flex-1 bg-transparent text-[14px] leading-5 text-white/90 caret-violet-300 outline-none placeholder:text-white/48"
+            className="min-w-0 flex-1 bg-transparent text-[14px] leading-5 text-fg/90 caret-accent outline-none placeholder:text-fg/75"
           />
 
           <AnimatePresence mode="popLayout" initial={false}>
@@ -357,7 +357,7 @@ export function ModernPalette({
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.12, ease: EASE_IN } }}
-                className="flex size-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/60 transition-colors hover:text-white/90"
+                className="flex size-7 items-center justify-center rounded-full border border-fg/10 bg-fg/[0.04] text-fg/74 transition-colors hover:text-fg/90"
               >
                 <Square className="size-3" />
               </motion.button>
@@ -373,8 +373,8 @@ export function ModernPalette({
                 exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.12, ease: EASE_IN } }}
                 className={`flex size-7 items-center justify-center rounded-full border transition-colors ${
                   value.trim() && canSend
-                    ? "border-violet-300/30 bg-violet-300/20 text-violet-50"
-                    : "border-white/[0.06] bg-white/[0.02] text-white/30"
+                    ? "border-accent/30 bg-accent/20 text-accent-ink"
+                    : "border-fg/[0.06] bg-fg/[0.02] text-fg/68"
                 }`}
               >
                 <ArrowUp className="size-3.5" strokeWidth={2.4} />
@@ -382,7 +382,7 @@ export function ModernPalette({
             )}
           </AnimatePresence>
 
-          <span className="mx-0.5 h-4 w-px bg-white/[0.07]" aria-hidden />
+          <span className="mx-0.5 h-4 w-px bg-fg/[0.07]" aria-hidden />
 
           {turn.question && !settingsOpen && (
             <button
@@ -391,7 +391,7 @@ export function ModernPalette({
               disabled={isBusy}
               aria-label="Clear this chat"
               title="Clear this chat"
-              className="flex size-7 items-center justify-center rounded-lg text-white/48 transition-colors hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-30"
+              className="flex size-7 items-center justify-center rounded-lg text-fg/68 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-30"
             >
               <Trash2 className="size-3.5" />
             </button>
@@ -405,8 +405,8 @@ export function ModernPalette({
             title="Settings"
             className={`flex size-7 items-center justify-center rounded-lg transition-colors ${
               settingsOpen
-                ? "bg-white/[0.08] text-white/80"
-                : "text-white/48 hover:bg-white/[0.06] hover:text-white/70"
+                ? "bg-fg/[0.08] text-fg/80"
+                : "text-fg/68 hover:bg-fg/[0.06] hover:text-fg/80"
             }`}
           >
             <Settings2 className="size-3.5" />
@@ -417,7 +417,7 @@ export function ModernPalette({
             onClick={() => void hidePalette()}
             aria-label="Hide to tray"
             title="Hide to tray"
-            className="flex size-7 items-center justify-center rounded-lg text-white/48 transition-colors hover:bg-white/[0.06] hover:text-white/70"
+            className="flex size-7 items-center justify-center rounded-lg text-fg/68 transition-colors hover:bg-fg/[0.06] hover:text-fg/80"
           >
             <X className="size-3.5" />
           </button>
@@ -431,7 +431,7 @@ export function ModernPalette({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 2, transition: { duration: 0.13, ease: EASE_IN } }}
               transition={{ duration: 0.18, ease: EASE_OUT }}
-              className="flex min-h-0 flex-1 flex-col border-t border-white/[0.055]"
+              className="flex min-h-0 flex-1 flex-col border-t border-fg/[0.055]"
             >
               {settingsOpen ? (
                 <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
@@ -460,7 +460,7 @@ export function ModernPalette({
                         initial={{ opacity: 0, y: -2 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.16, ease: EASE_OUT }}
-                        className="truncate text-[11.5px] text-white/54"
+                        className="truncate text-[11.5px] text-fg/68"
                       >
                         {turn.question}
                       </motion.p>
@@ -470,7 +470,7 @@ export function ModernPalette({
                       <div className="relative">
                         <MarkdownContent
                           content={answer}
-                          className="palette-markdown text-[13px] leading-[1.62] text-white/85"
+                          className="palette-markdown text-[13px] leading-[1.62] text-fg/85"
                         />
                         {working && <span className="palette-caret" aria-hidden />}
                       </div>
@@ -479,15 +479,15 @@ export function ModernPalette({
                         <WorkingDots />
                       </div>
                     ) : (
-                      <p className="text-[12px] text-white/54">No reply yet.</p>
+                      <p className="text-[12px] text-fg/68">No reply yet.</p>
                     )}
 
                     {working && (
-                      <div className="flex items-center gap-2 text-[10.5px] text-white/54">
+                      <div className="flex items-center gap-2 text-[10.5px] text-fg/85">
                         {liveStatus?.state === "success" ? (
-                          <span className="size-1.5 rounded-full bg-emerald-300/70" />
+                          <span className="size-1.5 rounded-full bg-positive/70" />
                         ) : (
-                          <Loader2 className="size-2.5 animate-spin text-violet-200/70" />
+                          <Loader2 className="size-2.5 animate-spin text-accent-ink" />
                         )}
                         <span>{verb}</span>
                       </div>
@@ -497,7 +497,7 @@ export function ModernPalette({
                     </div>
               </div>
 
-                  <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.05] px-4 py-1.5 text-[10px] text-white/48">
+                  <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-fg/[0.05] px-4 py-1.5 text-[10px] text-fg/68">
                     <span className="truncate">{working ? "working" : "ready"}</span>
                     <span className="shrink-0">Enter to send · Esc to hide</span>
                   </footer>
@@ -520,7 +520,7 @@ export function ModernPalette({
                     type="button"
                     disabled={!canSend}
                     onClick={() => onSend(quick.prompt)}
-                    className="rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-[10.5px] text-white/58 transition-colors duration-150 ease-out hover:border-white/10 hover:text-white/75 disabled:opacity-40"
+                    className="rounded-full border border-fg/[0.06] bg-fg/[0.02] px-2.5 py-1 text-[10.5px] text-fg/68 transition-colors duration-150 ease-out hover:border-fg/10 hover:text-fg/80 disabled:opacity-40"
                   >
                     {quick.label}
                   </button>
@@ -530,7 +530,7 @@ export function ModernPalette({
           )}
         </AnimatePresence>
 
-        <div className="flex h-[26px] shrink-0 items-center justify-between gap-3 px-4 text-[10px] text-white/48">
+        <div className="flex h-[26px] shrink-0 items-center justify-between gap-3 px-4 text-[10px] text-fg/68">
           <span className="truncate">
             {identity ? shortModelName(identity.model) : "Local · offline"}
           </span>

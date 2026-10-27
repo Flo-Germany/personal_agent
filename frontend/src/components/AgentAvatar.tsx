@@ -22,7 +22,7 @@ type AgentAvatarProps = {
 export function AgentAvatar({ size = "md", className = "" }: AgentAvatarProps) {
   return (
     <div
-      className={`${SIZE_CLASSES[size]} flex shrink-0 items-center justify-center rounded-full bg-[linear-gradient(140deg,#c4b5fd_0%,#a78bfa_35%,#34d399_100%)] text-[#0c0c0c] shadow-[0_0_20px_-6px_rgba(167,139,250,0.55)] ${className}`}
+      className={`${SIZE_CLASSES[size]} flex shrink-0 items-center justify-center rounded-full bg-accent bg-[linear-gradient(140deg,#5ac8fa_0%,#0068e0_55%,#4b48c9_100%)] text-white shadow-[0_0_20px_-6px_rgba(10,132,255,0.6)] ${className}`}
     >
       <SparklesIcon className={ICON_CLASSES[size]} strokeWidth={1.9} />
     </div>

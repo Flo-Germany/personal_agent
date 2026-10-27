@@ -1215,6 +1215,13 @@ remap it in **Settings → Windows integration**. See
 [Phase 23](#phase-23-windows-integration-and-the-modern-palette) for the modern
 palette, the Explorer verb, and the notification listener.
 
+Phase 28 adds a light / dark / system theme with one blue accent, a two-pane
+Settings surface (General, Identity & Memory, Appearance, System & Permissions,
+Engine, Hardware), an editable knowledge-base manager, launch-at-login, and
+shared switches/segmented controls. See
+[docs/design-system.md](docs/design-system.md) for the token table and the
+complete settings-to-backend mapping.
+
 The window is frameless and transparent: the header is a Tauri drag region, and
 the **Hide to tray** button in the top-right calls `getCurrentWindow().hide()`.
 The rounded card is drawn in CSS, so the area outside its corners stays
