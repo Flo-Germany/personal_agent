@@ -573,6 +573,7 @@ a:focus-visible {
 /* ------------------------------------------------------------------ */
 
 .palette-root {
+  overflow: hidden;
   /* Opaque surface used by the expanded sheet and code blocks. */
   --compa-oled: #000000;
   /* Alpha veil for the Mica layer: keeps OLED black deep, lets the
@@ -608,7 +609,7 @@ a:focus-visible {
 /* Pulsing Set-of-Mark glow: colored frame around the whole palette. */
 .palette-glow {
   position: absolute;
-  inset: -1px;
+  inset: 0;
   z-index: 3;
   border-radius: 19px;
   pointer-events: none;
@@ -638,6 +639,14 @@ a:focus-visible {
   50% {
     opacity: 1;
   }
+}
+
+.palette-scroll {
+  scrollbar-width: none;
+}
+
+.palette-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .palette-caret {
@@ -692,7 +701,15 @@ html[data-environment="browser"] .palette-root[data-backdrop="mica"] .palette-ca
 
 @media (prefers-reduced-motion: reduce) {
   .palette-glow::after,
-  .palette-caret {
+  .palette-scroll {
+  scrollbar-width: none;
+}
+
+.palette-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.palette-caret {
     animation: none;
   }
 }

@@ -23,7 +23,7 @@ export const EmptyState = memo(function EmptyState({
       <h1 className="text-center text-[22px] font-medium tracking-tight text-white/95">
         How can I help?
       </h1>
-      <p className="mt-1.5 max-w-xs text-center text-[12px] leading-5 text-white/35">
+      <p className="mt-1.5 max-w-xs text-center text-[12px] leading-5 text-white/56">
         Search your files, plan something, or ask a question. Nothing changes
         without your approval.
       </p>
@@ -38,7 +38,7 @@ export const EmptyState = memo(function EmptyState({
             className="group flex min-w-0 items-center justify-between gap-2 rounded-full border border-white/[0.08] bg-white/[0.025] px-3.5 py-2.5 text-left text-[12px] text-white/60 transition-all duration-200 ease-out hover:border-white/[0.14] hover:bg-white/[0.06] hover:text-white/90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
           >
             <span className="truncate">{item.label}</span>
-            <ArrowRightIcon className="size-3.5 shrink-0 text-white/25 transition-all duration-200 ease-out group-hover:translate-x-0.5 group-hover:text-white/50" />
+            <ArrowRightIcon className="size-3.5 shrink-0 text-white/48 transition-all duration-200 ease-out group-hover:translate-x-0.5 group-hover:text-white/50" />
           </button>
         ))}
       </div>

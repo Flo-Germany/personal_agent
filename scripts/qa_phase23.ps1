@@ -513,7 +513,9 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $reportPath) | Out
     warnings = $warnings.Count
     skipped = $skips.Count
   }
-} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
+} | ConvertTo-Json -Depth 6 | ForEach-Object {
+  [System.IO.File]::WriteAllText($reportPath, $_, [System.Text.UTF8Encoding]::new($false))
+}
 
 Write-Host ""
 Write-Host ("{0} passed, {1} failed, {2} warnings, {3} skipped" -f $passed.Count, $failures.Count, $warnings.Count, $skips.Count) -ForegroundColor $(if ($failures.Count) { "Red" } else { "Green" })

@@ -503,6 +503,9 @@ pub fn run() {
             desktop::show_main,
             desktop::take_pending_analyze,
             desktop::record_frame_stats,
+            desktop::record_console_events,
+            desktop::record_layout_audit,
+            desktop::clear_qa_logs,
             desktop::quit_app,
         ])
         .setup(|app| {

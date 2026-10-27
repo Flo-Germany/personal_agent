@@ -137,7 +137,7 @@ function RowAction({
       }}
       aria-label={label}
       title={label}
-      className="flex size-5 items-center justify-center rounded text-white/30 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+      className="flex size-6 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
     >
       {children}
     </button>
@@ -260,7 +260,7 @@ export const SearchResults = memo(function SearchResults({
               type="button"
               onClick={() => toggle(node.path)}
               aria-label={isOpen ? `Collapse ${node.name}` : `Expand ${node.name}`}
-              className="flex size-4 shrink-0 items-center justify-center rounded text-white/30 transition-colors duration-150 ease-out hover:text-white/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+              className="flex size-6 shrink-0 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:text-white/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
             >
               <ChevronRight
                 className={`size-3 transition-transform duration-150 ease-out ${
@@ -269,14 +269,14 @@ export const SearchResults = memo(function SearchResults({
               />
             </button>
           ) : (
-            <span className="size-4 shrink-0" />
+            <span className="size-6 shrink-0" />
           )}
 
           <button
             type="button"
             onClick={() => void openLocalFile(node.path)}
             title={node.path}
-            className="flex min-w-0 flex-1 items-center gap-1.5 py-[3px] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/40"
+            className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/40"
           >
             <Icon
               className={`size-3.5 shrink-0 ${
@@ -284,12 +284,12 @@ export const SearchResults = memo(function SearchResults({
                   ? isFolder
                     ? "text-amber-200/70"
                     : "text-violet-200/60"
-                  : "text-white/25"
+                  : "text-white/48"
               }`}
             />
             <span
               className={`truncate text-[11px] leading-4 ${
-                isMatch ? "text-white/85" : "text-white/40"
+                isMatch ? "text-white/85" : "text-white/58"
               }`}
             >
               {isMatch
@@ -297,17 +297,17 @@ export const SearchResults = memo(function SearchResults({
                 : node.name}
             </span>
             {isFolder && node.children_count ? (
-              <span className="shrink-0 text-[9px] tabular-nums text-white/25">
+              <span className="shrink-0 text-[9px] tabular-nums text-white/48">
                 {plural(node.children_count, "item")}
               </span>
             ) : null}
             {size ? (
-              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/25 sm:inline">
+              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/48 sm:inline">
                 {size}
               </span>
             ) : null}
             {age && isMatch ? (
-              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/20 md:inline">
+              <span className="hidden shrink-0 text-[9px] tabular-nums text-white/48 md:inline">
                 {age}
               </span>
             ) : null}
@@ -348,55 +348,50 @@ export const SearchResults = memo(function SearchResults({
       type="button"
       onClick={() => setFilter(value)}
       aria-pressed={filter === value}
-      className={`rounded-full border px-1.5 py-[1px] text-[9.5px] leading-4 transition-colors duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${
+      className={`rounded-full border px-2 py-1 text-[10px] leading-4 transition-colors duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${
         filter === value
           ? "border-violet-300/25 bg-violet-300/10 text-violet-100/85"
-          : "border-white/[0.06] bg-white/[0.02] text-white/35 hover:text-white/60"
+          : "border-white/[0.06] bg-white/[0.02] text-white/56 hover:text-white/80"
       }`}
     >
       {label}
-      <span className="ml-1 tabular-nums text-white/30">{count}</span>
+      <span className="ml-1 tabular-nums text-white/54">{count}</span>
     </button>
   );
 
   return (
     <div className="message-in">
       <div className="overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.018]">
-        <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.05] px-2.5 py-1.5">
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/45">
-            <Search className="size-3" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[11.5px] leading-4 font-medium text-white/80">
-              {queryLabel ? `Search ${queryLabel}` : "Search results"}
-              <span className="ml-1.5 font-normal text-white/35">
-                {plural(folders, "folder")} · {plural(files, "file")}
-              </span>
-            </p>
-            <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[9.5px] leading-3 text-white/30">
-              <span className="truncate">{rootLabel}</span>
-              {duration ? <span className="shrink-0">· {duration}</span> : null}
-              {data.truncated ? (
-                <span
-                  className="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-300/10 px-1 text-amber-100/70"
-                  title="The search hit its time, scan, or result cap. Narrow the root or filters to see more."
-                >
-                  <TriangleAlert className="size-2.5" />
-                  capped
-                </span>
-              ) : null}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {chip("all", "All", total)}
-            {chip("folders", "Folders", folders)}
-            {chip("files", "Files", files)}
+        <div className="border-b border-white/[0.05] px-2.5 py-2">
+          <div className="flex items-center gap-2">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/56">
+              <Search className="size-3" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[11.5px] leading-4 font-medium text-white/85">
+                {queryLabel ? `Search ${queryLabel}` : "Search results"}
+              </p>
+              <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-white/54">
+                <span className="truncate">{rootLabel}</span>
+                {duration ? <span className="shrink-0">· {duration}</span> : null}
+                <span className="shrink-0">· {plural(files, "file")}</span>
+                {data.truncated ? (
+                  <span
+                    className="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-300/10 px-1 text-amber-100/70"
+                    title="The search hit its time, scan, or result cap. Narrow the root or filters to see more."
+                  >
+                    <TriangleAlert className="size-2.5" />
+                    capped
+                  </span>
+                ) : null}
+              </p>
+            </div>
             <button
               type="button"
               onClick={() => void copyAll()}
               aria-label="Copy all matching paths"
               title="Copy all matching paths"
-              className="flex size-5 items-center justify-center rounded text-white/30 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+              className="flex size-6 shrink-0 items-center justify-center rounded text-white/54 transition-colors duration-150 ease-out hover:bg-white/[0.08] hover:text-white/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
             >
               {copied ? (
                 <Check className="size-3 text-emerald-300" />
@@ -404,6 +399,11 @@ export const SearchResults = memo(function SearchResults({
                 <Copy className="size-3" />
               )}
             </button>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-8">
+            {chip("all", "All", total)}
+            {chip("folders", "Folders", folders)}
+            {chip("files", "Files", files)}
           </div>
         </div>
 
@@ -413,14 +413,14 @@ export const SearchResults = memo(function SearchResults({
               {nodes.map((node) => renderNode(node, 0))}
             </ul>
           ) : (
-            <p className="px-2.5 py-2 text-[10.5px] text-white/35">
+            <p className="px-2.5 py-2 text-[10.5px] text-white/56">
               No {filter === "folders" ? "folders" : "files"} in these results.
             </p>
           )}
         </div>
 
         {(newest || summary.total_size) && (
-          <div className="flex items-center justify-between gap-3 border-t border-white/[0.05] px-2.5 py-1 text-[9px] text-white/25">
+          <div className="flex items-center justify-between gap-3 border-t border-white/[0.05] px-2.5 py-1 text-[9px] text-white/48">
             <span className="truncate">
               {newest
                 ? `Newest: ${newest.split(/[\\/]/).pop()}${newestAge ? ` · ${newestAge}` : ""}`

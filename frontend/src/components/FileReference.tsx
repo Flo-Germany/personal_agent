@@ -56,7 +56,7 @@ function ActionButton({
       className={`flex size-6 items-center justify-center rounded-md transition-all duration-200 ease-out ${
         overlay
           ? "text-white/75 hover:bg-white/15 hover:text-white"
-          : "text-white/35 hover:bg-white/[0.08] hover:text-white/85"
+          : "text-white/56 hover:bg-white/[0.08] hover:text-white/85"
       }`}
     >
       {children}
@@ -295,7 +295,7 @@ export const FileReference = memo(function FileReference({
         <span className="block truncate text-[12.5px] font-medium text-white/90">
           {name}
         </span>
-        <span className="mt-0.5 block text-[10px] tracking-wide text-white/35 uppercase">
+        <span className="mt-0.5 block text-[10px] tracking-wide text-white/56 uppercase">
           {extensionLabel(extension)}
         </span>
       </span>

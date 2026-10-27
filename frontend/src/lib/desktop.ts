@@ -76,6 +76,8 @@ export const EVENTS = {
   notification: "compa://notification",
   qaRender: "compa://qa-render",
   ui: "compa://ui",
+  demo: "compa://qa-demo",
+  qaAudit: "compa://qa-audit",
 } as const;
 
 export function isDesktop(): boolean {
@@ -261,6 +263,20 @@ export function onDesktopSettings(handler: (settings: DesktopSettings) => void) 
 
 export function onQaRender(handler: () => void) {
   return on(EVENTS.qaRender, () => handler());
+}
+
+/** Phase 24: deterministic fixture state for the visual QA matrix. */
+export function onDemo(handler: (kind: string) => void) {
+  return on(EVENTS.demo, (payload) => {
+    if (typeof payload === "string") {
+      handler(payload);
+    }
+  });
+}
+
+/** Phase 24: force a fresh layout/contrast audit for the current state. */
+export function onQaAudit(handler: () => void) {
+  return on(EVENTS.qaAudit, () => handler());
 }
 
 /** QA hook: force a UI view without synthetic mouse input. */

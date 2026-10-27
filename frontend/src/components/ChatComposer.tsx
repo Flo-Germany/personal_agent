@@ -201,7 +201,7 @@ export const ChatComposer = memo(function ChatComposer({
               aria-expanded={menuOpen}
               title="Quick prompts"
               className={`flex size-8 items-center justify-center rounded-full transition-all duration-200 ease-out hover:bg-white/[0.07] hover:text-white/75 ${
-                menuOpen ? "bg-white/[0.07] text-white/80" : "text-white/35"
+                menuOpen ? "bg-white/[0.07] text-white/80" : "text-white/56"
               }`}
             >
               <PlusIcon
@@ -213,7 +213,7 @@ export const ChatComposer = memo(function ChatComposer({
 
             {menuOpen && (
               <div className="message-in absolute bottom-full left-0 z-20 mb-2 w-56 overflow-hidden rounded-xl border border-white/[0.09] bg-[#1d1d1f] p-1 shadow-[0_18px_50px_rgba(0,0,0,0.6)]">
-                <p className="px-2.5 py-1.5 text-[10px] tracking-wider text-white/25 uppercase">
+                <p className="px-2.5 py-1.5 text-[10px] tracking-wider text-white/48 uppercase">
                   Quick prompts
                 </p>
                 {QUICK_PROMPTS.map((item) => (
@@ -245,7 +245,7 @@ export const ChatComposer = memo(function ChatComposer({
             className={`flex size-8 items-center justify-center rounded-full transition-all duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-30 ${
               isListening
                 ? "bg-violet-300/15 text-violet-200"
-                : "text-white/35 hover:bg-white/[0.07] hover:text-white/75"
+                : "text-white/56 hover:bg-white/[0.07] hover:text-white/75"
             }`}
           >
             <MicIcon className={`size-4 ${isListening ? "animate-pulse" : ""}`} />
@@ -262,7 +262,7 @@ export const ChatComposer = memo(function ChatComposer({
             aria-label="Message"
             autoFocus
             disabled={!canSend}
-            className="max-h-36 min-h-8 min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[13px] leading-5 text-white/90 placeholder:text-white/25 focus:outline-none disabled:cursor-not-allowed"
+            className="max-h-36 min-h-8 min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[13px] leading-5 text-white/90 placeholder:text-white/48 focus:outline-none disabled:cursor-not-allowed"
           />
 
           {isStreaming ? (
@@ -285,14 +285,14 @@ export const ChatComposer = memo(function ChatComposer({
               disabled={!value.trim() || !canSend}
               aria-label="Send message"
               title="Send message"
-              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white text-[#141414] transition-all duration-200 ease-out hover:bg-white/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-white/[0.07] disabled:text-white/25"
+              className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white text-[#141414] transition-all duration-200 ease-out hover:bg-white/90 active:scale-95 disabled:cursor-not-allowed disabled:bg-white/[0.07] disabled:text-white/48"
             >
               <ArrowUpIcon className="size-4" strokeWidth={2} />
             </button>
           )}
         </div>
 
-        <p className="mt-2 text-center text-[10px] text-white/20">
+        <p className="mt-2 text-center text-[10px] text-white/48">
           Actions always require your approval · Local model
         </p>
       </form>

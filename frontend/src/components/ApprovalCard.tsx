@@ -22,7 +22,7 @@ export const ApprovalCard = memo(function ApprovalCard({
   const following = plan.slice(actions.length);
 
   return (
-    <div className="message-in overflow-hidden rounded-2xl border border-amber-200/15 bg-[linear-gradient(180deg,rgba(251,191,36,0.05),rgba(255,255,255,0.012))] shadow-[0_16px_44px_-28px_rgba(0,0,0,0.9)]">
+    <div data-approval-card className="message-in overflow-hidden rounded-2xl border border-amber-200/15 bg-[linear-gradient(180deg,rgba(251,191,36,0.05),rgba(255,255,255,0.012))] shadow-[0_16px_44px_-28px_rgba(0,0,0,0.9)]">
       <div className="p-3">
         <div className="flex items-start gap-2">
           <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-amber-200/20 bg-amber-300/10 text-amber-100/90">
@@ -37,7 +37,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                 1 approval
               </span>
             </div>
-            <p className="mt-0.5 text-[10px] leading-4 text-white/35">
+            <p className="mt-0.5 text-[10px] leading-4 text-white/56">
               {pending.auto_approve_remaining
                 ? "One approval runs every step below."
                 : "Review the exact actions below."}
@@ -57,7 +57,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                 <span className="text-[8.5px] font-semibold tracking-[0.12em] text-emerald-200/55 uppercase">
                   Now
                 </span>
-                <span className="text-[8.5px] text-white/20">
+                <span className="text-[8.5px] text-white/48">
                   runs immediately
                 </span>
               </div>
@@ -71,7 +71,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                     <p className="break-words whitespace-pre-wrap text-[11px] leading-4 text-white/75">
                       {action.description}
                     </p>
-                    <span className="mt-0.5 inline-block rounded bg-black/20 px-1 py-px font-mono text-[8px] text-white/25">
+                    <span className="mt-0.5 inline-block rounded bg-black/20 px-1 py-px font-mono text-[8px] text-white/48">
                       {action.tool}
                     </span>
                   </div>
@@ -87,7 +87,7 @@ export const ApprovalCard = memo(function ApprovalCard({
               </span>
               <div className="min-w-0 flex-1 pb-0.5">
                 {index === 0 && (
-                  <span className="text-[8.5px] font-semibold tracking-[0.12em] text-violet-200/45 uppercase">
+                  <span className="text-[8.5px] font-semibold tracking-[0.12em] text-violet-200/72 uppercase">
                     Then
                   </span>
                 )}

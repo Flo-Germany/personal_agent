@@ -128,7 +128,7 @@ function MetricTile({
           {value}
         </span>
         {unit && (
-          <span className="text-[10px] font-medium text-white/40">{unit}</span>
+          <span className="text-[10px] font-medium text-white/58">{unit}</span>
         )}
       </div>
       {typeof percent === "number" && (
@@ -140,7 +140,7 @@ function MetricTile({
         </div>
       )}
       {detail && (
-        <div className="mt-1.5 line-clamp-2 text-[10px] leading-snug text-white/35">
+        <div className="mt-1.5 line-clamp-2 text-[10px] leading-snug text-white/56">
           {detail}
         </div>
       )}
@@ -157,10 +157,10 @@ function SectionHeading({
 }) {
   return (
     <div className="mb-2.5 flex items-baseline justify-between gap-2">
-      <h4 className="m-0 text-[10px] font-semibold tracking-[0.12em] text-white/40 uppercase">
+      <h4 className="m-0 text-[10px] font-semibold tracking-[0.12em] text-white/58 uppercase">
         {children}
       </h4>
-      {hint && <span className="text-[10px] text-white/30">{hint}</span>}
+      {hint && <span className="text-[10px] text-white/54">{hint}</span>}
     </div>
   );
 }
@@ -199,7 +199,7 @@ function CoreChart({ values }: { values: number[] }) {
           </div>
         ))}
       </div>
-      <div className="mt-1.5 flex justify-between text-[9px] tracking-wide text-white/25">
+      <div className="mt-1.5 flex justify-between text-[9px] tracking-wide text-white/48">
         <span>core 1</span>
         <span>{values.length} logical cores</span>
       </div>
@@ -282,7 +282,7 @@ function TimelineChart({
           </linearGradient>
         </defs>
       </svg>
-      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9.5px] text-white/35">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[9.5px] text-white/56">
         <span className="flex items-center gap-1">
           <span className="h-0.5 w-2.5 rounded-full bg-emerald-400" />
           CPU peak {Math.max(...cpuValues, 0).toFixed(0)}%
@@ -322,7 +322,7 @@ function StorageSection({
                   </span>
                   {formatGb(volume.free_gb)} GB free
                 </span>
-                <span className="text-white/35 tabular-nums">
+                <span className="text-white/56 tabular-nums">
                   {formatGb(volume.used_gb)} / {formatGb(volume.total_gb)} GB
                 </span>
               </div>
@@ -342,7 +342,7 @@ function StorageSection({
           );
         })}
         {(!volumes || volumes.length === 0) && (
-          <p className="text-[11px] text-white/35">No volume data.</p>
+          <p className="text-[11px] text-white/56">No volume data.</p>
         )}
       </div>
       {((disks ?? []).length > 0 || (smart ?? []).length > 0) && (
@@ -426,7 +426,7 @@ function ProcessList({
       <SectionHeading>{title}</SectionHeading>
       <div className="space-y-1.5">
         {rows.length === 0 && (
-          <p className="text-[11px] text-white/35">No process data.</p>
+          <p className="text-[11px] text-white/56">No process data.</p>
         )}
         {rows.map((row, index) => {
           const value = Number(row[metric] ?? 0);
@@ -515,12 +515,12 @@ function Benchmarks({
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
         {entries.map((entry) => (
           <div key={entry.label}>
-            <div className="text-[9.5px] text-white/35">{entry.label}</div>
+            <div className="text-[9.5px] text-white/56">{entry.label}</div>
             <div className="flex items-baseline gap-1">
               <span className="text-[12.5px] font-semibold text-white/85 tabular-nums">
                 {Number(entry.value).toFixed(1)}
               </span>
-              <span className="text-[9px] text-white/35">{entry.unit}</span>
+              <span className="text-[9px] text-white/56">{entry.unit}</span>
             </div>
             <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-white/[0.05]">
               <div
@@ -668,21 +668,21 @@ export const DiagnosisReport = memo(function DiagnosisReport({
             >
               {score}
             </span>
-            <span className="mt-0.5 text-[9px] tracking-wide text-white/35">
+            <span className="mt-0.5 text-[9px] tracking-wide text-white/56">
               / 100
             </span>
           </div>
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-white/35 uppercase">
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.12em] text-white/56 uppercase">
             <span className={`size-1.5 rounded-full ${tone.dot}`} />
             System diagnosis · {tone.label}
           </div>
           <h3 className="mt-1 text-[15px] leading-snug font-semibold text-balance text-white/90">
             {prettyName(os.caption) || "Windows system"}
             {computer.model ? (
-              <span className="font-normal text-white/40">
+              <span className="font-normal text-white/58">
                 {" "}
                 · {computer.manufacturer} {computer.model}
               </span>
@@ -795,7 +795,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
                       <span className={`text-[11.5px] font-semibold ${severity.text}`}>
                         {finding.title ?? severity.label}
                       </span>
-                      <span className="text-[9px] tracking-wide text-white/25 uppercase">
+                      <span className="text-[9px] tracking-wide text-white/48 uppercase">
                         {severity.label}
                       </span>
                     </div>
@@ -884,13 +884,13 @@ export const DiagnosisReport = memo(function DiagnosisReport({
                 key={`${event.time ?? "event"}-${event.id ?? index}-${index}`}
                 className="flex gap-2 text-[10.5px] text-white/45"
               >
-                <Info className="mt-0.5 size-3 shrink-0 text-white/25" />
+                <Info className="mt-0.5 size-3 shrink-0 text-white/48" />
                 <span className="min-w-0">
                   <span className="text-white/60">
                     {event.provider ?? "System"} · {event.level ?? "Error"}
                   </span>
                   {event.message ? (
-                    <span className="block truncate text-white/35">
+                    <span className="block truncate text-white/56">
                       {event.message}
                     </span>
                   ) : null}
@@ -953,7 +953,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
                 <span className="min-w-0 flex-1 truncate text-[10.5px] text-white/55">
                   {chart.title ?? fileName(chart.path)}
                 </span>
-                <ExternalLink className="size-3 shrink-0 text-white/25" />
+                <ExternalLink className="size-3 shrink-0 text-white/48" />
               </button>
             </li>
           ))}

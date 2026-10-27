@@ -27,6 +27,8 @@ pub const EVENT_SETTINGS: &str = "compa://settings";
 pub const EVENT_NOTIFICATION: &str = "compa://notification";
 pub const EVENT_QA_RENDER: &str = "compa://qa-render";
 pub const EVENT_UI: &str = "compa://ui";
+pub const EVENT_DEMO: &str = "compa://qa-demo";
+pub const EVENT_QA_AUDIT: &str = "compa://qa-audit";
 
 pub const MODERN_WIDTH: f64 = 720.0;
 pub const MODERN_COLLAPSED_HEIGHT: f64 = 136.0;
@@ -79,6 +81,14 @@ pub struct FrameStats {
     pub at: u64,
 }
 
+/// Console error/warning forwarded by the webview (Phase 24 QA).
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct ConsoleEvent {
+    pub level: String,
+    pub message: String,
+    pub at: u64,
+}
+
 #[derive(Default)]
 pub struct RuntimeState {
     pub shortcut_registered: bool,
@@ -90,6 +100,8 @@ pub struct RuntimeState {
     pub qa_error: String,
     pub exited: bool,
     pub frame_stats: FrameStats,
+    pub console_events: Vec<ConsoleEvent>,
+    pub layout_audit: serde_json::Value,
 }
 
 pub struct DesktopRuntime {
@@ -184,6 +196,8 @@ pub fn write_state(app: &AppHandle) {
             "qa_error": value.qa_error,
             "exited": value.exited,
             "frame_stats": value.frame_stats,
+            "console_events": value.console_events,
+            "layout_audit": value.layout_audit,
             "pid": std::process::id(),
             "updated_at": now_epoch(),
         })
@@ -430,7 +444,8 @@ pub fn animate_palette_height(app: &AppHandle, target: f64) {
                 return;
             }
             let progress = step as f64 / steps as f64;
-            let eased = 1.0 - (1.0 - progress).powi(3);
+            // Smoothstep: no large first/last step, so collapse never snaps.
+            let eased = progress * progress * (3.0 - 2.0 * progress);
             let height = current + (target - current) * eased;
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_size(LogicalSize::new(MODERN_WIDTH, height));
@@ -523,10 +538,17 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
         state.shortcut_error = String::new();
         state.context_menu_error = String::new();
         state.backdrop_error = backdrop_error;
-        // start()/stop() own the live status; only reset the counter here.
+        // start()/stop() own the live status; reflect the change immediately so
+        // the settings panel never shows "unregistered" with the switch on.
+        if notifications_changed {
+            state.notifications_status = if next.notifications {
+                "starting".into()
+            } else {
+                "disabled".into()
+            };
+        }
         if !next.notifications {
             state.notifications_polls = 0;
-            state.notifications_status = "disabled".into();
         }
     }
     if let Ok(mut current) = runtime.settings.lock() {
@@ -556,6 +578,9 @@ pub struct QaCommand {
     pub show: bool,
     pub hide: bool,
     pub view: Option<String>,
+    pub demo: Option<String>,
+    pub reset_logs: bool,
+    pub audit: bool,
 }
 
 /// Parse `--qa mode=modern notifications=on render`.
@@ -571,9 +596,14 @@ pub fn qa_command(args: &[String]) -> Option<QaCommand> {
             "quit" => command.quit = true,
             "show" => command.show = true,
             "hide" => command.hide = true,
+            "reset-logs" => command.reset_logs = true,
+            "audit" => command.audit = true,
             _ => match token.split_once('=') {
                 Some((key, value)) if key.trim() == "view" => {
                     command.view = Some(value.trim().to_string())
+                }
+                Some((key, value)) if key.trim() == "demo" => {
+                    command.demo = Some(value.trim().to_string())
                 }
                 Some((key, value)) => {
                     command.set.push((key.trim().to_string(), value.trim().to_string()))
@@ -634,6 +664,14 @@ fn apply_qa_command(app: &AppHandle, command: &QaCommand) {
             state.qa_error = String::new();
         }
     }
+    if command.reset_logs {
+        let runtime = app.state::<DesktopRuntime>();
+        if let Ok(mut state) = runtime.runtime.lock() {
+            state.console_events.clear();
+            state.layout_audit = serde_json::Value::Null;
+            state.qa_error = String::new();
+        }
+    }
     write_state(app);
 
     if command.show {
@@ -658,6 +696,21 @@ fn apply_qa_command(app: &AppHandle, command: &QaCommand) {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
             let _ = handle.emit(EVENT_UI, view);
+        });
+    }
+    if let Some(demo) = &command.demo {
+        let handle = app.clone();
+        let demo = demo.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = handle.emit(EVENT_DEMO, demo);
+        });
+    }
+    if command.audit {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = handle.emit(EVENT_QA_AUDIT, ());
         });
     }
     if command.quit {
@@ -764,7 +817,14 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     write_state(app);
 
     if let Some(command) = qa {
-        if command.render || command.quit || command.show || command.hide || command.view.is_some() {
+        if command.render
+            || command.quit
+            || command.show
+            || command.hide
+            || command.view.is_some()
+            || command.demo.is_some()
+            || command.audit
+        {
             let app = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(1400));
@@ -778,6 +838,12 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
                 }
                 if let Some(view) = &command.view {
                     let _ = app.emit(EVENT_UI, view.clone());
+                }
+                if let Some(demo) = &command.demo {
+                    let _ = app.emit(EVENT_DEMO, demo.clone());
+                }
+                if command.audit {
+                    let _ = app.emit(EVENT_QA_AUDIT, ());
                 }
                 if command.render {
                     let _ = app.emit(EVENT_QA_RENDER, ());
@@ -919,6 +985,44 @@ pub fn record_frame_stats(
             mode,
             at: now_epoch(),
         };
+    }
+}
+
+/// Phase 24: webview console errors/warnings, kept small for the QA report.
+#[tauri::command]
+pub fn record_console_events(runtime: State<'_, DesktopRuntime>, events: Vec<ConsoleEvent>) {
+    if let Ok(mut state) = runtime.runtime.lock() {
+        for mut event in events {
+            event.at = now_epoch();
+            let duplicate = state
+                .console_events
+                .iter()
+                .any(|item| item.level == event.level && item.message == event.message);
+            if !duplicate {
+                state.console_events.push(event);
+            }
+        }
+        if state.console_events.len() > 40 {
+            let drop = state.console_events.len() - 40;
+            state.console_events.drain(0..drop);
+        }
+    }
+}
+
+/// Phase 24: layout/contrast audit computed in the webview.
+#[tauri::command]
+pub fn record_layout_audit(runtime: State<'_, DesktopRuntime>, audit: serde_json::Value) {
+    if let Ok(mut state) = runtime.runtime.lock() {
+        state.layout_audit = audit;
+    }
+}
+
+#[tauri::command]
+pub fn clear_qa_logs(runtime: State<'_, DesktopRuntime>) {
+    if let Ok(mut state) = runtime.runtime.lock() {
+        state.console_events.clear();
+        state.layout_audit = serde_json::Value::Null;
+        state.qa_error = String::new();
     }
 }
 

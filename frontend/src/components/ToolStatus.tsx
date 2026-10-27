@@ -17,7 +17,7 @@ const TONE: Record<ToolStatusState, string> = {
   waiting: "border-amber-200/15 bg-amber-300/[0.04] text-amber-100/75",
   success: "border-emerald-300/10 bg-emerald-300/[0.035] text-emerald-200/65",
   error: "border-rose-300/15 bg-rose-400/[0.04] text-rose-200/80",
-  cancelled: "border-white/[0.07] bg-white/[0.02] text-white/40",
+  cancelled: "border-white/[0.07] bg-white/[0.02] text-white/58",
 };
 
 const CARD_TONE: Record<ToolStatusState, string> = {
@@ -30,12 +30,12 @@ const CARD_TONE: Record<ToolStatusState, string> = {
 };
 
 const ICON_TONE: Record<ToolStatusState, string> = {
-  thinking: "border-white/10 bg-white/[0.04] text-white/40",
+  thinking: "border-white/10 bg-white/[0.04] text-white/58",
   executing: "border-violet-200/15 bg-violet-300/10 text-violet-100/75",
   waiting: "border-amber-200/20 bg-amber-300/10 text-amber-100/80",
   success: "border-emerald-300/15 bg-emerald-300/10 text-emerald-200/75",
   error: "border-rose-300/20 bg-rose-400/10 text-rose-200/80",
-  cancelled: "border-white/10 bg-white/[0.04] text-white/35",
+  cancelled: "border-white/10 bg-white/[0.04] text-white/56",
 };
 
 function StatusIcon({ state }: { state: ToolStatusState }) {
@@ -72,9 +72,9 @@ function TaskIcon({ state }: { state: TaskStep["state"] }) {
     return <AlertTriangle className="size-3 shrink-0 text-rose-300/85" />;
   }
   if (state === "cancelled") {
-    return <CloseIcon className="size-3 shrink-0 text-white/30" />;
+    return <CloseIcon className="size-3 shrink-0 text-white/54" />;
   }
-  return <Circle className="size-2.5 shrink-0 text-white/20" />;
+  return <Circle className="size-2.5 shrink-0 text-white/48" />;
 }
 
 function formatTaskDuration(task: TaskStep): string | null {
@@ -178,7 +178,7 @@ export const ToolStatus = memo(function ToolStatus({
         <StatusIcon state={status.state} />
         <span className="truncate">{status.label}</span>
         {liveDuration && (
-          <span className="shrink-0 font-mono tabular-nums text-white/25">
+          <span className="shrink-0 font-mono tabular-nums text-white/48">
             {liveDuration}
           </span>
         )}
@@ -220,7 +220,7 @@ export const ToolStatus = memo(function ToolStatus({
           {status.thinking && active && (
             <div
               ref={thinkingRef}
-              className="mt-1 max-h-28 max-w-xl overflow-y-auto rounded-lg border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/35"
+              className="mt-1 max-h-28 max-w-xl overflow-y-auto rounded-lg border border-white/[0.05] bg-white/[0.015] px-2.5 py-1.5 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/56"
             >
               {status.thinking}
             </div>
@@ -277,15 +277,15 @@ export const ToolStatus = memo(function ToolStatus({
               <span className="block truncate text-[11.5px] leading-4 font-medium text-white/80">
                 {headline}
               </span>
-              <span className="mt-0.5 flex items-center gap-1.5 text-[9.5px] leading-3 text-white/30">
+              <span className="mt-0.5 flex items-center gap-1.5 text-[9.5px] leading-3 text-white/54">
                 <span className="truncate">{sublineParts.join(" · ")}</span>
               </span>
             </span>
-            <span className="shrink-0 rounded-full border border-white/[0.06] bg-black/20 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-white/35">
+            <span className="shrink-0 rounded-full border border-white/[0.06] bg-black/20 px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-white/56">
               {completed}/{Math.max(total, 1)}
             </span>
             <ChevronDown
-              className={`size-3.5 shrink-0 text-white/25 transition-transform duration-200 ease-out ${
+              className={`size-3.5 shrink-0 text-white/48 transition-transform duration-200 ease-out ${
                 expanded ? "rotate-180" : ""
               }`}
             />
@@ -303,7 +303,7 @@ export const ToolStatus = memo(function ToolStatus({
           {status.thinking && active && (
             <div
               ref={thinkingRef}
-              className="mx-2 mb-1.5 max-h-28 overflow-y-auto rounded-md border border-white/[0.04] bg-white/[0.015] px-2 py-1 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/35"
+              className="mx-2 mb-1.5 max-h-28 overflow-y-auto rounded-md border border-white/[0.04] bg-white/[0.015] px-2 py-1 font-mono text-[9.5px] leading-4 whitespace-pre-wrap break-words text-white/56"
             >
               {status.thinking}
             </div>
@@ -331,26 +331,26 @@ export const ToolStatus = memo(function ToolStatus({
                               : task.state === "failed"
                                 ? "text-rose-100/70"
                                 : task.state === "cancelled"
-                                  ? "text-white/30 line-through decoration-white/15"
+                                  ? "text-white/54 line-through decoration-white/15"
                                   : "text-white/45"
                           }`}
                         >
                           {task.label}
                         </p>
                         {duration && (
-                          <span className="shrink-0 font-mono text-[8.5px] tabular-nums text-white/20">
+                          <span className="shrink-0 font-mono text-[8.5px] tabular-nums text-white/48">
                             {duration}
                           </span>
                         )}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[8.5px] text-white/20">
+                      <div className="mt-0.5 flex items-center gap-2 text-[8.5px] text-white/48">
                         {task.tool && (
                           <span className="truncate font-mono">
                             {task.tool}
                           </span>
                         )}
                         {task.state === "running" && isLast && (
-                          <span className="shrink-0 text-violet-200/50">
+                          <span className="shrink-0 text-violet-200/72">
                             now
                           </span>
                         )}

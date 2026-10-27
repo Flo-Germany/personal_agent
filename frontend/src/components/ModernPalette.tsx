@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { hidePalette, onSummon, prettyShortcut, setPaletteHeight } from "../lib/desktop";
+import { shortModelName } from "../lib/display";
 import type { DesktopBackdrop } from "../lib/desktop";
 import { QUICK_PROMPTS } from "../lib/prompts";
 import type { ChatMessage, Identity, PendingAction } from "../types";
@@ -22,7 +23,7 @@ export const PALETTE_COLLAPSED = 136;
 export const PALETTE_EXPANDED = 620;
 export const PALETTE_SETTINGS = 748;
 /** Height of the chrome around the scrolling answer body: header, footer, status bar. */
-const PALETTE_CHROME = 112;
+const PALETTE_CHROME = 152;
 
 type ModernPaletteProps = {
   messages: ChatMessage[];
@@ -51,14 +52,16 @@ type ModernPaletteProps = {
 const VISION_PATTERN = /screen|vision|screenshot|display|set[- ]of[- ]mark|\bsom\b/i;
 
 function toolVerb(tool?: string, label?: string): string {
-  const haystack = `${tool ?? ""} ${label ?? ""}`;
-  if (VISION_PATTERN.test(haystack)) return "Reading the screen";
-  if (/shell|powershell|command|terminal|cmd/i.test(haystack)) return "Running a command";
-  if (/web|fetch|http|browse/i.test(haystack)) return "Fetching from the web";
-  if (/search|file|folder|glob|grep|directory|find/i.test(haystack)) {
-    return "Searching your files";
+  // Prefer the tool name; labels are prose and can mention "folder" for a move.
+  const name = tool ?? "";
+  if (VISION_PATTERN.test(`${name} ${label ?? ""}`)) return "Reading the screen";
+  if (/shell|powershell|command|terminal|cmd/i.test(name)) return "Running a command";
+  if (/web|fetch|http|browse/i.test(name)) return "Fetching from the web";
+  if (/search|glob|grep|find|list_dir/i.test(name)) return "Searching your files";
+  if (/move|copy|rename|organize|create|delete|write/i.test(name)) {
+    return "Tidying your files";
   }
-  if (/approval|waiting|permission/i.test(haystack)) return "Waiting for you";
+  if (/approval|waiting|permission/i.test(name)) return "Waiting for you";
   return "Working";
 }
 
@@ -108,6 +111,7 @@ export function ModernPalette({
   onCloseSettings,
 }: ModernPaletteProps) {
   const [value, setValue] = useState("");
+  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null);
   const [stressText, setStressText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -177,10 +181,16 @@ export function ModernPalette({
       return;
     }
     const node = scrollRef.current;
-    if (node) {
-      node.scrollTop = node.scrollHeight;
+    if (!node) {
+      return;
     }
-  }, [expanded, answer, isStreaming, pendingAction, settingsOpen]);
+    const card = node.querySelector<HTMLElement>("[data-approval-card]");
+    if (card) {
+      card.scrollIntoView({ block: "start" });
+      return;
+    }
+    node.scrollTop = node.scrollHeight;
+  }, [contentNode, expanded, answer, isStreaming, pendingAction, settingsOpen]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => inputRef.current?.focus(), 60);
@@ -202,7 +212,6 @@ export function ModernPalette({
   // While streaming it only ever grows, at most once every 600 ms, so the
   // native window animation never fights token rendering. A callback ref is
   // used because AnimatePresence mounts the body a frame after `expanded`.
-  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null);
   const measuredTarget = useRef(PALETTE_COLLAPSED);
   useEffect(() => {
     if (settingsOpen) {
@@ -240,10 +249,7 @@ export function ModernPalette({
       last = performance.now();
       const natural = element.scrollHeight + PALETTE_CHROME;
       const target = Math.min(PALETTE_EXPANDED, Math.max(working ? 220 : 150, natural));
-      if (working && target < measuredTarget.current) {
-        return;
-      }
-      if (Math.abs(target - measuredTarget.current) < 8) {
+      if (Math.abs(target - measuredTarget.current) < 24) {
         return;
       }
       measuredTarget.current = target;
@@ -323,7 +329,7 @@ export function ModernPalette({
           data-tauri-drag-region="deep"
           className="flex h-[58px] shrink-0 items-center gap-2.5 px-4"
         >
-          <Search className="size-[15px] shrink-0 text-white/30" strokeWidth={2.2} />
+          <Search className="size-[15px] shrink-0 text-white/54" strokeWidth={2.2} />
           <input
             ref={inputRef}
             value={value}
@@ -337,7 +343,7 @@ export function ModernPalette({
                 : "Ask Compa, search your PC, or run a command"
             }
             aria-label="Ask Compa"
-            className="min-w-0 flex-1 bg-transparent text-[14px] leading-5 text-white/90 caret-violet-300 outline-none placeholder:text-white/25"
+            className="min-w-0 flex-1 bg-transparent text-[14px] leading-5 text-white/90 caret-violet-300 outline-none placeholder:text-white/48"
           />
 
           <AnimatePresence mode="popLayout" initial={false}>
@@ -364,7 +370,11 @@ export function ModernPalette({
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
-                className="flex size-7 items-center justify-center rounded-full border border-violet-300/25 bg-violet-300/15 text-violet-100 transition-colors disabled:border-white/[0.07] disabled:bg-white/[0.03] disabled:text-white/25"
+                className={`flex size-7 items-center justify-center rounded-full border transition-colors ${
+                  value.trim() && canSend
+                    ? "border-violet-300/30 bg-violet-300/20 text-violet-50"
+                    : "border-white/[0.06] bg-white/[0.02] text-white/30"
+                }`}
               >
                 <ArrowUp className="size-3.5" strokeWidth={2.4} />
               </motion.button>
@@ -380,7 +390,7 @@ export function ModernPalette({
               disabled={isBusy}
               aria-label="Clear this chat"
               title="Clear this chat"
-              className="flex size-7 items-center justify-center rounded-lg text-white/22 transition-colors hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-30"
+              className="flex size-7 items-center justify-center rounded-lg text-white/48 transition-colors hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-30"
             >
               <Trash2 className="size-3.5" />
             </button>
@@ -395,7 +405,7 @@ export function ModernPalette({
             className={`flex size-7 items-center justify-center rounded-lg transition-colors ${
               settingsOpen
                 ? "bg-white/[0.08] text-white/80"
-                : "text-white/22 hover:bg-white/[0.06] hover:text-white/70"
+                : "text-white/48 hover:bg-white/[0.06] hover:text-white/70"
             }`}
           >
             <Settings2 className="size-3.5" />
@@ -406,7 +416,7 @@ export function ModernPalette({
             onClick={() => void hidePalette()}
             aria-label="Hide to tray"
             title="Hide to tray"
-            className="flex size-7 items-center justify-center rounded-lg text-white/22 transition-colors hover:bg-white/[0.06] hover:text-white/70"
+            className="flex size-7 items-center justify-center rounded-lg text-white/48 transition-colors hover:bg-white/[0.06] hover:text-white/70"
           >
             <X className="size-3.5" />
           </button>
@@ -426,7 +436,7 @@ export function ModernPalette({
                 <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
               ) : (
                 <>
-                  <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                  <div ref={scrollRef} className="palette-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
                     <div ref={setContentNode}>
                     {pendingAction && pendingAction.kind === "display" ? (
                   <DisplayPickerCard
@@ -448,7 +458,7 @@ export function ModernPalette({
                       <motion.p
                         initial={{ opacity: 0, y: -2 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="truncate text-[11.5px] text-white/30"
+                        className="truncate text-[11.5px] text-white/54"
                       >
                         {turn.question}
                       </motion.p>
@@ -467,11 +477,11 @@ export function ModernPalette({
                         <WorkingDots />
                       </div>
                     ) : (
-                      <p className="text-[12px] text-white/30">No reply yet.</p>
+                      <p className="text-[12px] text-white/54">No reply yet.</p>
                     )}
 
                     {working && (
-                      <div className="flex items-center gap-2 text-[10.5px] text-white/30">
+                      <div className="flex items-center gap-2 text-[10.5px] text-white/54">
                         {liveStatus?.state === "success" ? (
                           <span className="size-1.5 rounded-full bg-emerald-300/70" />
                         ) : (
@@ -485,10 +495,8 @@ export function ModernPalette({
                     </div>
               </div>
 
-                  <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.05] px-4 py-1.5 text-[10px] text-white/22">
-                    <span className="truncate">
-                      {working ? "working · Esc to hide" : "ready"}
-                    </span>
+                  <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.05] px-4 py-1.5 text-[10px] text-white/48">
+                    <span className="truncate">{working ? "working" : "ready"}</span>
                     <span className="shrink-0">Enter to send · Esc to hide</span>
                   </footer>
                 </>
@@ -510,7 +518,7 @@ export function ModernPalette({
                     type="button"
                     disabled={!canSend}
                     onClick={() => onSend(quick.prompt)}
-                    className="rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-[10.5px] text-white/40 transition-colors duration-150 ease-out hover:border-white/10 hover:text-white/75 disabled:opacity-40"
+                    className="rounded-full border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-[10.5px] text-white/58 transition-colors duration-150 ease-out hover:border-white/10 hover:text-white/75 disabled:opacity-40"
                   >
                     {quick.label}
                   </button>
@@ -520,9 +528,9 @@ export function ModernPalette({
           )}
         </AnimatePresence>
 
-        <div className="flex h-[26px] shrink-0 items-center justify-between gap-3 px-4 text-[10px] text-white/20">
+        <div className="flex h-[26px] shrink-0 items-center justify-between gap-3 px-4 text-[10px] text-white/48">
           <span className="truncate">
-            {identity ? identity.model : "Local · offline"}
+            {identity ? shortModelName(identity.model) : "Local · offline"}
           </span>
           <span className="shrink-0 font-mono">
             {prettyShortcut(shortcut)} to summon

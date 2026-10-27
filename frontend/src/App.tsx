@@ -15,22 +15,38 @@ import { ToolStatus } from "./components/ToolStatus";
 import { useAgentChat } from "./hooks/useAgentChat";
 import { useDesktop } from "./hooks/useDesktop";
 import { useFrameStats } from "./hooks/useFrameStats";
-import { onAnalyze, onQaRender, onSummon, onUi, takePendingAnalyze } from "./lib/desktop";
+import {
+  installConsoleCapture,
+  publishLayoutAudit,
+} from "./lib/designAudit";
+import {
+  onAnalyze,
+  onDemo,
+  onQaAudit,
+  onQaRender,
+  onSummon,
+  onUi,
+  takePendingAnalyze,
+} from "./lib/desktop";
+import { demoScene } from "./lib/qaFixtures";
+import type { DemoKind } from "./lib/qaFixtures";
 
 const STRESS_DURATION_MS = 3400;
+const DEMO_KINDS: DemoKind[] = ["none", "empty", "reply", "search", "tools", "approval"];
 
 function App() {
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [stress, setStress] = useState(false);
+  const [demo, setDemo] = useState<DemoKind>("none");
   const desktop = useDesktop();
   const {
-    messages,
+    messages: liveMessages,
     identity,
-    pendingAction,
-    isStreaming,
+    pendingAction: livePending,
+    isStreaming: liveStreaming,
     isLoadingHistory,
-    isBusy,
-    canSend,
+    isBusy: liveBusy,
+    canSend: liveCanSend,
     sendMessage,
     approve,
     chooseDisplay,
@@ -39,6 +55,49 @@ function App() {
     refresh,
     refreshIdentity,
   } = useAgentChat();
+
+  // ------------------------------------------------------ visual QA fixtures
+  const scene = useMemo(() => demoScene(demo), [demo]);
+  const messages = scene?.messages ?? liveMessages;
+  const pendingAction = scene ? scene.pending : livePending;
+  const isStreaming = scene ? scene.streaming : liveStreaming;
+  // An empty fixture is a real idle screen, so it keeps the live affordances.
+  const isIdleFixture = demo === "empty";
+  const isBusy = scene && !isIdleFixture ? true : liveBusy;
+  const canSend = scene && !isIdleFixture ? false : liveCanSend;
+
+  const demoRef = useRef<DemoKind>("none");
+  demoRef.current = demo;
+
+  useEffect(() => {
+    installConsoleCapture();
+    let unlisten: (() => void) | undefined;
+    void onDemo((kind) => {
+      setDemo(DEMO_KINDS.includes(kind as DemoKind) ? (kind as DemoKind) : "none");
+    }).then((off) => {
+      unlisten = off;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  const auditKind = `${desktop.isModern ? "modern" : "classic"}:${view}:${demo}`;
+  const [auditTick, setAuditTick] = useState(0);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void onQaAudit(() => setAuditTick((tick) => tick + 1)).then((off) => {
+      unlisten = off;
+    });
+    return () => unlisten?.();
+  }, []);
+  useEffect(() => {
+    if (!desktop.ready) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void publishLayoutAudit(auditKind, desktop.isModern ? "#000000" : "#141414");
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [auditKind, auditTick, desktop.isModern, desktop.ready, messages.length, pendingAction]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastMessage = messages[messages.length - 1];
@@ -85,7 +144,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!analyzeTick || isLoadingHistory || !canSend) {
+    // Fixtures must never trigger a real turn.
+    if (!analyzeTick || isLoadingHistory || !liveCanSend || demo !== "none") {
       return;
     }
     const path = pendingAnalyze.current;
@@ -97,7 +157,7 @@ function App() {
     void sendMessage(
       `Analyze the file at ${path} and tell me what it is and what matters.`,
     );
-  }, [analyzeTick, canSend, isLoadingHistory, sendMessage]);
+  }, [analyzeTick, demo, isLoadingHistory, liveCanSend, sendMessage]);
 
   // ------------------------------------------------------- QA rendering probe
   useEffect(() => {
@@ -131,14 +191,14 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void onSummon(() => {
-      if (!isStreaming) {
+      if (!liveStreaming && demoRef.current === "none") {
         void refresh();
       }
     }).then((off) => {
       unlisten = off;
     });
     return () => unlisten?.();
-  }, [isStreaming, refresh]);
+  }, [liveStreaming, refresh]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -262,7 +322,7 @@ function App() {
               className="relative min-w-0 flex-1 overflow-y-auto"
             >
               {isEmpty && isLoadingHistory ? (
-                <div className="flex min-h-full items-center justify-center gap-2 text-[12px] text-white/30">
+                <div className="flex min-h-full items-center justify-center gap-2 text-[12px] text-white/54">
                   <span className="size-3 animate-spin rounded-full border border-white/15 border-t-white/50" />
                   Loading conversation…
                 </div>

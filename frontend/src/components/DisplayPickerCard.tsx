@@ -38,7 +38,7 @@ export const DisplayPickerCard = memo(function DisplayPickerCard({
                 {displays.length} displays
               </span>
             </div>
-            <p className="mt-0.5 text-[10px] leading-4 text-white/35">
+            <p className="mt-0.5 text-[10px] leading-4 text-white/56">
               {pending.question
                 ? `“${pending.question}”`
                 : "Choose the screen the agent should look at."}
@@ -65,7 +65,7 @@ export const DisplayPickerCard = memo(function DisplayPickerCard({
                     draggable={false}
                   />
                 ) : (
-                  <span className="flex size-full items-center justify-center text-white/20">
+                  <span className="flex size-full items-center justify-center text-white/48">
                     <Monitor className="size-6" strokeWidth={1.5} />
                   </span>
                 )}
@@ -85,12 +85,12 @@ export const DisplayPickerCard = memo(function DisplayPickerCard({
                 <span className="truncate text-[11px] font-medium text-white/70 group-hover:text-white/85">
                   Display {display.index}
                 </span>
-                <span className="shrink-0 font-mono text-[9px] text-white/30">
+                <span className="shrink-0 font-mono text-[9px] text-white/54">
                   {display.width} × {display.height}
                 </span>
               </div>
               {display.position && (
-                <p className="mt-0.5 px-0.5 pb-0.5 text-[9px] leading-3 text-white/25">
+                <p className="mt-0.5 px-0.5 pb-0.5 text-[9px] leading-3 text-white/48">
                   {display.position}
                 </p>
               )}

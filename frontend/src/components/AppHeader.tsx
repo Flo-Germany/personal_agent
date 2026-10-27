@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Settings2 } from "lucide-react";
 
+import { shortModelName } from "../lib/display";
 import type { Identity } from "../types";
 import { hideToTray } from "../lib/window";
 import { AgentAvatar } from "./AgentAvatar";
@@ -38,9 +39,9 @@ export const AppHeader = memo(function AppHeader({
         <h1 className="truncate text-[13.5px] font-medium tracking-tight text-white/95">
           {identity?.name ?? "AI Agent"}
         </h1>
-        <p className="truncate text-[10.5px] text-white/35">
+        <p className="truncate text-[10.5px] text-white/56" title={identity?.model}>
           {identity
-            ? `${identity.model} · Local`
+            ? `${shortModelName(identity.model)} · Local`
             : offline
               ? "Local backend not reachable - see logs"
               : "Starting local backend…"}
@@ -48,7 +49,7 @@ export const AppHeader = memo(function AppHeader({
       </div>
 
       <span
-        className={`hidden items-center gap-1.5 rounded-full border border-white/[0.06] px-2 py-1 text-[10px] text-white/40 min-[400px]:flex ${
+        className={`hidden items-center gap-1.5 rounded-full border border-white/[0.06] px-2 py-1 text-[10px] text-white/58 min-[400px]:flex ${
           isWorking || !identity ? "bg-violet-300/[0.07]" : "bg-white/[0.025]"
         }`}
       >
@@ -69,7 +70,7 @@ export const AppHeader = memo(function AppHeader({
         onClick={onOpenSettings}
         aria-label="Model settings"
         title="Model settings"
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/35 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/56 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75"
       >
         <Settings2 className="size-4" />
       </button>
@@ -80,7 +81,7 @@ export const AppHeader = memo(function AppHeader({
         disabled={isBusy}
         aria-label="Reload conversation"
         title="Reload conversation"
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/35 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-30"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/56 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-30"
       >
         <RefreshIcon
           className={`size-4 ${isBusy ? "animate-spin [animation-duration:1.2s]" : ""}`}
@@ -93,7 +94,7 @@ export const AppHeader = memo(function AppHeader({
         disabled={isBusy || !canClear}
         aria-label="Clear this chat (knowledge base is kept)"
         title="Clear this chat (knowledge base is kept)"
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/35 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-30"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/56 transition-all duration-200 ease-out hover:bg-white/[0.06] hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-30"
       >
         <TrashIcon className="size-4" />
       </button>
@@ -103,7 +104,7 @@ export const AppHeader = memo(function AppHeader({
         onClick={() => void hideToTray()}
         aria-label="Hide to tray"
         title="Hide to tray"
-        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/35 transition-all duration-200 ease-out hover:bg-rose-400/10 hover:text-rose-200"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg text-white/56 transition-all duration-200 ease-out hover:bg-rose-400/10 hover:text-rose-200"
       >
         <CloseIcon className="size-4" />
       </button>

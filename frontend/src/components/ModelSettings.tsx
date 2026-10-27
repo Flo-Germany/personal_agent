@@ -90,7 +90,7 @@ function ProgressBar({
           style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
         />
       </div>
-      <p className="mt-1 flex justify-between gap-2 text-[10px] text-white/35">
+      <p className="mt-1 flex justify-between gap-2 text-[10px] text-white/56">
         <span className="truncate">{label}</span>
         <span className="shrink-0 tabular-nums">{percent.toFixed(1)}%</span>
       </p>
@@ -292,7 +292,7 @@ export const ModelSettings = memo(function ModelSettings({
           <div className="min-w-0 flex-1">
             <h3 className="flex flex-wrap items-center gap-1.5 text-[12px] font-medium text-white/85">
               {model.name}
-              <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-1.5 py-px font-mono text-[10px] text-white/40">
+              <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-1.5 py-px font-mono text-[10px] text-white/58">
                 {model.parameters} · {model.quantization}
               </span>
               {isActive && (
@@ -302,15 +302,15 @@ export const ModelSettings = memo(function ModelSettings({
                 </span>
               )}
               {model.installed && !isActive && (
-                <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[10px] text-white/45">
+                <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-1.5 py-px text-[10px] text-white/62">
                   Installed
                 </span>
               )}
             </h3>
-            <p className="mt-1 text-[10.5px] leading-4 text-white/40">
+            <p className="mt-1 text-[10.5px] leading-4 text-white/58">
               {model.description}
             </p>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-white/30">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10px] text-white/54">
               <span className="rounded-full border border-violet-300/15 bg-violet-300/[0.06] px-1.5 py-px text-violet-100/70">
                 {model.badge}
               </span>
@@ -334,7 +334,7 @@ export const ModelSettings = memo(function ModelSettings({
                       ? "Switch to another model before deleting this one"
                       : "Delete from disk"
                   }
-                  className="flex size-7 items-center justify-center rounded-md text-white/30 transition-colors duration-150 ease-out hover:bg-rose-400/10 hover:text-rose-200/80 disabled:cursor-not-allowed disabled:opacity-30"
+                  className="flex size-7 items-center justify-center rounded-md text-white/54 transition-colors duration-150 ease-out hover:bg-rose-400/10 hover:text-rose-200/80 disabled:cursor-not-allowed disabled:opacity-30"
                 >
                   <Trash2 className="size-3.5" />
                 </button>
@@ -371,7 +371,7 @@ export const ModelSettings = memo(function ModelSettings({
               <button
                 type="button"
                 onClick={() => void cancelInstall(job.id)}
-                className="mt-1 text-[10px] text-white/35 underline decoration-white/20 underline-offset-2 hover:text-white/60"
+                className="mt-1 text-[10px] text-white/56 underline decoration-white/20 underline-offset-2 hover:text-white/80"
               >
                 Cancel
               </button>
@@ -379,7 +379,7 @@ export const ModelSettings = memo(function ModelSettings({
           </>
         )}
         {installing && !job && (
-          <p className="mt-2 text-[10px] text-white/35">Starting…</p>
+          <p className="mt-2 text-[10px] text-white/56">Starting…</p>
         )}
       </article>
     );
@@ -390,14 +390,14 @@ export const ModelSettings = memo(function ModelSettings({
       <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.055] px-4 py-3 sm:px-5">
         <Settings2 className="size-4 text-white/45" />
         <h2 className="text-[13px] font-medium text-white/90">Settings</h2>
-        <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-1.5 py-px font-mono text-[10px] uppercase text-white/40">
+        <span className="rounded-full border border-white/[0.07] bg-white/[0.03] px-1.5 py-px font-mono text-[10px] uppercase text-white/58">
           {status?.engine ?? "…"}
         </span>
         <button
           type="button"
           onClick={onClose}
           aria-label="Close model settings"
-          className="ml-auto flex size-8 items-center justify-center rounded-lg text-white/35 transition-colors duration-150 ease-out hover:bg-white/[0.06] hover:text-white/80"
+          className="ml-auto flex size-8 items-center justify-center rounded-lg text-white/56 transition-colors duration-150 ease-out hover:bg-white/[0.06] hover:text-white/80"
         >
           <X className="size-4" />
         </button>
@@ -434,7 +434,7 @@ export const ModelSettings = memo(function ModelSettings({
                     : " · CPU only"}
                 </p>
                 <p
-                  className="text-[10px] leading-4 text-white/30"
+                  className="text-[10px] leading-4 text-white/54"
                   title={hardware?.cpu}
                 >
                   {hardware?.cpu_cores ?? 0} CPU cores ·{" "}
@@ -461,7 +461,7 @@ export const ModelSettings = memo(function ModelSettings({
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-white/[0.05] pt-2">
-              <span className="text-[10px] tracking-wide text-white/30 uppercase">
+              <span className="text-[10px] tracking-wide text-white/54 uppercase">
                 Inference engine
               </span>
               <div className="flex overflow-hidden rounded-md border border-white/[0.07] bg-black/20">
@@ -480,7 +480,7 @@ export const ModelSettings = memo(function ModelSettings({
                     className={`px-2 py-[2px] text-[10px] transition-colors duration-150 ease-out disabled:opacity-40 ${
                       status?.engine === value
                         ? "bg-white/[0.08] text-white/80"
-                        : "text-white/35 hover:text-white/60"
+                        : "text-white/56 hover:text-white/80"
                     }`}
                   >
                     {label}
@@ -503,7 +503,7 @@ export const ModelSettings = memo(function ModelSettings({
                 <span className="truncate font-mono text-white/55">
                   {baseName(status.servers.text.loaded_model)}
                 </span>
-                <span className="text-white/25">
+                <span className="text-white/48">
                   · {status.servers.text.n_gpu_layers ?? 0} layers ·{" "}
                   {status.servers.text.context?.toLocaleString("en-US")} ctx
                 </span>
@@ -525,7 +525,7 @@ export const ModelSettings = memo(function ModelSettings({
             )}
 
             {status?.text_plan && (
-              <p className="mt-2 border-t border-white/[0.05] pt-2 text-[10px] leading-4 text-white/30">
+              <p className="mt-2 border-t border-white/[0.05] pt-2 text-[10px] leading-4 text-white/54">
                 Text plan: {status.text_plan.n_gpu_layers}/
                 {status.text_plan.total_layers} layers on GPU ·{" "}
                 {status.text_plan.weights_gb.toFixed(1)} GB weights ·{" "}
@@ -537,7 +537,7 @@ export const ModelSettings = memo(function ModelSettings({
 
           <section className="grid gap-3 sm:grid-cols-2">
             <label className="rounded-xl border border-white/[0.06] bg-white/[0.018] p-3">
-              <span className="text-[10px] tracking-wide text-white/35 uppercase">
+              <span className="text-[10px] tracking-wide text-white/56 uppercase">
                 Text model
               </span>
               <select
@@ -555,13 +555,13 @@ export const ModelSettings = memo(function ModelSettings({
                   </option>
                 ))}
               </select>
-              <p className="mt-1 text-[10px] text-white/25">
+              <p className="mt-1 text-[10px] text-white/48">
                 Kept alive for instant replies (keep_alive -1).
               </p>
             </label>
 
             <label className="rounded-xl border border-white/[0.06] bg-white/[0.018] p-3">
-              <span className="text-[10px] tracking-wide text-white/35 uppercase">
+              <span className="text-[10px] tracking-wide text-white/56 uppercase">
                 Vision model
               </span>
               <select
@@ -579,7 +579,7 @@ export const ModelSettings = memo(function ModelSettings({
                   </option>
                 ))}
               </select>
-              <p className="mt-1 text-[10px] text-white/25">
+              <p className="mt-1 text-[10px] text-white/48">
                 {status?.servers.vision?.running
                   ? "Loaded for the current screen task"
                   : "Unloaded after each screen task (keep_alive 0)"}
@@ -588,7 +588,7 @@ export const ModelSettings = memo(function ModelSettings({
           </section>
 
           <section className="space-y-2">
-            <h3 className="flex items-center gap-1.5 text-[10px] tracking-wide text-white/35 uppercase">
+            <h3 className="flex items-center gap-1.5 text-[10px] tracking-wide text-white/56 uppercase">
               <Boxes className="size-3" />
               Text models
             </h3>
@@ -596,14 +596,14 @@ export const ModelSettings = memo(function ModelSettings({
           </section>
 
           <section className="space-y-2">
-            <h3 className="flex items-center gap-1.5 text-[10px] tracking-wide text-white/35 uppercase">
+            <h3 className="flex items-center gap-1.5 text-[10px] tracking-wide text-white/56 uppercase">
               <Boxes className="size-3" />
               Vision models
             </h3>
             {visionModels.map(renderCard)}
           </section>
 
-          <p className="pb-2 text-[10px] leading-4 text-white/25">
+          <p className="pb-2 text-[10px] leading-4 text-white/48">
             Downloads come from HuggingFace and are verified with SHA256 before
             they become selectable. Models and the llama.cpp runtime live in the
             app data folder, not in the repository.

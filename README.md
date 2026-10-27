@@ -1630,6 +1630,44 @@ writes `build/phase23-qa.json`.
 powershell -ExecutionPolicy Bypass -File scripts\qa_phase23.ps1
 ```
 
+## Phase 24: autonomous visual QA loop
+
+Every UI change now goes through a capture → audit → vision → rewrite loop
+instead of a manual look. `scripts/visual_qa.ps1` drives the compiled app
+through twelve states (classic idle/search/tools/approval/settings, modern
+idle/reply/search/tools/approval/settings/notifications), captures high-DPI
+screenshots, and enforces four gates:
+
+- **DOM audit** – zero overflow, WCAG AA contrast computed from rendered colors,
+  accessible names, 24 px targets, no unexpected truncation.
+- **Console** – webview errors, React warnings and unhandled rejections fail the
+  run.
+- **Motion** – the palette is expanded and collapsed while the window height is
+  sampled every ~2 ms; monotonic, ≤90 px steps, ~150 ms.
+- **Vision** – the local Qwen3-VL 8B model scores typography, spacing, contrast
+  and layout per screenshot and must return `pass` with every score ≥ 8.
+
+The first pass found secondary text at 1.66–2.72:1 on black, a 1 px glow
+overflow, a 32 px height miscalculation that clipped the last row, an approval
+card whose header was scrolled out of view, and 20 px hit targets. After three
+iterations the packaged build is clean:
+
+```text
+12/12 vision pass (scores 9-10), 0 contrast violations, 0 console errors
+expand 155 ms / collapse 143 ms, 12-13 distinct heights, max step 79 px
+```
+
+Full method, fixtures (`--qa demo=...`), reports and honest limits:
+[docs/visual-qa.md](docs/visual-qa.md).
+
+The vision reviewer is now **Qwen3-VL 8B** (installed for this phase; it also
+serves screen analysis). It can be switched back to the 2B variant in
+**Settings → Models** if VRAM is tight.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\visual_qa.ps1
+```
+
 ## Known limitation
 
 `qwen3-vl:8b-instruct` is the default because it follows the full identity,

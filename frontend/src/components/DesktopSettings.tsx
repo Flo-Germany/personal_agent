@@ -45,15 +45,15 @@ function Toggle({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-[22px] w-[38px] shrink-0 rounded-full border transition-colors duration-200 ease-out disabled:opacity-40 ${
+      className={`relative h-6 w-10 shrink-0 rounded-full border transition-colors duration-200 ease-out disabled:opacity-40 ${
         checked
           ? "border-violet-300/35 bg-violet-300/25"
           : "border-white/10 bg-white/[0.05]"
       }`}
     >
       <span
-        className={`absolute top-1/2 size-4 -translate-y-1/2 rounded-full transition-all duration-200 ease-out ${
-          checked ? "left-[19px] bg-violet-100" : "left-[3px] bg-white/45"
+        className={`absolute top-1/2 size-[18px] -translate-y-1/2 rounded-full transition-all duration-200 ease-out ${
+          checked ? "left-[20px] bg-violet-100" : "left-[2px] bg-white/45"
         }`}
       />
     </button>
@@ -78,7 +78,7 @@ function Row({
       </span>
       <div className="min-w-[140px] flex-1">
         <p className="text-[11.5px] leading-4 text-white/80">{title}</p>
-        <p className="mt-0.5 text-[10.5px] leading-4 text-white/35">{detail}</p>
+        <p className="mt-0.5 text-[10.5px] leading-4 text-white/56">{detail}</p>
       </div>
       {children && <div className="ml-auto flex shrink-0 items-center">{children}</div>}
     </div>
@@ -88,8 +88,9 @@ function Row({
 function notificationChip(state: DesktopState): { label: string; tone: string } {
   const status = state.notifications_status;
   if (status === "active") {
+    const polls = state.notification_polls;
     return {
-      label: `Listening · ${state.notification_polls} polls`,
+      label: `Listening · ${polls} ${polls === 1 ? "poll" : "polls"}`,
       tone: "border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-200/75",
     };
   }
@@ -102,7 +103,7 @@ function notificationChip(state: DesktopState): { label: string; tone: string } 
   if (status === "disabled" || status === "") {
     return {
       label: "Hooks unregistered",
-      tone: "border-white/[0.08] bg-white/[0.03] text-white/40",
+      tone: "border-white/[0.08] bg-white/[0.03] text-white/58",
     };
   }
   return {
@@ -167,7 +168,7 @@ export function DesktopSettingsSection({
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[11.5px] leading-4 text-white/80">Windows integration</p>
-          <p className="text-[10.5px] leading-4 text-white/35">
+          <p className="text-[10.5px] leading-4 text-white/56">
             Shortcut, Explorer menu and notification hooks.
           </p>
         </div>
@@ -190,7 +191,7 @@ export function DesktopSettingsSection({
                 className={`px-2 py-1 text-[10.5px] capitalize transition-colors duration-150 ease-out disabled:opacity-40 ${
                   settings.mode === mode
                     ? "rounded-md bg-white/[0.09] text-white/90"
-                    : "rounded-md text-white/40 hover:text-white/70"
+                    : "rounded-md text-white/58 hover:text-white/70"
                 }`}
               >
                 {mode}
@@ -220,7 +221,7 @@ export function DesktopSettingsSection({
                   className={`px-2 py-1 text-[10.5px] transition-colors duration-150 ease-out disabled:opacity-40 ${
                     settings.backdrop === backdrop
                       ? "rounded-md bg-white/[0.09] text-white/90"
-                      : "rounded-md text-white/40 hover:text-white/70"
+                      : "rounded-md text-white/58 hover:text-white/70"
                   }`}
                 >
                   {backdrop === "mica" ? "Mica" : "OLED black"}
@@ -258,14 +259,14 @@ export function DesktopSettingsSection({
                 onClick={() => onUpdate({ shortcut: "Ctrl+Shift+Space" })}
                 title="Reset to Ctrl+Shift+Space"
                 aria-label="Reset shortcut"
-                className="flex size-7 items-center justify-center rounded-md text-white/30 transition-colors duration-150 ease-out hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-30"
+                className="flex size-7 items-center justify-center rounded-md text-white/54 transition-colors duration-150 ease-out hover:bg-white/[0.06] hover:text-white/70 disabled:opacity-30"
               >
                 <RotateCcw className="size-3.5" />
               </button>
             </div>
           </Row>
           {candidate && (
-            <p className="pl-9 font-mono text-[10px] text-white/30">
+            <p className="pl-9 font-mono text-[10px] text-white/54">
               requested {prettyShortcut(candidate)}
             </p>
           )}
@@ -332,7 +333,7 @@ export function DesktopSettingsSection({
               {chip.label}
             </span>
             {!settings.notifications && (
-              <span className="text-[10px] text-white/25">0 threads · 0 polls</span>
+              <span className="text-[10px] text-white/48">0 threads · 0 polls</span>
             )}
           </div>
         </div>
