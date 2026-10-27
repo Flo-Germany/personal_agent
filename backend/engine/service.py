@@ -1,4 +1,4 @@
-"""Facade tying hardware, catalog, downloads, and llama-server together."""
+﻿"""Facade tying hardware, catalog, downloads, and llama-server together."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class EngineService:
     def model_label(self, task: str = "text", *, ollama_model: str = "") -> str:
         """A human label for the model that is actually serving the task."""
         if self.settings.type != "llamacpp":
-            return f"Ollama · {ollama_model}".strip(" ·")
+            return f"Ollama Â· {ollama_model}".strip(" Â·")
         model_id = self.active_id(task)
         entry = next((item for item in CATALOG if item.id == model_id), None)
         if entry is None:
@@ -101,7 +101,7 @@ class EngineService:
                 hardware += f" on {self.hardware.gpu_name}"
         else:
             hardware = "CPU"
-        return f"{entry.name} ({entry.quantization}) · llama.cpp · {hardware}"
+        return f"{entry.name} ({entry.quantization}) Â· llama.cpp Â· {hardware}"
 
     def set_active(self, task: str, model_id: str) -> None:
         self._state["active"][task] = model_id
@@ -343,6 +343,7 @@ class EngineService:
             raise ValueError(f"{entry.name} is not installed yet.")
 
         with self._lock:
+            previous_id = self.active_id(task)
             self.set_active(task, model_id)
             if task == "text":
                 self._text_client = None
@@ -375,8 +376,23 @@ class EngineService:
                 device=self._device(),
                 threads=self.settings.cpu_threads or 0,
                 priority=self.settings.process_priority,
+                kv_cache=self.settings.kv_cache,
             )
-            running = self.servers.ensure(spec, force=True)
+            try:
+                running = self.servers.ensure(spec, force=True)
+            except Exception:
+                # The switch stopped the previous server before the new one was
+                # known to work. Keep the persisted state matching the model the
+                # user actually had, so the next turn can start it again.
+                if previous_id and previous_id != model_id:
+                    try:
+                        self.set_active(task, previous_id)
+                    except OSError:
+                        logger.warning(
+                            "Could not restore the previous active model",
+                            exc_info=True,
+                        )
+                raise
             return {
                 "task": task,
                 "model_id": model_id,
@@ -422,6 +438,7 @@ class EngineService:
                 device=self._device(),
                 threads=self.settings.cpu_threads or 0,
                 priority=self.settings.process_priority,
+            kv_cache=self.settings.kv_cache,
             )
             running = self.servers.ensure(spec)
             client = LlamaServerClient(
@@ -459,6 +476,7 @@ class EngineService:
             device=self._device(),
             threads=self.settings.cpu_threads or 0,
             priority=self.settings.process_priority,
+            kv_cache=self.settings.kv_cache,
         )
         self.servers.ensure(spec)
         return self.servers.base_url("vision")

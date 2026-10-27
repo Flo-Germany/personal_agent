@@ -20,7 +20,7 @@ export const EmptyState = memo(function EmptyState({
         <AgentAvatar size="lg" />
       </div>
 
-      <h1 className="text-center text-[22px] font-medium tracking-tight text-fg/95">
+      <h1 className="text-center text-[19px] leading-tight font-medium tracking-tight text-fg/95">
         How can I help?
       </h1>
       <p className="mt-1.5 max-w-xs text-center text-[12px] leading-5 text-fg/68">

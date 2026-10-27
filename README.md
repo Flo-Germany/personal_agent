@@ -204,6 +204,17 @@ change to `agent_name` in `config/settings.json`. The inline `personality` field
 still exists as a fallback for older configs and is used only when the file is
 missing or empty.
 
+### Agent profile picture
+
+Drop a square image into `frontend/src/assets/agent-avatar/` — `avatar.png`,
+`avatar.svg`, `avatar.jpg`, or `avatar.webp` — and it becomes the avatar in the
+header, empty state, message rows, tool rows, and the Identity & Memory card.
+256 × 256 px or larger is enough; a transparent background looks best because
+the avatar is drawn in a circle. The folder is empty by default, which keeps the
+built-in gradient/sparkle avatar. The image is bundled at build time, so restart
+`npm run tauri dev` or rebuild the app after adding or replacing it. See the
+README inside that folder for details.
+
 `ollama.context_window` sets `num_ctx` for every request. The identity,
 personality, knowledge base, and tool schemas need far more than Ollama's small
 default context, so lowering this will truncate the prompt and the agent can
@@ -237,13 +248,16 @@ cache every minute. `ollama.model_quantization` documents the preferred variant
 `q5`/`q6`/`q8`/`fp16`, which can consume much more VRAM than necessary.
 
 `agent.dynamic_tools` (default `true`) sends only the tool schemas the request
-plausibly needs. Base and GUI tools are always included, so a chat turn and a GUI
-turn share one cached prompt prefix; file, image-search, and diagnosis schemas
-are added only when the message mentions them. This removes roughly nine schemas
-(~2.3k tokens), which measured as **2.96 s → 1.52 s** for the same GUI decision
-step (about 22 → 35 generated tokens/s). Switching tool lists forces Ollama to
-re-evaluate the whole prompt, so the always-on base covers the common
-chat↔GUI transitions. Set it to `false` to always send the full schema list.
+plausibly needs. The prompt is the dominant cost of a local turn, because decode
+speed falls roughly with context length: measured on the reference machine with
+`qwen3-4b-q4`, generation ran at **121 tok/s with a 60-token prompt but 14 tok/s
+at 17k tokens**. Plain chat therefore sends only seven base tools (~2k tokens
+instead of ~5.5k). GUI, file-modification, image-search, and diagnosis schemas
+are added when the message asks for them, and GUI schemas stay available for
+follow-ups while the previous tool calls were GUI calls. Switching tool lists
+forces a prompt re-evaluation, so the first GUI turn after a chat turn pays one
+prefill; every other turn is much shorter. Set it to `false` to always send the
+full schema list.
 
 `ollama.thinking` controls the hidden reasoning phase of thinking-capable
 models: `"auto"` (default) thinks on turns that need a plan and skips greetings
@@ -1379,7 +1393,10 @@ were ruled out. A GPU-heavy game or renderer sharing the GPU is the other major
 cause of single-digit speeds; the diagnosis report detects this and names the
 competing process. Response streaming keeps the perceived latency low while the
 model generates. KV-cache quantization (`OLLAMA_KV_CACHE_TYPE=q8_0`) measured
-the same as the default f16 cache and is not enabled.
+the same as the default f16 cache in Ollama and is not enabled there; the
+llama.cpp engine profits strongly from it instead (see
+[the engine section](#what-runs-on-the-machine): `q8_0` was +50% and `q4_0`
+roughly 2x at long context).
 
 ## Thinking and reasoning visibility
 
@@ -1488,6 +1505,7 @@ with one setting:
   "vram_reserve_gb": 1.5,        // desktop/driver headroom
   "context_window": null,        // null = model catalog value
   "device": "",                 // "Vulkan0", another device, or "cpu"
+  "kv_cache": "q8_0",           // "f16", "q8_0" or "q4_0"
   "start_timeout_seconds": 180
 }
 ```
@@ -1513,6 +1531,13 @@ with one setting:
   A stale `llama-server` left by a crashed app is reclaimed, and the new server
   must answer `/props` with the intended model file before it is accepted, so
   "the old model is still answering" cannot happen silently.
+- Long-context decode is bandwidth-bound, so the KV cache is quantized
+  (`-ctk/-ctv q8_0`, `engine.kv_cache`). Measured with `qwen3-4b-q4` on the
+  reference machine at ~11k prompt tokens: **f16 14 tok/s, q8_0 21 tok/s,
+  q4_0 30 tok/s**; at a 60-token prompt all three reach ~120 tok/s. `q8_0` is
+  the default because it is close to lossless; set `q4_0` for maximum speed.
+  If a build or driver rejects the type, the server is retried once at `f16`
+  instead of leaving the app without a model.
 - Ollama is asked to unload its chat model (`keep_alive: 0`) whenever the native
   engine starts or swaps, and llama.cpp is pinned to the first Vulkan device
   (`--device Vulkan0`) so a second GPU never splits the model. Set

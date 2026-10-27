@@ -120,10 +120,12 @@ _META_STEP = re.compile(
     re.IGNORECASE,
 )
 
-# Tool schemas are ~6k tokens, which directly slows generation on a local
-# model. Base + GUI tools are always sent (one stable prompt prefix for chat and
-# GUI work); the rest are added only when the request mentions them. Set
-# agent.dynamic_tools to false to always send every schema.
+# Tool schemas are the single largest fixed cost in the prompt (~5.5k tokens
+# for the always-on set). Only the tools a request plausibly needs are sent:
+# base tools cover chat, files, and shell inspection; GUI tools are added for
+# desktop/window requests, and file, image-search, and diagnosis schemas when
+# the message mentions them. Set agent.dynamic_tools to false to always send
+# every schema.
 _BASE_TOOL_NAMES = {
     "propose_plan",
     "run_powershell_query",
@@ -175,6 +177,24 @@ _DIAGNOSIS_HINT = re.compile(
     r"\b(?:diagnos\w*|health|benchmark|hardware|temperature|thermal|"
     r"smart\w*|overheat\w*|slow|performance|uptime|event log|"
     r"gesundheit|leistung|langsam|temperatur|diagnose)\b",
+    re.IGNORECASE,
+)
+# Desktop/window interaction. GUI schemas are the most verbose block, so they
+# are only sent when the request actually needs the pointer, keyboard, window
+# contents or a screen capture.
+_GUI_HINT = re.compile(
+    r"\b(?:window|windows|app|apps|application|click|double[- ]?click|"
+    r"right[- ]?click|typing|keyboard|keypress|keystroke|hotkey|"
+    r"shortcut|cursor|mouse|pointer|button|menu|dialog|dropdown|"
+    r"checkbox|field|form|toolbar|icon|scroll|drag|focus|foreground|"
+    r"screen|screenshot|display|monitor|gui|ui|uia|"
+    r"outlook|explorer|chrome|edge|firefox|browser|discord|whatsapp|"
+    r"telegram|slack|teams|word|excel|powerpoint|notepad|vscode|vs code|"
+    r"paint|fenster|klick\w*|tipp\w*|tastatur|taste\w*|maus|zeiger|"
+    r"schaltfläche\w*|menü|dialog|bildschirm|monitor|anwendung|programm|"
+    r"oberfläche)\b"
+    r"|\btype\s+(?:into|in\b|this|that|it|the\b)"
+    r"|\bpress\s+(?:enter|tab|esc|escape|ctrl|control|alt|shift|win|f\d)",
     re.IGNORECASE,
 )
 # Requests that benefit from a hidden reasoning phase. Kept deliberately broad
@@ -313,17 +333,35 @@ def _search_kind_hint(message: str) -> str | None:
     return None
 
 
+def _recent_gui_activity(history: list[dict[str, Any]], window: int = 4) -> bool:
+    """Whether the last few messages touched a GUI tool.
+
+    A follow-up like "now click Send" may not repeat the hint words, so the
+    GUI schemas stay available while the turn is still working in a window.
+    """
+    for item in history[-window:]:
+        for call in item.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if function.get("name") in _GUI_TOOL_NAMES:
+                return True
+        if item.get("role") == "tool" and item.get("name") in _GUI_TOOL_NAMES:
+            return True
+    return False
+
+
 def _profile_tool_names(message: str) -> set[str]:
     """Pick the tool schemas a user request plausibly needs.
 
-    Base + GUI tools are always included so that chat and GUI work share one
-    stable prompt prefix: switching the tool list forces Ollama to re-evaluate
-    the whole prompt (several seconds), which would erase the gain from the
-    shorter schema list. File, image-search, and diagnosis tools are added only
-    when the request mentions them.
+    The prompt is the dominant cost of a local turn: decode speed drops roughly
+    with context length, so every schema that is not needed costs real
+    generation time. Base tools cover chat, shell inspection and files; GUI,
+    file-modification, image-search and diagnosis schemas are added only when
+    the wording (or the previous tool call) asks for them.
     """
     text = str(message or "")
-    names = set(_BASE_TOOL_NAMES) | set(_GUI_TOOL_NAMES)
+    names = set(_BASE_TOOL_NAMES)
+    if _GUI_HINT.search(text):
+        names |= _GUI_TOOL_NAMES
     if _FILE_HINT.search(text):
         names |= _FILE_TOOL_NAMES
     if _VISION_HINT.search(text):
@@ -914,6 +952,13 @@ class ChatService:
         self._learning_pending: dict[str, list[str]] = {}
         self._learning_timers: dict[str, threading.Timer] = {}
         self._learning_delay = LEARNING_IDLE_SECONDS
+        # The system prompt is byte-identical between rounds as long as the
+        # personality/knowledge files and the identity settings are unchanged.
+        # Re-reading both files and re-rendering the whole prompt on every tool
+        # round wasted I/O, and a knowledge write between rounds invalidated
+        # Ollama's prompt cache (a full ~8k-token re-evaluation).
+        self._prompt_cache: tuple[tuple[Any, ...], str] | None = None
+        self._prompt_cache_guard = threading.Lock()
 
     def _lock_for(self, conversation_id: str) -> threading.Lock:
         with self._locks_guard:
@@ -921,6 +966,15 @@ class ChatService:
 
     def shutdown(self) -> None:
         """Release desktop hooks and isolated windows on backend shutdown."""
+        # Pending fact-extraction timers are daemons, so they would otherwise
+        # fire an inference call while the app is tearing down.
+        with self._learning_guard:
+            timers = list(self._learning_timers.values())
+            self._learning_timers.clear()
+            self._learning_pending.clear()
+        for timer in timers:
+            timer.cancel()
+
         stop = getattr(self._tools, "shutdown", None)
         if callable(stop):
             try:
@@ -1090,6 +1144,33 @@ class ChatService:
     def discard_pending(self, conversation_id: str) -> bool:
         return self._pending.discard(conversation_id)
 
+    def forget_conversation(self, conversation_id: str) -> None:
+        """Drop per-conversation locks and cancellation state after a delete.
+
+        These maps are keyed by a client-supplied UUID and grew for the life of
+        the process. A live or queued turn keeps its entries; an idle
+        conversation has nothing to protect.
+        """
+        with self._active_guard:
+            if conversation_id in self._active_conversations:
+                return
+
+        with self._locks_guard:
+            lock = self._locks.get(conversation_id)
+        if lock is not None:
+            if not lock.acquire(blocking=False):
+                # Another request is waiting on it; the next delete can clean up.
+                return
+            try:
+                with self._locks_guard:
+                    if self._locks.get(conversation_id) is lock:
+                        self._locks.pop(conversation_id, None)
+            finally:
+                lock.release()
+
+        with self._cancel_guard:
+            self._cancel_events.pop(conversation_id, None)
+
     # --------------------------------------------------------------- streaming
     def start_turn(self, conversation_id: str, message: str) -> Iterator[dict[str, Any]]:
         """Stream a user turn until final, error, or an approval pause."""
@@ -1107,7 +1188,7 @@ class ChatService:
                 reset_automation()
 
             self._improvement.begin_turn(conversation_id)
-            start_length = len(self._store.load(conversation_id))
+            start_length = self._store.length(conversation_id)
             self._store.append(conversation_id, "user", message)
             self._turn_plans.pop(conversation_id, None)
             self.clear_search_cards(conversation_id)
@@ -1456,6 +1537,8 @@ class ChatService:
                 break
 
         names = _profile_tool_names(message)
+        if not (names & _GUI_TOOL_NAMES) and _recent_gui_activity(history):
+            names |= _GUI_TOOL_NAMES
         selected = [
             schema
             for schema in TOOL_SCHEMAS
@@ -3414,10 +3497,8 @@ class ChatService:
         return fields
 
     def _last_user_message(self, conversation_id: str) -> str:
-        for message in reversed(self._store.load(conversation_id)):
-            if message.get("role") == "user":
-                return str(message.get("content", ""))
-        return ""
+        message = self._store.last_message(conversation_id, "user")
+        return str(message.get("content", "")) if message else ""
 
     def _last_user_requested_screen(self, conversation_id: str) -> bool:
         return bool(_SCREEN_REQUEST.search(self._last_user_message(conversation_id)))
@@ -3698,6 +3779,43 @@ class ChatService:
             )
             return
 
+    def _prompt_cache_key(
+        self,
+        requested_language: str | None,
+        moment: datetime,
+    ) -> tuple[Any, ...] | None:
+        """Identify everything the system prompt is derived from.
+
+        Returns ``None`` for knowledge objects without a real file (test
+        doubles), so those keep the uncached path.
+        """
+        try:
+            knowledge_stat = self._knowledge.path.stat()
+        except (AttributeError, OSError):
+            return None
+        try:
+            personality_stat = self._settings.resolved_personality_path().stat()
+        except OSError:
+            personality_stat = None
+
+        settings = self._settings
+        return (
+            settings.agent_name,
+            settings.system_prompt,
+            settings.personality,
+            settings.runtime_model,
+            settings.ollama.base_url,
+            settings.agent.language,
+            settings.agent.communication_style,
+            settings.agent.autonomy,
+            requested_language,
+            moment.date().isoformat(),
+            (knowledge_stat.st_mtime_ns, knowledge_stat.st_size),
+            (personality_stat.st_mtime_ns, personality_stat.st_size)
+            if personality_stat is not None
+            else None,
+        )
+
     def _system_prompt(
         self,
         history: list[dict[str, Any]],
@@ -3707,12 +3825,25 @@ class ChatService:
         """Build the system prompt exactly as the chat request will send it."""
         if requested_language is None:
             requested_language = detect_requested_language(history)
-        return build_system_prompt(
+
+        moment = now or datetime.now()
+        key = self._prompt_cache_key(requested_language, moment)
+        if key is not None:
+            with self._prompt_cache_guard:
+                cached = self._prompt_cache
+            if cached is not None and cached[0] == key:
+                return cached[1]
+
+        prompt = build_system_prompt(
             self._settings,
             self._knowledge.read(),
             requested_language,
-            now=now,
+            now=moment,
         )
+        if key is not None:
+            with self._prompt_cache_guard:
+                self._prompt_cache = (key, prompt)
+        return prompt
 
     def _build_messages(
         self,

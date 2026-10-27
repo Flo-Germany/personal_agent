@@ -11,6 +11,7 @@ export type EditableSettings = {
   process_priority: "eco" | "normal" | "high";
   gpu_layers: number | null;
   vram_override_gb: number | null;
+  kv_cache: "f16" | "q8_0" | "q4_0";
   vision_max_width: number;
   uia_depth: number;
   allow_foreground_fallback: boolean;

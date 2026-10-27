@@ -1,4 +1,4 @@
-"""Tests for the Phase 22 llama.cpp engine and model manager."""
+﻿"""Tests for the Phase 22 llama.cpp engine and model manager."""
 
 from __future__ import annotations
 
@@ -614,7 +614,7 @@ def test_prompt_states_the_runtime_model_and_user_rule() -> None:
         personality="",
         system_prompt="",
         personality_file=Path("missing-personality.md"),
-        runtime_model="Qwen3 8B (Q4_K_M) · llama.cpp · 36 GPU layers",
+        runtime_model="Qwen3 8B (Q4_K_M) Â· llama.cpp Â· 36 GPU layers",
     )
 
     prompt = build_system_prompt(settings, knowledge="")
@@ -675,3 +675,63 @@ def test_server_uses_the_configured_vulkan_device(tmp_path: Path, monkeypatch) -
     args = captured["args"]
     assert "--device" in args
     assert args[args.index("--device") + 1] == "Vulkan0"
+
+def test_server_arguments_quantize_the_kv_cache() -> None:
+    from engine.server import ServerSpec, server_arguments
+
+    spec = ServerSpec(
+        role="text",
+        model_id="qwen3-4b-q4",
+        model_path=Path("model.gguf"),
+        mmproj_path=None,
+        context=16384,
+        n_gpu_layers=36,
+        port=8123,
+    )
+    quantized = server_arguments(Path("llama-server.exe"), spec, "q8_0")
+    assert quantized[-4:] == ["-ctk", "q8_0", "-ctv", "q8_0"]
+    assert "-fa" in quantized
+
+    default = server_arguments(Path("llama-server.exe"), spec, "f16")
+    assert "-ctk" not in default
+
+
+def test_server_spec_matches_includes_the_kv_cache() -> None:
+    from engine.server import ServerSpec
+
+    def make(kv: str) -> ServerSpec:
+        return ServerSpec(
+            role="text",
+            model_id="qwen3-4b-q4",
+            model_path=Path("model.gguf"),
+            mmproj_path=None,
+            context=16384,
+            n_gpu_layers=36,
+            port=8123,
+            kv_cache=kv,
+        )
+
+    assert make("q8_0").matches(make("q8_0"))
+    assert not make("q8_0").matches(make("q4_0"))
+
+def test_switch_rolls_back_when_the_new_server_cannot_start(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    service = _service(tmp_path)
+    previous = service.active_id("text")
+    target = next(
+        item.id for item in CATALOG if item.task == "text" and item.id != previous
+    )
+    monkeypatch.setattr(service.store, "is_installed", lambda item: True)
+
+    def boom(spec: Any, force: bool = False) -> Any:
+        raise TimeoutError("did not start")
+
+    monkeypatch.setattr(service.servers, "ensure", boom)
+
+    with pytest.raises(TimeoutError):
+        service.switch("text", target)
+
+    assert service.active_id("text") == previous
+

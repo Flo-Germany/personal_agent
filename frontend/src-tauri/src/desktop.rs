@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, State};
-use tauri_plugin_global_shortcut::{
-    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
-};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 use crate::notifications::NotificationService;
 
@@ -70,8 +68,18 @@ impl Default for DesktopSettings {
 impl DesktopSettings {
     fn normalized(mut self) -> Self {
         self.shortcut = self.shortcut.trim().to_string();
-        self.mode = if self.mode == "modern" { "modern" } else { "classic" }.into();
-        self.backdrop = if self.backdrop == "solid" { "solid" } else { "mica" }.into();
+        self.mode = if self.mode == "modern" {
+            "modern"
+        } else {
+            "classic"
+        }
+        .into();
+        self.backdrop = if self.backdrop == "solid" {
+            "solid"
+        } else {
+            "mica"
+        }
+        .into();
         self.theme = match self.theme.as_str() {
             "light" => "light",
             "dark" => "dark",
@@ -415,11 +423,7 @@ pub fn context_menu_command() -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_vibrancy(
-    window: &tauri::WebviewWindow,
-    backdrop: &str,
-    dark: bool,
-) -> Result<(), String> {
+fn apply_vibrancy(window: &tauri::WebviewWindow, backdrop: &str, dark: bool) -> Result<(), String> {
     use window_vibrancy::{apply_mica, clear_mica};
     // clear_vibrancy() is macOS-only; Windows must reset the DWM backdrop type.
     let _ = clear_mica(window);
@@ -474,7 +478,10 @@ pub fn apply_mode(app: &AppHandle, settings: &DesktopSettings) -> Result<(), Str
     if settings.is_modern() {
         let current_height = window
             .inner_size()
-            .map(|size| size.to_logical::<f64>(window.scale_factor().unwrap_or(1.0)).height)
+            .map(|size| {
+                size.to_logical::<f64>(window.scale_factor().unwrap_or(1.0))
+                    .height
+            })
             .unwrap_or(MODERN_COLLAPSED_HEIGHT);
         let height = if current_height > MODERN_COLLAPSED_HEIGHT + 8.0 {
             current_height.min(MODERN_MAX_HEIGHT)
@@ -570,71 +577,70 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
         }
     }
 
-    if next.start_with_windows != previous.start_with_windows {
-        if let Err(error) = set_start_with_windows(next.start_with_windows) {
-            if notifications_changed {
-                if previous.notifications {
-                    runtime.notifications.start(app.clone());
-                } else {
-                    runtime.notifications.stop();
-                }
+    if next.start_with_windows != previous.start_with_windows
+        && let Err(error) = set_start_with_windows(next.start_with_windows)
+    {
+        if notifications_changed {
+            if previous.notifications {
+                runtime.notifications.start(app.clone());
+            } else {
+                runtime.notifications.stop();
             }
-            return Err(error);
         }
+        return Err(error);
     }
 
-    if next.context_menu != previous.context_menu {
-        if let Err(error) = set_context_menu(next.context_menu) {
-            if notifications_changed {
-                if previous.notifications {
-                    runtime.notifications.start(app.clone());
-                } else {
-                    runtime.notifications.stop();
-                }
+    if next.context_menu != previous.context_menu
+        && let Err(error) = set_context_menu(next.context_menu)
+    {
+        if notifications_changed {
+            if previous.notifications {
+                runtime.notifications.start(app.clone());
+            } else {
+                runtime.notifications.stop();
             }
-            return Err(error);
         }
+        return Err(error);
     }
 
-    if next.shortcut != previous.shortcut || !was_registered {
-        if let Err(error) = register_shortcut(app, &next.shortcut) {
-            // Put the previous shortcut back so the user keeps their summon key.
-            let restored = register_shortcut(app, &previous.shortcut).is_ok();
-            if notifications_changed {
-                if previous.notifications {
-                    runtime.notifications.start(app.clone());
-                } else {
-                    runtime.notifications.stop();
-                }
+    if (next.shortcut != previous.shortcut || !was_registered)
+        && let Err(error) = register_shortcut(app, &next.shortcut)
+    {
+        // Put the previous shortcut back so the user keeps their summon key.
+        let restored = register_shortcut(app, &previous.shortcut).is_ok();
+        if notifications_changed {
+            if previous.notifications {
+                runtime.notifications.start(app.clone());
+            } else {
+                runtime.notifications.stop();
             }
-            if next.context_menu != previous.context_menu {
-                let _ = set_context_menu(previous.context_menu);
-            }
-            if let Ok(mut state) = runtime.runtime.lock() {
-                state.shortcut_registered = restored;
-                state.shortcut_error = error.clone();
-            }
-            write_state(app);
-            return Err(error);
         }
+        if next.context_menu != previous.context_menu {
+            let _ = set_context_menu(previous.context_menu);
+        }
+        if let Ok(mut state) = runtime.runtime.lock() {
+            state.shortcut_registered = restored;
+            state.shortcut_error = error.clone();
+        }
+        write_state(app);
+        return Err(error);
     }
 
     // Re-applying the mode re-centres the window, so only do it when the shell
     // really changes; toggling notifications must not move the palette.
-    let mode_changed =
-        next.mode != previous.mode || next.backdrop != previous.backdrop;
+    let mode_changed = next.mode != previous.mode || next.backdrop != previous.backdrop;
     let theme_changed = next.theme != previous.theme;
     let backdrop_error = if mode_changed {
         apply_mode(app, &next).err().unwrap_or_default()
     } else if theme_changed && next.is_modern() {
         // Re-apply Mica with the new light/dark variant without re-centring.
-        app.get_webview_window("main").map_or_else(
-            || String::new(),
-            |window| {
+        app.get_webview_window("main")
+            .map_or_else(String::new, |window| {
                 let dark = next.native_dark(&window);
-                apply_vibrancy(&window, &next.backdrop, dark).err().unwrap_or_default()
-            },
-        )
+                apply_vibrancy(&window, &next.backdrop, dark)
+                    .err()
+                    .unwrap_or_default()
+            })
     } else {
         runtime
             .runtime
@@ -675,14 +681,12 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
 fn analyze_payload(path: &str) -> serde_json::Value {
     let candidate = std::path::Path::new(path);
     let exists = candidate.is_file();
-    let canonical = std::fs::canonicalize(candidate)
-        .ok()
-        .map(|value| {
-            value
-                .to_string_lossy()
-                .trim_start_matches(r"\\?\")
-                .to_string()
-        });
+    let canonical = std::fs::canonicalize(candidate).ok().map(|value| {
+        value
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string()
+    });
     serde_json::json!({
         "path": path,
         "exists": exists,
@@ -733,9 +737,9 @@ pub fn qa_command(args: &[String]) -> Option<QaCommand> {
                 Some((key, value)) if key.trim() == "demo" => {
                     command.demo = Some(value.trim().to_string())
                 }
-                Some((key, value)) => {
-                    command.set.push((key.trim().to_string(), value.trim().to_string()))
-                }
+                Some((key, value)) => command
+                    .set
+                    .push((key.trim().to_string(), value.trim().to_string())),
                 None => command.set.push((token.clone(), String::new())),
             },
         }
@@ -751,7 +755,10 @@ fn parse_bool(value: &str) -> Result<bool, String> {
     }
 }
 
-fn apply_qa_settings(settings: &mut DesktopSettings, pairs: &[(String, String)]) -> Result<(), String> {
+fn apply_qa_settings(
+    settings: &mut DesktopSettings,
+    pairs: &[(String, String)],
+) -> Result<(), String> {
     for (key, value) in pairs {
         match key.replace('-', "_").as_str() {
             "shortcut" => settings.shortcut = value.clone(),
@@ -808,10 +815,10 @@ fn apply_qa_command(app: &AppHandle, command: &QaCommand) {
     if command.show {
         focus_main(app);
     }
-    if command.hide {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.hide();
-        }
+    if command.hide
+        && let Some(window) = app.get_webview_window("main")
+    {
+        let _ = window.hide();
     }
     if command.render {
         // Give the webview a beat to settle before the stress run starts.
@@ -891,10 +898,10 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     // window is shown, so QA never depends on a second process.
     let qa = qa_command(&args);
     let mut qa_error = String::new();
-    if let Some(command) = &qa {
-        if let Err(error) = apply_qa_settings(&mut settings, &command.set) {
-            qa_error = error;
-        }
+    if let Some(command) = &qa
+        && let Err(error) = apply_qa_settings(&mut settings, &command.set)
+    {
+        qa_error = error;
     }
 
     let runtime = app.state::<DesktopRuntime>();
@@ -902,14 +909,14 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         *current = settings.clone();
     }
 
-    if let Some(path) = analyze_arg(&args) {
-        if let Ok(mut pending) = runtime.pending_analyze.lock() {
-            *pending = Some(path);
-        }
+    if let Some(path) = analyze_arg(&args)
+        && let Ok(mut pending) = runtime.pending_analyze.lock()
+    {
+        *pending = Some(path);
     }
 
-    let shortcut_result = register_shortcut(app, &settings.shortcut)
-        .map(|shortcut| format_shortcut(&shortcut));
+    let shortcut_result =
+        register_shortcut(app, &settings.shortcut).map(|shortcut| format_shortcut(&shortcut));
     let (shortcut_registered, shortcut_error, shortcut_label) = match shortcut_result {
         Ok(label) => (true, String::new(), label),
         Err(error) => (false, error, settings.shortcut.clone()),
@@ -953,66 +960,67 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
 
     write_state(app);
 
-    if let Some(command) = qa {
-        if command.render
+    if let Some(command) = qa
+        && (command.render
             || command.quit
             || command.show
             || command.hide
             || command.view.is_some()
             || command.demo.is_some()
-            || command.audit
-        {
-            let app = app.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(1400));
-                if command.show {
-                    focus_main(&app);
-                }
-                if command.hide {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.hide();
-                    }
-                }
-                if let Some(view) = &command.view {
-                    let _ = app.emit(EVENT_UI, view.clone());
-                }
-                if let Some(demo) = &command.demo {
-                    let _ = app.emit(EVENT_DEMO, demo.clone());
-                }
-                if command.audit {
-                    let _ = app.emit(EVENT_QA_AUDIT, ());
-                }
-                if command.render {
-                    let _ = app.emit(EVENT_QA_RENDER, ());
-                }
-                if command.quit {
-                    std::thread::sleep(Duration::from_millis(6000));
-                    shutdown(&app);
-                    app.exit(0);
-                }
-            });
-        }
+            || command.audit)
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1400));
+            if command.show {
+                focus_main(&app);
+            }
+            if command.hide
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.hide();
+            }
+            if let Some(view) = &command.view {
+                let _ = app.emit(EVENT_UI, view.clone());
+            }
+            if let Some(demo) = &command.demo {
+                let _ = app.emit(EVENT_DEMO, demo.clone());
+            }
+            if command.audit {
+                let _ = app.emit(EVENT_QA_AUDIT, ());
+            }
+            if command.render {
+                let _ = app.emit(EVENT_QA_RENDER, ());
+            }
+            if command.quit {
+                std::thread::sleep(Duration::from_millis(6000));
+                shutdown(&app);
+                app.exit(0);
+            }
+        });
     }
 
     let handle = app.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let state = handle.state::<DesktopRuntime>();
-        if state
-            .runtime
-            .lock()
-            .map(|value| value.exited)
-            .unwrap_or(false)
-        {
-            break;
-        }
-        if let Ok(mut value) = state.runtime.lock() {
-            if let Some((polls, status)) = state.notifications.snapshot() {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let state = handle.state::<DesktopRuntime>();
+            if state
+                .runtime
+                .lock()
+                .map(|value| value.exited)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            if let Ok(mut value) = state.runtime.lock()
+                && let Some((polls, status)) = state.notifications.snapshot()
+            {
                 value.notifications_polls = polls;
                 value.notifications_status = status;
             }
+            write_state(&handle);
         }
-        write_state(&handle);
     });
 
     Ok(())
@@ -1187,8 +1195,10 @@ mod tests {
 
     #[test]
     fn invalid_theme_falls_back_to_system() {
-        let mut settings = DesktopSettings::default();
-        settings.theme = "solarized".into();
+        let settings = DesktopSettings {
+            theme: "solarized".into(),
+            ..DesktopSettings::default()
+        };
         assert_eq!(settings.normalized().theme, "system");
     }
 
@@ -1216,7 +1226,11 @@ mod tests {
 
     #[test]
     fn parses_analyze_argument() {
-        let args = vec!["compa.exe".into(), "--analyze".into(), "\"C:\\a b\\c.txt\"".into()];
+        let args = vec![
+            "compa.exe".into(),
+            "--analyze".into(),
+            "\"C:\\a b\\c.txt\"".into(),
+        ];
         assert_eq!(analyze_arg(&args).as_deref(), Some("C:\\a b\\c.txt"));
         assert_eq!(analyze_arg(&["compa.exe".into()]), None);
     }
@@ -1238,10 +1252,16 @@ mod tests {
 
     #[test]
     fn parses_qa_command() {
-        let args: Vec<String> = ["compa.exe", "--qa", "mode=modern", "notifications=on", "render"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let args: Vec<String> = [
+            "compa.exe",
+            "--qa",
+            "mode=modern",
+            "notifications=on",
+            "render",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let command = qa_command(&args).expect("qa command");
         assert!(command.render);
         assert!(!command.quit);

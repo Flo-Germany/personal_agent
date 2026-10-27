@@ -192,7 +192,7 @@ export const ChatComposer = memo(function ChatComposer({
         aria-label="Message"
         className="mx-auto w-full max-w-3xl"
       >
-        <div className="flex items-end gap-1 rounded-[22px] border border-fg/[0.09] bg-raised p-1.5 shadow-[0_14px_44px_-16px_var(--compa-shadow-strong)] transition-colors duration-200 ease-out focus-within:border-fg/[0.16]">
+        <div className="focus-shell flex items-end gap-1 rounded-[22px] border border-fg/[0.09] bg-raised p-1.5 shadow-[0_14px_44px_-16px_var(--compa-shadow-strong)]">
           <div className="relative" ref={menuRef}>
             <button
               type="button"

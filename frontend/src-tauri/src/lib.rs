@@ -27,10 +27,10 @@ struct BackendGuard(Mutex<Option<Child>>);
 
 impl BackendGuard {
     fn stop(&self) {
-        if let Ok(mut slot) = self.0.lock() {
-            if let Some(mut child) = slot.take() {
-                stop_child(&mut child);
-            }
+        if let Ok(mut slot) = self.0.lock()
+            && let Some(mut child) = slot.take()
+        {
+            stop_child(&mut child);
         }
     }
 }
@@ -112,7 +112,21 @@ fn backend_healthy() -> bool {
 
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
-    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+    is_our_backend(&response)
+}
+
+/// Only trust our own backend on the port.
+///
+/// Any local process can bind 127.0.0.1:8000 and answer 200; treating that as
+/// "the backend" would send chats, settings and the knowledge base to it. The
+/// health payload names the service, so require it.
+fn is_our_backend(response: &str) -> bool {
+    let status_ok = response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200");
+    if !status_ok {
+        return false;
+    }
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+    body.contains("personal-agent-backend")
 }
 
 /// Folders that may contain the packaged backend and its Python runtime.
@@ -125,12 +139,12 @@ fn resource_roots(app: &AppHandle) -> Vec<PathBuf> {
     if let Ok(dir) = app.path().resource_dir() {
         roots.push(dir);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let parent = parent.to_path_buf();
-            if !roots.iter().any(|root| root == &parent) {
-                roots.push(parent);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let parent = parent.to_path_buf();
+        if !roots.iter().any(|root| root == &parent) {
+            roots.push(parent);
         }
     }
 
@@ -211,10 +225,10 @@ fn seed_config(app: &AppHandle, target: &Path) {
             .into_iter()
             .map(|root| root.join("config").join(name))
             .find(|path| path.is_file());
-        if let Some(source) = source {
-            if std::fs::copy(&source, &destination).is_ok() {
-                copied.push(name);
-            }
+        if let Some(source) = source
+            && std::fs::copy(&source, &destination).is_ok()
+        {
+            copied.push(name);
         }
     }
 
@@ -352,7 +366,8 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
             cmd.current_dir(parent);
         }
         cmd
-    } else if let Some(backend_dir) = dev_backend_dir() {
+    } else {
+        let backend_dir = dev_backend_dir()?;
         log_launcher(app, "Starting backend from the development virtualenv.");
         let mut cmd = Command::new(backend_dir.join(".venv").join("Scripts").join("python.exe"));
         cmd.args([
@@ -366,8 +381,6 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
         ]);
         cmd.current_dir(&backend_dir);
         cmd
-    } else {
-        return None;
     };
 
     let data = data_dir(app);
@@ -379,6 +392,9 @@ fn spawn_backend(app: &AppHandle) -> Option<Child> {
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .env("PERSONAL_AGENT_DATA_DIR", &data)
+        // Lets the backend notice a crashed/host-killed shell and release its
+        // llama-server children instead of running as an orphan.
+        .env("PERSONAL_AGENT_PARENT_PID", std::process::id().to_string())
         // Keep the bundled runtime isolated from a user's global Python setup.
         .env("PYTHONNOUSERSITE", "1")
         .env("PYTHONUNBUFFERED", "1")
@@ -414,10 +430,10 @@ fn ensure_backend(app: &AppHandle) -> bool {
         return false;
     };
 
-    if let Some(guard) = app.try_state::<BackendGuard>() {
-        if let Ok(mut slot) = guard.0.lock() {
-            *slot = Some(child);
-        }
+    if let Some(guard) = app.try_state::<BackendGuard>()
+        && let Ok(mut slot) = guard.0.lock()
+    {
+        *slot = Some(child);
     }
     log_launcher(app, "Backend process started; waiting for /health...");
 
@@ -527,11 +543,9 @@ pub fn run() {
             // The window is created hidden to avoid a white flash. Startup
             // launches (`--tray`) stay in the tray until summoned.
             let start_hidden = std::env::args().any(|arg| arg == "--tray");
-            if !start_hidden {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+            if !start_hidden && let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
             }
 
             Ok(())
@@ -554,4 +568,29 @@ pub fn run() {
             }
         }
     });
+}
+#[cfg(test)]
+mod backend_tests {
+    use super::is_our_backend;
+
+    #[test]
+    fn accepts_our_health_payload() {
+        let response = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n\
+                        {\"status\":\"ok\",\"service\":\"personal-agent-backend\",\"version\":\"0.1.0\"}";
+        assert!(is_our_backend(response));
+    }
+
+    #[test]
+    fn rejects_a_foreign_server_answering_200() {
+        let response = "HTTP/1.1 200 OK\r\n\r\n{\"hello\":\"world\"}";
+        assert!(!is_our_backend(response));
+    }
+
+    #[test]
+    fn rejects_error_statuses_and_empty_responses() {
+        assert!(!is_our_backend(
+            "HTTP/1.1 500 Internal Server Error\r\n\r\npersonal-agent-backend"
+        ));
+        assert!(!is_our_backend(""));
+    }
 }

@@ -373,7 +373,15 @@ export const ModelSettings = memo(function ModelSettings({
             {job.state === "downloading" && (
               <button
                 type="button"
-                onClick={() => void cancelInstall(job.id)}
+                onClick={() => {
+                  void cancelInstall(job.id).catch((cause) => {
+                    setError(
+                      cause instanceof Error
+                        ? cause.message
+                        : "Could not cancel the install",
+                    );
+                  });
+                }}
                 className="mt-1 text-[10px] text-fg/68 underline decoration-fg/20 underline-offset-2 hover:text-fg/80"
               >
                 Cancel

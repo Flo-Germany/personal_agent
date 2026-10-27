@@ -15,6 +15,7 @@ import ctypes.wintypes as wt
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,61 @@ WM_RBUTTONUP = 0x0205
 WM_SETTEXT = 0x000C
 MK_LBUTTON = 0x0001
 MK_RBUTTON = 0x0002
+SMTO_BLOCK = 0x0001
+SMTO_ABORTIFHUNG = 0x0002
+_SEND_TIMEOUT_MS = 2_000
+
+_SEND_MESSAGE_TIMEOUT: Any = None
+
+
+def _send_message_timeout_fn() -> Any:
+    """Win32 SendMessageTimeoutW with explicit 64-bit argument types."""
+    global _SEND_MESSAGE_TIMEOUT
+    if _SEND_MESSAGE_TIMEOUT is None:
+        function = _user32().SendMessageTimeoutW
+        function.argtypes = [
+            wt.HWND,
+            wt.UINT,
+            wt.WPARAM,
+            wt.LPARAM,
+            wt.UINT,
+            wt.UINT,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        function.restype = ctypes.c_size_t
+        _SEND_MESSAGE_TIMEOUT = function
+    return _SEND_MESSAGE_TIMEOUT
+
+
+def send_message_timeout(
+    hwnd: int,
+    message: int,
+    wparam: int = 0,
+    lparam: int = 0,
+    *,
+    timeout_ms: int = _SEND_TIMEOUT_MS,
+) -> int:
+    """Send a window message without risking an unbounded block.
+
+    ``SendMessageW`` waits forever when the target application stops pumping
+    messages (a hung renderer, a modal file dialog in a broken state). The
+    agent then blocks a worker thread and the conversation lock with it.
+    """
+    result = ctypes.c_size_t()
+    ok = _send_message_timeout_fn()(
+        int(hwnd),
+        int(message),
+        int(wparam),
+        int(lparam),
+        SMTO_BLOCK | SMTO_ABORTIFHUNG,
+        max(1, int(timeout_ms)),
+        ctypes.byref(result),
+    )
+    if not ok:
+        raise UiaError(
+            f"Window {int(hwnd)} stopped responding to background input."
+        )
+    return int(result.value)
 
 _MAX_NODES = 220
 _MAX_DEPTH = 6
@@ -230,12 +286,12 @@ class UiaDriver:
 
         elements: list[dict[str, Any]] = []
         wrappers: dict[str, CachedElement] = {}
-        queue: list[tuple[Any, int, str | None]] = [(root, 0, None)]
+        queue: deque[tuple[Any, int, str | None]] = deque([(root, 0, None)])
         index = 0
         truncated = False
 
         while queue:
-            wrapper, level, parent_id = queue.pop(0)
+            wrapper, level, parent_id = queue.popleft()
             if len(elements) >= max_nodes:
                 truncated = True
                 break
@@ -482,7 +538,10 @@ class UiaDriver:
                 "value": _text(cached.wrapper.iface_value.CurrentValue),
             }
         if cached.hwnd:
-            _user32().SendMessageW(cached.hwnd, WM_SETTEXT, 0, text)
+            # WM_SETTEXT wants a pointer in lparam; the buffer stays alive for
+            # the duration of the synchronous (timed) call.
+            buffer = ctypes.create_unicode_buffer(text)
+            send_message_timeout(cached.hwnd, WM_SETTEXT, 0, ctypes.addressof(buffer))
             return {"via": "wm_settext", "target_hwnd": cached.hwnd}
         raise UiaError(
             "This element exposes neither ValuePattern nor its own window "

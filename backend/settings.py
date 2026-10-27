@@ -335,6 +335,11 @@ class EngineSettings(BaseModel):
     # Vulkan device; "cpu" forces the CPU backend. Multi-GPU machines where the
     # discrete card is not Vulkan0 can pin it here.
     device: str = Field(default="", max_length=40)
+    # llama-server KV-cache type. Quantizing it removes the long-context
+    # bandwidth bottleneck: measured on the reference machine at ~11k prompt
+    # tokens, f16 gave 14 tok/s, q8_0 21 tok/s and q4_0 30 tok/s. Falls back to
+    # f16 automatically if the build rejects the type.
+    kv_cache: Literal["f16", "q8_0", "q4_0"] = "q8_0"
     start_timeout_seconds: float = Field(default=180.0, gt=0, le=900)
 
 

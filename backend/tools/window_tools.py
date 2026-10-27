@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import deque
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -181,11 +182,11 @@ def _window_text(window: Any) -> tuple[str, int]:
         chunks.append(text)
         total += len(text)
 
-    queue = [window]
+    queue = deque([window])
     scanned = 0
 
     while queue and scanned < _MAX_CONTROLS and total < _MAX_TEXT_CHARS:
-        control = queue.pop(0)
+        control = queue.popleft()
         scanned += 1
 
         try:

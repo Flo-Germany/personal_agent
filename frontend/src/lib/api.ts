@@ -346,6 +346,13 @@ export async function consumeEventStream(
         const block = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
         processBlock(block);
+        if (terminal) {
+          // The backend ends the stream after a terminal event. Stop reading
+          // now so a proxy or a stuck socket cannot keep the turn "streaming"
+          // forever, and release the connection immediately.
+          await reader.cancel().catch(() => undefined);
+          return true;
+        }
         boundary = buffer.indexOf("\n\n");
       }
     }

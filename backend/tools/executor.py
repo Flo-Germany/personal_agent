@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
@@ -610,12 +611,25 @@ class ToolExecutor:
                     "error": f"Missing required argument(s) for {name}: {joined}",
                 }
 
+        kwargs = dict(parsed)
+        if name in {"analyze_screen", "analyze_screen_ui"}:
+            kwargs["_screen_context"] = screen_context
+
+        # Validate the call *before* running it. Catching TypeError around the
+        # handler itself also swallowed genuine bugs inside a tool and reported
+        # them as "invalid arguments", which the model cannot act on.
         try:
-            if name in {"analyze_screen", "analyze_screen_ui"}:
-                return handler(**parsed, _screen_context=screen_context)
-            return handler(**parsed)
-        except TypeError as exc:
-            return {"ok": False, "error": f"Invalid arguments for {name}: {exc}"}
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            try:
+                signature.bind(**kwargs)
+            except TypeError as exc:
+                return {"ok": False, "error": f"Invalid arguments for {name}: {exc}"}
+
+        try:
+            return handler(**kwargs)
         except os_tools.ToolError as exc:
             return {"ok": False, "error": str(exc)}
         except window_tools.WindowToolError as exc:

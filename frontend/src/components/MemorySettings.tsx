@@ -22,6 +22,7 @@ import {
 } from "../lib/knowledge";
 import { shortModelName } from "../lib/display";
 import type { Identity } from "../types";
+import { AgentAvatar } from "./AgentAvatar";
 import {
   Badge,
   DangerButton,
@@ -33,12 +34,9 @@ import {
 
 function IdentityCard({ identity }: { identity: Identity | null }) {
   const name = identity?.name ?? "Compa";
-  const initial = name.trim().charAt(0).toUpperCase() || "C";
   return (
     <div className="flex items-center gap-3 rounded-[18px] border border-fg/[0.08] bg-fg/[0.028] p-4 shadow-[var(--compa-shadow)]">
-      <span className="flex size-11 items-center justify-center rounded-2xl bg-accent bg-[linear-gradient(140deg,#5ac8fa_0%,#0068e0_55%,#4b48c9_100%)] text-[17px] font-semibold text-white shadow-[0_10px_24px_-12px_rgba(10,132,255,0.8)]">
-        {initial}
-      </span>
+      <AgentAvatar size="xl" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-[14px] font-semibold text-fg/92">{name}</p>
         <p className="truncate text-[11px] text-fg/68" title={identity?.model}>
@@ -190,7 +188,7 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
                 value={content}
                 spellCheck={false}
                 onChange={(event) => setContent(event.target.value)}
-                className="min-h-[260px] w-full resize-y rounded-xl border border-fg/[0.1] bg-fg/[0.03] p-3 font-mono text-[11px] leading-5 text-fg/80 focus:border-accent/60 focus:outline-none"
+                className="field-focus min-h-[260px] w-full resize-y rounded-xl border border-fg/[0.1] bg-fg/[0.03] p-3 font-mono text-[11px] leading-5 text-fg/80 focus:outline-none"
               />
             ) : (
               <div className="grid grid-cols-1 gap-2.5 min-[600px]:grid-cols-2">
@@ -225,7 +223,7 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
                           setFact("");
                         }
                       }}
-                      className="min-w-0 flex-1 rounded-lg border border-fg/[0.1] bg-fg/[0.04] px-2.5 py-1.5 text-[11px] text-fg/85 placeholder:text-fg/75 focus:border-accent/60 focus:outline-none"
+                      className="field-focus min-w-0 flex-1 rounded-lg border border-fg/[0.1] bg-fg/[0.04] px-2.5 py-1.5 text-[11px] text-fg/85 placeholder:text-fg/75 focus:outline-none"
                     />
                     <button
                       type="button"

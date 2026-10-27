@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
+import time
 import urllib.error
 import urllib.request
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +35,55 @@ from tools.executor import ToolExecutor
 from tools.vision_tools import VisionService
 
 logger = logging.getLogger(__name__)
+
+
+PARENT_PID_ENV = "PERSONAL_AGENT_PARENT_PID"
+_PARENT_POLL_SECONDS = 2.0
+
+
+def _parent_pid() -> int | None:
+    """PID of the desktop shell that spawned this backend, when provided."""
+    raw = os.environ.get(PARENT_PID_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r", PARENT_PID_ENV, raw)
+        return None
+    return value if value > 0 else None
+
+
+def _process_is_alive(pid: int) -> bool:
+    """Whether a PID still exists; probe failures never trigger a shutdown."""
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001 - psutil is a hard dependency, but be safe
+        return True
+    try:
+        return bool(psutil.pid_exists(pid))
+    except Exception:  # noqa: BLE001 - a failing probe must not kill the app
+        return True
+
+
+def _watch_parent(pid: int, cleanups: list[Callable[[], Any]]) -> None:
+    """Exit the backend when the desktop shell disappears.
+
+    A Tauri crash or a force-kill of the shell otherwise left this process and
+    its llama-server children running with no window that could ever reach
+    them. The normal shutdown path is reused so VRAM is released.
+    """
+    while True:
+        time.sleep(_PARENT_POLL_SECONDS)
+        if _process_is_alive(pid):
+            continue
+        logger.warning("Parent process %s exited; shutting down the backend", pid)
+        for cleanup in cleanups:
+            try:
+                cleanup()
+            except Exception:  # noqa: BLE001 - keep cleaning the rest
+                logger.debug("Parent-death cleanup failed", exc_info=True)
+        os._exit(0)
 
 
 def _unload_ollama(settings: Settings) -> None:
@@ -107,6 +158,7 @@ class EditableSettings(BaseModel):
     process_priority: Literal["eco", "normal", "high"] | None = None
     gpu_layers: int | None = Field(default=None, ge=0, le=512)
     vram_override_gb: float | None = Field(default=None, gt=0, le=512)
+    kv_cache: Literal["f16", "q8_0", "q4_0"] | None = None
     vision_max_width: int | None = Field(default=None, ge=640, le=3840)
     uia_depth: int | None = Field(default=None, ge=2, le=60)
     allow_foreground_fallback: bool | None = None
@@ -128,6 +180,7 @@ def _editable_snapshot(settings: Settings, config_file: Path) -> dict[str, Any]:
         "process_priority": settings.engine.process_priority,
         "gpu_layers": settings.engine.gpu_layers,
         "vram_override_gb": settings.engine.vram_override_gb,
+        "kv_cache": settings.engine.kv_cache,
         "vision_max_width": settings.automation.screenshot_max_width,
         "uia_depth": settings.automation.max_element_depth,
         "allow_foreground_fallback": settings.automation.allow_foreground_fallback,
@@ -274,6 +327,14 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if settings.vision.enabled:
             vision.start()
+        watcher_pid = _parent_pid()
+        if watcher_pid is not None and watcher_pid != os.getpid():
+            threading.Thread(
+                target=_watch_parent,
+                args=(watcher_pid, [vision.stop, engine.shutdown]),
+                name="parent-watchdog",
+                daemon=True,
+            ).start()
         if owned_chat_service and settings.ollama.warmup_on_startup:
             # Load the model and prefill the stable system/tool prefix in the
             # background so the first real message does not pay an 8-12 second
@@ -302,11 +363,14 @@ def create_app(
     app.state.engine = engine
 
     # The Tauri webview and Vite dev server are the only allowed origins.
+    # PUT and PATCH are required by the settings and knowledge endpoints; when
+    # they are missing the browser fails the preflight and the UI only sees
+    # "Failed to fetch", which looks like a dead backend.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=ALLOWED_ORIGINS,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["Content-Type"],
         expose_headers=["X-Conversation-ID"],
     )
@@ -407,6 +471,7 @@ def create_app(
             "process_priority",
             "gpu_layers",
             "vram_override_gb",
+            "kv_cache",
         }
         restart_required = bool(restart_fields & set(changes))
 
@@ -436,6 +501,8 @@ def create_app(
             settings.engine.vram_override_gb = (
                 None if value is None else float(value)
             )
+        if changes.get("kv_cache") is not None:
+            settings.engine.kv_cache = changes["kv_cache"]
         if changes.get("vision_max_width") is not None:
             value = int(changes["vision_max_width"])
             settings.automation.screenshot_max_width = value
@@ -598,7 +665,7 @@ def create_app(
         if payload.task == "text" and hasattr(chat_service, "set_client"):
             client = None
             if settings.engine.type == "llamacpp":
-                _unload_ollama(settings)
+                await run_in_threadpool(_unload_ollama, settings)
                 try:
                     client = await run_in_threadpool(engine.text_client)
                 except Exception as exc:  # noqa: BLE001 - keep chat usable
@@ -640,7 +707,7 @@ def create_app(
         if hasattr(chat_service, "set_client"):
             client = None
             if payload.type == "llamacpp":
-                _unload_ollama(settings)
+                await run_in_threadpool(_unload_ollama, settings)
                 try:
                     client = await run_in_threadpool(engine.text_client)
                 except Exception as exc:  # noqa: BLE001 - keep chat usable
@@ -660,7 +727,9 @@ def create_app(
         Threads, context, layer count and priority are server arguments, so the
         running llama-server is stopped and the text client is rebound.
         """
-        engine.servers.stop_all()
+        # Stopping llama-server runs taskkill and waits for the port, which can
+        # take seconds; it must not block the event loop.
+        await run_in_threadpool(engine.servers.stop_all)
         try:
             result = await run_in_threadpool(engine.set_type, settings.engine.type)
         except ValueError as exc:
@@ -894,6 +963,9 @@ def create_app(
         if hasattr(chat_service, "clear_search_cards"):
             await run_in_threadpool(chat_service.clear_search_cards, normalized)
         await run_in_threadpool(store.clear, normalized)
+        forget = getattr(chat_service, "forget_conversation", None)
+        if callable(forget):
+            await run_in_threadpool(forget, normalized)
         return Response(status_code=204)
 
     return app

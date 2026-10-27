@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
 _PROGRESS_INTERVAL = 0.25
+# Finished install jobs stay queryable for the UI, but the registry must not
+# grow for the lifetime of the process.
+_MAX_FINISHED_JOBS = 20
 
 
 @dataclass
@@ -203,11 +206,36 @@ class ModelStore:
             job.downloaded = job.total
             job.eta_seconds = 0
             job.message = "Installed"
+        except _Cancelled:
+            # Cancel can arrive mid-file; that is a normal stop, not a failure.
+            job.state = "cancelled"
+            job.error = ""
+            job.message = "Cancelled"
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI
             logger.warning("Model install failed for %s: %s", entry.id, exc)
             job.state = "error"
             job.error = str(exc)
             job.message = "Install failed"
+        finally:
+            self._prune_finished_jobs()
+
+    def _prune_finished_jobs(self) -> None:
+        """Keep only the newest finished jobs so the registry cannot grow forever.
+
+        The frontend polls the job right after it finishes, so the most recent
+        ones must stay available; older finished entries carry no state the UI
+        can still reach.
+        """
+        with self._lock:
+            finished = [
+                job_id
+                for job_id, job in self._jobs.items()
+                if job.state in {"done", "error", "cancelled"}
+            ]
+            excess = len(finished) - _MAX_FINISHED_JOBS
+            for job_id in finished[:excess] if excess > 0 else []:
+                self._jobs.pop(job_id, None)
+                self._threads.pop(job_id, None)
 
     def _fetch(self, entry: ModelEntry, item: ModelFile, job: InstallJob) -> None:
         target = self._file_path(entry, item)
@@ -230,15 +258,25 @@ class ModelStore:
         headers = {"User-Agent": "Compa/1.0 (+local model manager)"}
         if offset:
             headers["Range"] = f"bytes={offset}-"
-        request = urllib.request.Request(item.url, headers=headers)
 
-        try:
-            response = urllib.request.urlopen(request, timeout=120)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 416 and partial.exists():
-                partial.unlink()
-                return self._fetch(entry, item, job)
-            raise
+        # A stale .part whose offset no longer matches the remote file makes
+        # the server answer 416. Reset the partial file and retry exactly once;
+        # recursing made a misbehaving server able to exhaust the call stack.
+        retried = False
+        while True:
+            request = urllib.request.Request(item.url, headers=headers)
+            try:
+                response = urllib.request.urlopen(request, timeout=120)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 416 and partial.exists() and not retried:
+                    retried = True
+                    partial.unlink()
+                    offset = 0
+                    job.downloaded = completed_before
+                    headers.pop("Range", None)
+                    continue
+                raise
 
         with response:
             if offset and response.status != 206:

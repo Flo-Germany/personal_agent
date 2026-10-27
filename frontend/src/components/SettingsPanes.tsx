@@ -93,6 +93,19 @@ const STANDBY_OPTIONS = [
   { value: "0", label: "Unload" },
 ] as const;
 
+// KV-cache precision. Long-context decode is bandwidth-bound, so this is the
+// single biggest speed knob: measured at ~11k prompt tokens, f16 14 tok/s,
+// q8_0 21 tok/s, q4_0 30 tok/s on the reference machine.
+const KV_OPTIONS: {
+  value: EditableSettings["kv_cache"];
+  label: string;
+  title: string;
+}[] = [
+  { value: "q8_0", label: "Balanced", title: "q8_0 — near-lossless, ~50% faster" },
+  { value: "q4_0", label: "Fast", title: "q4_0 — maximum speed, slightly less precise" },
+  { value: "f16", label: "Exact", title: "f16 — default precision, slowest" },
+];
+
 function paneGate(
   editable: EditableController,
   render: (settings: EditableSettings) => ReactNode,
@@ -527,6 +540,23 @@ export function EngineSettings({
               onCommit={(value) =>
                 void editable.patch({ context_window: value ?? 16384 })
               }
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label="KV cache precision"
+            detail={
+              settings.engine_type === "llamacpp"
+                ? "Quantizing the cache is the biggest long-context speed gain. Takes effect after an engine restart."
+                : "Only used by the llama.cpp engine."
+            }
+          >
+            <Segmented
+              label="KV cache precision"
+              value={settings.kv_cache}
+              options={KV_OPTIONS}
+              disabled={settings.engine_type !== "llamacpp"}
+              onChange={(value) => void editable.patch({ kv_cache: value })}
             />
           </SettingsRow>
 

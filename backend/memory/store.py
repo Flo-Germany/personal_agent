@@ -55,6 +55,37 @@ class ConversationStore:
             self._conversations.move_to_end(key)
             return [copy.deepcopy(message) for message in messages]
 
+    def last_message(
+        self,
+        conversation_id: str,
+        role: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return a copy of the newest message (optionally of one role).
+
+        ``load()`` deep-copies the whole conversation, which made the per-turn
+        heuristics that only need the latest user text copy the full history
+        many times over. This walks backwards and copies one message.
+        """
+        key = self._key(conversation_id)
+
+        with self._lock:
+            messages = self._conversations.get(key)
+            if not messages:
+                return None
+            self._conversations.move_to_end(key)
+            for message in reversed(messages):
+                if role is None or message.get("role") == role:
+                    return copy.deepcopy(message)
+        return None
+
+    def length(self, conversation_id: str) -> int:
+        """Return the stored message count without copying any message."""
+        key = self._key(conversation_id)
+
+        with self._lock:
+            messages = self._conversations.get(key)
+            return len(messages) if messages else 0
+
     def append(
         self,
         conversation_id: str,

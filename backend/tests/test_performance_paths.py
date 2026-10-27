@@ -38,6 +38,37 @@ def test_dynamic_tool_profile_keeps_gui_and_adds_hinted_tools() -> None:
     assert "semantic_image_search" in images
 
 
+def test_plain_chat_profile_drops_the_gui_schemas() -> None:
+    """GUI schemas are the biggest block; plain chat must not pay for them."""
+    chat = _profile_tool_names("Reply with exactly: OK")
+    assert {"search_system", "read_file_content", "run_powershell_query"} <= chat
+    assert "click_element" not in chat
+    assert "analyze_screen_ui" not in chat
+    assert "isolated_workspace" not in chat
+    assert "move_file_or_folder" not in chat
+
+
+def test_recent_gui_activity_keeps_gui_schemas_for_follow_ups() -> None:
+    from agent.chat import _recent_gui_activity
+
+    history = [
+        {"role": "user", "content": "open notepad"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "analyze_screen_ui", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "name": "analyze_screen_ui", "content": "{}"},
+        {"role": "user", "content": "do it now"},
+    ]
+    assert _recent_gui_activity(history)
+    assert not _recent_gui_activity(
+        [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    )
+
+
 def test_som_tool_result_is_compacted_for_the_model() -> None:
     element = {
         "id": 7,

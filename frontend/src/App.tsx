@@ -116,8 +116,11 @@ function App() {
     });
     return () => unlisten?.();
   }, []);
+  // Only the visual QA harness asks for this. It walks every DOM node with
+  // getComputedStyle, so running it after each message made the window stutter
+  // as the conversation grew. `--qa audit` still triggers a full snapshot.
   useEffect(() => {
-    if (!desktop.ready) {
+    if (!desktop.ready || auditTick === 0) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -127,7 +130,7 @@ function App() {
       );
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [auditKind, auditTick, desktop.isModern, desktop.ready, messages.length, pendingAction]);
+  }, [auditKind, auditTick, desktop.ready, resolvedTheme]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastMessage = messages[messages.length - 1];

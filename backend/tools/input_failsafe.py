@@ -110,6 +110,10 @@ class InputFailsafe:
                 self._listener_error = f"Could not start input listeners: {exc}"
                 self._listeners_started = False
             logger.warning("Input killswitch could not start: %s", exc)
+            # A hook that did start must not stay installed while the guard
+            # reports itself as unavailable; that would leave a global
+            # keyboard/mouse filter running with no killswitch state.
+            self.stop()
 
     def stop(self) -> None:
         """Stop the listeners. Safe to call repeatedly."""

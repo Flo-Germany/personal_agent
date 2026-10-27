@@ -149,17 +149,23 @@ export function Segmented<T extends string>({
             title={option.title ?? option.label}
             disabled={disabled}
             onClick={() => onChange(option.value)}
-            className={`relative rounded-[9px] px-2.5 py-1 text-[11px] transition-colors duration-150 ease-out disabled:opacity-40 ${
+            className={`relative rounded-[9px] px-2.5 py-1 text-[11px] transition-colors duration-150 ease-out disabled:cursor-not-allowed ${
               selected
-                ? "font-medium text-white"
-                : "text-fg/68 hover:text-fg/85"
+                ? disabled
+                  ? "font-medium text-fg/85"
+                  : "font-medium text-white"
+                : disabled
+                  ? "text-fg/45"
+                  : "text-fg/68 hover:text-fg/85"
             }`}
           >
             {selected && (
               <motion.span
                 layoutId={`segment-${id}`}
                 transition={SPRING}
-                className="absolute inset-0 rounded-[9px] bg-accent shadow-[0_6px_16px_-7px_rgba(10,132,255,0.9)]"
+                className={`absolute inset-0 rounded-[9px] shadow-[0_6px_16px_-7px_rgba(10,132,255,0.9)] ${
+                  disabled ? "bg-fg/[0.16]" : "bg-accent"
+                }`}
               />
             )}
             <span className="relative">{option.label}</span>
@@ -173,7 +179,7 @@ export function Segmented<T extends string>({
 /* ------------------------------------------------------------------ inputs */
 
 const inputClass =
-  "w-full rounded-xl border border-fg/[0.1] bg-fg/[0.04] px-2.5 py-1.5 text-[12px] text-fg/90 transition-colors duration-150 ease-out placeholder:text-fg/75 focus:border-accent/70 focus:bg-fg/[0.06] focus:outline-none disabled:opacity-40";
+  "field-focus w-full rounded-xl border border-fg/[0.1] bg-fg/[0.04] px-2.5 py-1.5 text-[12px] text-fg/90 transition-colors duration-150 ease-out placeholder:text-fg/75 focus:bg-fg/[0.06] focus:outline-none disabled:opacity-40";
 
 export function TextField({
   value,

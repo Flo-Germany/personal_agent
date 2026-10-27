@@ -40,6 +40,9 @@ class ServerSpec:
     device: str = ""
     threads: int = 0
     priority: str = "normal"
+    # "q8_0" cuts KV-cache bandwidth and measured ~50% faster decode at long
+    # context; "q4_0" measured ~2x. "f16" is the llama.cpp default.
+    kv_cache: str = "q8_0"
 
     def matches(self, other: "ServerSpec") -> bool:
         return (
@@ -52,6 +55,7 @@ class ServerSpec:
             and self.device == other.device
             and self.threads == other.threads
             and self.priority == other.priority
+            and self.kv_cache == other.kv_cache
         )
 
 
@@ -61,6 +65,42 @@ class RunningServer:
     process: subprocess.Popen[bytes]
     started_at: float
     log_path: Path
+
+
+def server_arguments(server_path: Path, spec: ServerSpec, kv_cache: str) -> list[str]:
+    """Build the llama-server command line for one role.
+
+    Quantized KV cache is the largest measurable decode win at the prompt sizes
+    the agent sends; `-fa auto` stays on because it was faster both at short and
+    long context on Vulkan.
+    """
+    arguments = [
+        str(server_path),
+        "-m",
+        str(spec.model_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(spec.port),
+        "-c",
+        str(spec.context),
+        "-ngl",
+        str(spec.n_gpu_layers),
+        "--jinja",
+        "--parallel",
+        "1",
+        "-fa",
+        "auto",
+    ]
+    if kv_cache in {"q8_0", "q4_0"}:
+        arguments.extend(["-ctk", kv_cache, "-ctv", kv_cache])
+    if spec.mmproj_path is not None:
+        arguments.extend(["--mmproj", str(spec.mmproj_path)])
+    if spec.device:
+        arguments.extend(["--device", spec.device])
+    if spec.threads > 0:
+        arguments.extend(["--threads", str(spec.threads)])
+    return arguments
 
 
 class LlamaServerManager:
@@ -129,33 +169,26 @@ class LlamaServerManager:
             logger.info("Hot-swapping the %s engine", spec.role)
             self.stop(spec.role)
 
+        try:
+            return self._spawn(spec, kv_cache=spec.kv_cache)
+        except (RuntimeError, TimeoutError) as exc:
+            if not spec.kv_cache:
+                raise
+            # Never leave the app without a model because a build or driver
+            # rejects the quantized KV type: retry once at the default f16.
+            logger.warning(
+                "llama-server %s rejected the %s KV cache (%s); retrying at f16",
+                spec.role,
+                spec.kv_cache,
+                exc,
+            )
+            return self._spawn(spec, kv_cache="")
+
+    def _spawn(self, spec: ServerSpec, *, kv_cache: str) -> RunningServer:
         server_path = self.runtime.ensure()
         self._reclaim_port(spec.port)
         self._wait_port_free(spec.port)
-        arguments = [
-            str(server_path),
-            "-m",
-            str(spec.model_path),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(spec.port),
-            "-c",
-            str(spec.context),
-            "-ngl",
-            str(spec.n_gpu_layers),
-            "--jinja",
-            "--parallel",
-            "1",
-            "-fa",
-            "auto",
-        ]
-        if spec.mmproj_path is not None:
-            arguments.extend(["--mmproj", str(spec.mmproj_path)])
-        if spec.device:
-            arguments.extend(["--device", spec.device])
-        if spec.threads > 0:
-            arguments.extend(["--threads", str(spec.threads)])
+        arguments = server_arguments(server_path, spec, kv_cache)
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = self.log_dir / f"llama-{spec.role}-{stamp}.log"
@@ -164,14 +197,19 @@ class LlamaServerManager:
         logger.info(
             "Starting %s llama-server: %s", spec.role, " ".join(arguments[1:])
         )
-        process = subprocess.Popen(
-            arguments,
-            cwd=str(server_path.parent),
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags,
-        )
+        try:
+            process = subprocess.Popen(
+                arguments,
+                cwd=str(server_path.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+        finally:
+            # The child owns its duplicated handle. Keeping the parent's copy
+            # open leaked one descriptor per model/engine swap.
+            log_handle.close()
         if spec.priority != "normal":
             _apply_priority(getattr(process, "pid", 0), spec.priority)
         running = RunningServer(

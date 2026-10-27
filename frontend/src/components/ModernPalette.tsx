@@ -328,9 +328,12 @@ export function ModernPalette({
       >
         <header
           data-tauri-drag-region="deep"
-          className="flex h-[58px] shrink-0 items-center gap-2.5 px-4"
+          className="palette-header flex h-[58px] shrink-0 items-center gap-2.5 px-4"
         >
-          <Search className="size-[15px] shrink-0 text-fg/68" strokeWidth={2.2} />
+          <Search
+            className="palette-search-icon size-[15px] shrink-0 text-fg/68"
+            strokeWidth={2.2}
+          />
           <input
             ref={inputRef}
             value={value}
@@ -338,6 +341,8 @@ export function ModernPalette({
             onKeyDown={handleKeyDown}
             disabled={isLoadingHistory}
             spellCheck={false}
+            autoComplete="off"
+            enterKeyHint="send"
             placeholder={
               isLoadingHistory
                 ? "Waking Compa…"
@@ -346,6 +351,21 @@ export function ModernPalette({
             aria-label="Ask Compa"
             className="min-w-0 flex-1 bg-transparent text-[14px] leading-5 text-fg/90 caret-accent outline-none placeholder:text-fg/75"
           />
+
+          {value && (
+            <button
+              type="button"
+              onClick={() => {
+                setValue("");
+                inputRef.current?.focus();
+              }}
+              aria-label="Clear input"
+              title="Clear (Esc)"
+              className="search-clear"
+            >
+              <X className="size-3" strokeWidth={2.4} />
+            </button>
+          )}
 
           <AnimatePresence mode="popLayout" initial={false}>
             {working ? (

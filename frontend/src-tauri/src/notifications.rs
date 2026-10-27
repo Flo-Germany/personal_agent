@@ -86,11 +86,11 @@ impl NotificationService {
     fn run(&self, app: AppHandle) {
         #[cfg(target_os = "windows")]
         {
-            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
             use windows::UI::Notifications::Management::{
                 UserNotificationListener, UserNotificationListenerAccessStatus,
             };
             use windows::UI::Notifications::{KnownNotificationBindings, NotificationKinds};
+            use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -157,10 +157,10 @@ impl NotificationService {
                                     let size = texts.Size().unwrap_or(0);
                                     let mut lines = Vec::new();
                                     for line in 0..size {
-                                        if let Ok(item) = texts.GetAt(line) {
-                                            if let Ok(text) = item.Text() {
-                                                lines.push(text.to_string_lossy());
-                                            }
+                                        if let Ok(item) = texts.GetAt(line)
+                                            && let Ok(text) = item.Text()
+                                        {
+                                            lines.push(text.to_string_lossy());
                                         }
                                     }
                                     lines

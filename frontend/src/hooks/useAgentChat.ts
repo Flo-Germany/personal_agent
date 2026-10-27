@@ -37,6 +37,11 @@ import type {
   ToolStatusData,
 } from "../types";
 
+// Streaming text is coalesced before it reaches React. Without this every
+// token re-renders the transcript and re-parses the whole Markdown answer,
+// which is O(n^2) and is what makes long replies feel slow.
+const DELTA_FLUSH_MS = 80;
+
 type Snapshot = {
   identity: Identity | null;
   messages: ChatMessage[];
@@ -168,6 +173,9 @@ export function useAgentChat() {
   const streamingMessageIdRef = useRef<string | null>(null);
   const lastStreamedIdRef = useRef<string | null>(null);
   const lastStreamedContentRef = useRef("");
+  // Text that arrived since the last paint; flushed on a short timer.
+  const pendingDeltaRef = useRef("");
+  const deltaTimerRef = useRef<number | null>(null);
   const thinkingRef = useRef("");
   const thinkingStartedAtRef = useRef<number | null>(null);
   const lastThinkingFlushRef = useRef(0);
@@ -296,11 +304,42 @@ export function useAgentChat() {
     [syncTaskStatus],
   );
 
+  /** Drop buffered stream text without painting it (reset, end, unmount). */
+  const discardPendingDelta = useCallback(() => {
+    pendingDeltaRef.current = "";
+    if (deltaTimerRef.current !== null) {
+      window.clearTimeout(deltaTimerRef.current);
+      deltaTimerRef.current = null;
+    }
+  }, []);
+
+  /** Paint everything buffered since the last frame in a single update. */
+  const flushPendingDelta = useCallback(() => {
+    if (deltaTimerRef.current !== null) {
+      window.clearTimeout(deltaTimerRef.current);
+      deltaTimerRef.current = null;
+    }
+    const chunk = pendingDeltaRef.current;
+    pendingDeltaRef.current = "";
+    const id = streamingMessageIdRef.current;
+    if (!chunk || !id || !mountedRef.current) {
+      return;
+    }
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === id
+          ? { ...message, content: message.content + chunk }
+          : message,
+      ),
+    );
+  }, []);
+
   const resetStreamingRefs = useCallback(() => {
     streamingMessageIdRef.current = null;
     lastStreamedIdRef.current = null;
     lastStreamedContentRef.current = "";
-  }, []);
+    discardPendingDelta();
+  }, [discardPendingDelta]);
 
   const applyMetrics = useCallback((metrics: TokenMetrics) => {
     if (!mountedRef.current) {
@@ -327,6 +366,7 @@ export function useAgentChat() {
     streamingMessageIdRef.current = null;
     lastStreamedIdRef.current = null;
     lastStreamedContentRef.current = "";
+    discardPendingDelta();
 
     if (!id || !mountedRef.current) {
       return;
@@ -337,7 +377,7 @@ export function useAgentChat() {
         message.id === id ? { ...message, streaming: false } : message,
       ),
     );
-  }, []);
+  }, [discardPendingDelta]);
 
   const handleInterrupted = useCallback(() => {
     if (!mountedRef.current) {
@@ -522,11 +562,12 @@ export function useAgentChat() {
       mountedRef.current = false;
       controller.abort();
       activeStreamRef.current?.abort();
+      discardPendingDelta();
       if (loadControllerRef.current === controller) {
         loadControllerRef.current = null;
       }
     };
-  }, []);
+  }, [discardPendingDelta]);
 
   const handleStreamResponse = useCallback(
     async (response: Response, signal: AbortSignal): Promise<void> => {
@@ -806,13 +847,13 @@ export function useAgentChat() {
             return;
           }
           lastStreamedContentRef.current += content;
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === id
-                ? { ...message, content: message.content + content }
-                : message,
-            ),
-          );
+          pendingDeltaRef.current += content;
+          if (deltaTimerRef.current === null) {
+            deltaTimerRef.current = window.setTimeout(
+              flushPendingDelta,
+              DELTA_FLUSH_MS,
+            );
+          }
         },
         onAssistantEnd: (content) => {
           if (!mountedRef.current) {
@@ -822,6 +863,7 @@ export function useAgentChat() {
           if (!id) {
             return;
           }
+          discardPendingDelta();
           const finalContent = content ?? lastStreamedContentRef.current;
           lastStreamedContentRef.current = finalContent;
           streamingMessageIdRef.current = null;
@@ -846,6 +888,7 @@ export function useAgentChat() {
           }
           lastStreamedIdRef.current = null;
           lastStreamedContentRef.current = "";
+          discardPendingDelta();
           if (!id || !mountedRef.current) {
             return;
           }
@@ -1053,8 +1096,10 @@ export function useAgentChat() {
       addDiagnosis,
       addSearchResults,
       applyMetrics,
+      discardPendingDelta,
       failRunningTasks,
       finalizeStreaming,
+      flushPendingDelta,
       handleInterrupted,
       rememberConversation,
       resetStreamingRefs,

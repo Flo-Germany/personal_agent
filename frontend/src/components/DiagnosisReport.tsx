@@ -124,7 +124,7 @@ function MetricTile({
         <span className="diagnosis-metric-label">{label}</span>
       </div>
       <div className="mt-1.5 flex items-baseline gap-1">
-        <span className="text-[17px] leading-none font-semibold tracking-tight text-fg/90 tabular-nums">
+        <span className="text-[15px] leading-none font-semibold tracking-tight text-fg/90 tabular-nums">
           {value}
         </span>
         {unit && (
@@ -664,7 +664,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
           </svg>
           <div className="relative flex flex-col items-center">
             <span
-              className={`text-[22px] leading-none font-semibold tabular-nums ${tone.text}`}
+              className={`text-[19px] leading-none font-semibold tabular-nums ${tone.text}`}
             >
               {score}
             </span>
@@ -679,7 +679,7 @@ export const DiagnosisReport = memo(function DiagnosisReport({
             <span className={`size-1.5 rounded-full ${tone.dot}`} />
             System diagnosis · {tone.label}
           </div>
-          <h3 className="mt-1 text-[15px] leading-snug font-semibold text-balance text-fg/90">
+          <h3 className="mt-1 text-[13.5px] leading-snug font-semibold text-balance text-fg/90">
             {prettyName(os.caption) || "Windows system"}
             {computer.model ? (
               <span className="font-normal text-fg/68">

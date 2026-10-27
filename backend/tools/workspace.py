@@ -34,7 +34,7 @@ from typing import Any
 from PIL import Image
 
 from settings import DATA_ROOT
-from tools.uia_driver import _CursorGuard, cursor_position
+from tools.uia_driver import _CursorGuard, cursor_position, send_message_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -542,12 +542,12 @@ class WorkspaceManager:
             target = int(info.hwndFocus)
         sent = 0
         for char in text:
-            _user32().SendMessageW(target, WM_CHAR, ord(char), 1)
+            send_message_timeout(target, WM_CHAR, ord(char), 1)
             sent += 1
         if press_enter:
-            _user32().SendMessageW(target, WM_KEYDOWN, VK_RETURN, 1)
-            _user32().SendMessageW(target, WM_CHAR, 13, 1)
-            _user32().SendMessageW(target, WM_KEYUP, VK_RETURN, 1)
+            send_message_timeout(target, WM_KEYDOWN, VK_RETURN, 1)
+            send_message_timeout(target, WM_CHAR, 13, 1)
+            send_message_timeout(target, WM_KEYUP, VK_RETURN, 1)
         return {
             "ok": True,
             "hwnd": hwnd,
