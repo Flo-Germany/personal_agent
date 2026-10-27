@@ -57,9 +57,9 @@ class PendingAction:
             payload["displays"] = self.displays
             payload["question"] = self.question
         else:
-            # Approving grants this user turn permission to finish the
-            # remaining steps without another card per step.
-            payload["auto_approve_remaining"] = True
+            # One approval covers exactly the calls shown on this card. A new
+            # mutating call later in the turn asks again.
+            payload["auto_approve_remaining"] = False
 
         return payload
 

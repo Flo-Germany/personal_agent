@@ -438,7 +438,7 @@ export const ModelSettings = memo(function ModelSettings({
                   title={hardware?.cpu}
                 >
                   {hardware?.cpu_cores ?? 0} CPU cores ·{" "}
-                  {hardware?.ram_gb.toFixed(1)} GB RAM
+                  {hardware?.ram_gb?.toFixed(1)} GB RAM
                 </p>
               </div>
               {status && !status.runtime.installed && (
@@ -528,8 +528,8 @@ export const ModelSettings = memo(function ModelSettings({
               <p className="mt-2 border-t border-white/[0.05] pt-2 text-[10px] leading-4 text-white/54">
                 Text plan: {status.text_plan.n_gpu_layers}/
                 {status.text_plan.total_layers} layers on GPU ·{" "}
-                {status.text_plan.weights_gb.toFixed(1)} GB weights ·{" "}
-                {status.text_plan.kv_gb.toFixed(2)} GB KV ·{" "}
+                {status.text_plan.weights_gb?.toFixed(1)} GB weights ·{" "}
+                {status.text_plan.kv_gb?.toFixed(2)} GB KV ·{" "}
                 {status.text_plan.reason}
               </p>
             )}

@@ -208,15 +208,30 @@ def _normalize_recipient(value: str) -> str:
     return " ".join(text.split())
 
 
+_GROUP_MARKERS = (" & ", " and ", ", ", "#", " group", " team", " channel")
+
+
 def _recipient_matches(requested: str, *candidates: str) -> bool:
-    """Whether the requested person appears in the live conversation labels."""
+    """Whether the live labels are the requested person's chat.
+
+    Token-subset matching replaces substring matching: a first name no longer
+    matches any label that merely contains those letters, and a single-name
+    request is refused when the label looks like a group or a channel.
+    """
     wanted = _normalize_recipient(requested)
     if not wanted:
         return False
+    wanted_tokens = wanted.split()
     for candidate in candidates:
         current = _normalize_recipient(candidate)
-        if current and (wanted in current or current in wanted):
-            return True
+        if not current:
+            continue
+        if not set(wanted_tokens) <= set(current.split()):
+            continue
+        raw = f" {str(candidate or '').casefold()} "
+        if len(wanted_tokens) == 1 and any(marker in raw for marker in _GROUP_MARKERS):
+            continue
+        return True
     return False
 
 
@@ -1489,6 +1504,22 @@ class GUIAutomationService:
             live_title,
             [live_name] if live_name else [],
         )
+        if profile.category == "chat" and not conversation:
+            # Fail closed: Discord/Teams often report a bare app title when the
+            # composer label is unknown, and typing there could reach the wrong
+            # chat. Ask for the exact recipient instead of guessing.
+            return {
+                "ok": False,
+                "needs_recipient": True,
+                "current_recipient": None,
+                "error": (
+                    "This is a chat app, but the active conversation could not "
+                    "be verified. The message was not typed. Open the exact "
+                    "chat so its composer shows the recipient, then retry with "
+                    "recipient='<exact name>'."
+                ),
+            }
+
         if profile.category == "chat" and conversation:
             if is_notification_conversation(profile, conversation):
                 return {

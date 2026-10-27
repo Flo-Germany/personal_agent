@@ -1714,6 +1714,35 @@ live acceptance: scripts\live_phase26.py - all checks pass
   background click + WM_CHAR typing -> release restored the window
 ```
 
+## Security hardening (audit follow-up)
+
+A read-only audit of the shell, agent loop, tools and Tauri config found one
+critical approval bypass and several fail-open safety checks. The fixes and the
+remaining list are in
+[docs/security-audit-fixes.md](docs/security-audit-fixes.md).
+
+Highlights:
+
+- **PowerShell queries are allowlisted.** `run_powershell_query` only accepts
+  `Get-*` and an explicit read-only collector set; external binaries,
+  `Out-File`, `Invoke-Expression`, `.NET` calls, chaining and environment
+  assignments are refused. Output is read with a hard memory cap.
+- **One approval = the calls on the card.** A later modifying step in the same
+  turn asks again; the approval endpoint rejects display cards; the pending
+  action is consumed only inside the conversation lock.
+- **Tool JSON in model text is data, not a command.** Text-emitted calls must
+  name an offered tool and satisfy its schema (required fields, no extras).
+- **Tauri is locked down**: strict CSP, asset scope limited to user document
+  folders/app data, `shell.open` restricted to document/media extensions,
+  reveal-first file cards, UNC paths rejected, password fields skipped, remote
+  screen-capture endpoints refused.
+- **UI**: error boundary, null-safe hardware fields, SSE CRLF/terminal/timeout
+  fixes, retryable approvals, motion tokens (ease-out in, ease-in out, spring).
+
+```text
+435 backend tests, 8 Rust shell tests, live analyze + guard bypass checks
+```
+
 ## Known limitation
 
 `qwen3-vl:8b-instruct` is the default because it follows the full identity,

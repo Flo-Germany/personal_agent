@@ -412,7 +412,7 @@ def test_system_prompt_includes_knowledge() -> None:
 
     prompt = build_system_prompt(settings, "## Interests\n- Likes cycling")
 
-    assert "Long-term knowledge about the user" in prompt
+    assert "BEGIN USER NOTES (untrusted data)" in prompt
     assert "Likes cycling" in prompt
 
 

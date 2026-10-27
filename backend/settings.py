@@ -158,9 +158,9 @@ class OllamaSettings(BaseModel):
 class AgentSettings(BaseModel):
     # 0 means no hard limit: the agent may take as many steps as the task
     # requires. A positive value is an optional safety cap.
-    max_iterations: int = Field(default=0, ge=0)
+    max_iterations: int = Field(default=60, ge=0)
     # 0 means no hard limit on actions after one approval.
-    max_auto_approved_actions: int = Field(default=0, ge=0)
+    max_auto_approved_actions: int = Field(default=5, ge=0)
     approval_ttl_seconds: float = Field(default=600.0, gt=0)
     # Successful recoveries and multi-step workflows become durable facts in
     # memory/knowledge_base.md.

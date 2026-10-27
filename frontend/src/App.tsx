@@ -28,6 +28,7 @@ import {
   onUi,
   takePendingAnalyze,
 } from "./lib/desktop";
+import type { AnalyzeRequest } from "./lib/desktop";
 import { demoScene } from "./lib/qaFixtures";
 import type { DemoKind } from "./lib/qaFixtures";
 
@@ -54,6 +55,7 @@ function App() {
     clearChat,
     refresh,
     refreshIdentity,
+    appendNotice,
   } = useAgentChat();
 
   // ------------------------------------------------------ visual QA fixtures
@@ -123,19 +125,19 @@ function App() {
   const isEmpty = useMemo(() => messages.length === 0, [messages.length]);
 
   // -------------------------------------------------- Explorer / file analyze
-  const pendingAnalyze = useRef<string | null>(null);
+  const pendingAnalyze = useRef<AnalyzeRequest | null>(null);
   const [analyzeTick, setAnalyzeTick] = useState(0);
 
   useEffect(() => {
-    void takePendingAnalyze().then((path) => {
-      if (path) {
-        pendingAnalyze.current = path;
+    void takePendingAnalyze().then((request) => {
+      if (request) {
+        pendingAnalyze.current = request;
         setAnalyzeTick((tick) => tick + 1);
       }
     });
     let unlisten: (() => void) | undefined;
-    void onAnalyze((path) => {
-      pendingAnalyze.current = path;
+    void onAnalyze((request) => {
+      pendingAnalyze.current = request;
       setAnalyzeTick((tick) => tick + 1);
     }).then((off) => {
       unlisten = off;
@@ -148,14 +150,25 @@ function App() {
     if (!analyzeTick || isLoadingHistory || !liveCanSend || demo !== "none") {
       return;
     }
-    const path = pendingAnalyze.current;
-    if (!path) {
+    const request = pendingAnalyze.current;
+    if (!request) {
       return;
     }
     pendingAnalyze.current = null;
     setView("chat");
+    if (!request.exists) {
+      appendNotice(
+        `I couldn't open \`${request.path}\`: the file no longer exists at that path. ` +
+          "It may have been moved, renamed, or deleted. Open it once in Explorer " +
+          "and try Analyze with Compa again.",
+      );
+      return;
+    }
+    const exact = request.canonical || request.path;
     void sendMessage(
-      `Analyze the file at ${path} and tell me what it is and what matters.`,
+      `Analyze the file at this exact path (do not change or shorten it): \`${exact}\`\n` +
+        "Read it with read_file_content first, then tell me what the file is " +
+        "and what matters in it. Do not guess its contents.",
     );
   }, [analyzeTick, demo, isLoadingHistory, liveCanSend, sendMessage]);
 

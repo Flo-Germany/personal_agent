@@ -919,6 +919,15 @@ class ChatService:
         with self._locks_guard:
             return self._locks.setdefault(conversation_id, threading.Lock())
 
+    def shutdown(self) -> None:
+        """Release desktop hooks and isolated windows on backend shutdown."""
+        stop = getattr(self._tools, "shutdown", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("Tool shutdown failed", exc_info=True)
+
     def set_client(self, client: Any) -> None:
         """Hot-swap the inference transport after an engine switch."""
         self._client = client
@@ -1137,11 +1146,38 @@ class ChatService:
         approved: bool,
     ) -> Iterator[dict[str, Any]]:
         """Execute or cancel a pending action, then continue the agent loop."""
-        pending = self._pending.consume(approval_id)
+        # Peek first: consuming before the lock lets a second request destroy
+        # the card and leaves the action unexecutable. A display card must go
+        # through /chat/display, never through the approval endpoint.
+        pending = self._pending.get(approval_id)
+        if pending.kind == "display":
+            yield {
+                "type": "error",
+                "conversation_id": pending.conversation_id,
+                "status_code": 409,
+                "message": (
+                    "This card asks which display to capture. Use the display "
+                    "endpoint (POST /chat/display), not /chat/approve."
+                ),
+            }
+            return
         conversation_id = pending.conversation_id
         lock = self._lock_for(conversation_id)
 
         with lock:
+            try:
+                pending = self._pending.consume(approval_id)
+            except ApprovalNotFound:
+                yield {
+                    "type": "error",
+                    "conversation_id": conversation_id,
+                    "status_code": 409,
+                    "message": (
+                        "This approval was already handled or expired. Ask the "
+                        "assistant to retry the action."
+                    ),
+                }
+                return
             self._clear_interrupt(conversation_id)
             self._cancel_event(conversation_id)
             self._begin_turn(conversation_id)
@@ -1834,7 +1870,11 @@ class ChatService:
             # instead of a structured tool_calls item. Execute it, but never
             # forward the raw JSON to the user.
             text_calls: list[dict[str, Any]] = (
-                [] if tool_calls else self._extract_text_tool_calls(content)
+                []
+                if tool_calls
+                else self._extract_text_tool_calls(
+                    content, getattr(self._tools, "accepts_call", None)
+                )
             )
             if text_calls:
                 # The streamed text was raw tool-call JSON; remove the bubble.
@@ -1962,7 +2002,7 @@ class ChatService:
                             streamed_content = outcome.streamed_content
                             break
                         forced_text_calls = self._extract_text_tool_calls(
-                            forced_content
+                            forced_content, getattr(self._tools, "accepts_call", None)
                         )
                         if forced_text_calls:
                             if outcome.streamed_content is not None:
@@ -2035,7 +2075,7 @@ class ChatService:
                             streamed_content = outcome.streamed_content
                         else:
                             recovered_text_calls = self._extract_text_tool_calls(
-                                recovered_content
+                                recovered_content, getattr(self._tools, "accepts_call", None)
                             )
                             if recovered_text_calls:
                                 if outcome.streamed_content is not None:
@@ -2281,9 +2321,40 @@ class ChatService:
                 return
 
             if auto_approve:
-                # The user approved this request once. Execute every call in
-                # the model's order, including mixed read-only and modifying
-                # calls, and keep going until the final answer.
+                # The approval covers the calls the user actually saw. Any new
+                # mutating call in a later round gets its own card; only
+                # read-only calls continue without another approval.
+                new_mutations = [
+                    call
+                    for call in serialized_calls
+                    if self._tools.requires_confirmation(call["function"]["name"])
+                ]
+                if new_mutations:
+                    actions = [
+                        {
+                            "tool": call["function"]["name"],
+                            "arguments": _parse_arguments(call),
+                            "description": _action_description(
+                                call["function"]["name"],
+                                _parse_arguments(call),
+                            ),
+                        }
+                        for call in new_mutations
+                    ]
+                    pending = self._pending.create(
+                        conversation_id,
+                        self._last_user_message(conversation_id),
+                        serialized_calls,
+                        actions,
+                        assistant_message=content.strip(),
+                        plan=self._normalize_plan_steps(
+                            self._turn_plans.get(conversation_id)
+                            or self._extract_plan_steps(content)
+                        ),
+                    )
+                    yield pending.to_public()
+                    return
+
                 for call in serialized_calls:
                     self._raise_if_cancelled(conversation_id)
                     name = call["function"]["name"]
@@ -2512,7 +2583,11 @@ class ChatService:
                         for fact in learned.deletions
                         if should_apply_deletion(fact, user_message)
                     ),
-                    *infer_deletions(knowledge_text, user_message),
+                    *(
+                        fact
+                        for fact in infer_deletions(knowledge_text, user_message)
+                        if should_apply_deletion(fact, user_message)
+                    ),
                 ]
             )
         )
@@ -3194,8 +3269,16 @@ class ChatService:
         }
 
     @staticmethod
-    def _extract_text_tool_calls(content: str) -> list[dict[str, Any]]:
-        """Parse a tool call that Hermes emitted as JSON text."""
+    def _extract_text_tool_calls(
+        content: str,
+        accept: Any = None,
+    ) -> list[dict[str, Any]]:
+        """Parse a tool call that Hermes emitted as JSON text.
+
+        ``accept(name, arguments)`` must confirm that the tool was actually
+        offered with those arguments. Tool JSON quoted from a document or a
+        web page is therefore data, not an executable instruction.
+        """
         text = content.strip()
         if not text:
             return []
@@ -3232,6 +3315,15 @@ class ChatService:
                 continue
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments, ensure_ascii=False)
+            if accept is not None and not accept(name.strip(), arguments):
+                logger.warning(
+                    "Ignored a text tool call that was not offered or does not "
+                    "match its schema: %s",
+                    name,
+                )
+                continue
+            if len(calls) >= 4:
+                break
             calls.append(
                 {
                     "id": item.get("id") or f"call_text_{uuid.uuid4().hex}",
@@ -3255,15 +3347,32 @@ class ChatService:
 
     @staticmethod
     def _looks_like_malformed_tool_output(content: str) -> bool:
+        """Only flag output that is clearly attempting a tool call.
+
+        A normal answer may start with '[' or '<' (a note, a citation card).
+        Treating every such reply as a broken tool call turned good turns into
+        forced retries and "malformed response" errors.
+        """
         text = content.strip()
-        if not text or text[0] not in "[{<":
+        if not text:
             return False
         if text.lower().startswith("<tool_call"):
             return True
-        try:
-            json.loads(text)
-        except json.JSONDecodeError:
-            return True
+        looks_toolish = ('"name"' in text or '"function"' in text) and (
+            '"arguments"' in text or '"parameters"' in text
+        )
+        if text.startswith("{"):
+            # Prose almost never opens with a brace; a broken object is a
+            # malformed tool call and needs one recovery attempt.
+            try:
+                json.loads(text)
+            except json.JSONDecodeError:
+                return True
+            return looks_toolish
+        if text.startswith("["):
+            # "[Note] ..." is prose. Only treat a bracket block as a tool call
+            # when it contains JSON objects with tool fields.
+            return looks_toolish or ('":' in text and "{" in text)
         return False
 
     @staticmethod

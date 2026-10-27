@@ -3,8 +3,10 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { open } from "@tauri-apps/plugin-shell";
 
+import { isSafeLocalPath } from "./localFiles";
+
 export async function openLocalFile(path: string): Promise<void> {
-  if (!isTauri()) {
+  if (!isTauri() || !isSafeLocalPath(path)) {
     return;
   }
 
@@ -16,7 +18,7 @@ export async function openLocalFile(path: string): Promise<void> {
 }
 
 export async function revealLocalFile(path: string): Promise<void> {
-  if (!isTauri()) {
+  if (!isTauri() || !isSafeLocalPath(path)) {
     return;
   }
 

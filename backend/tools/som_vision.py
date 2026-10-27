@@ -1240,10 +1240,9 @@ class SOMParser:
         if distance > self.settings.snapshot_reuse_threshold:
             return None
 
-        refreshed = replace(cached, created_at=time.time())
-        self.store.put(refreshed)
-        self._cached = refreshed
-        return refreshed
+        # Do not refresh created_at: repeated reuse would keep the snapshot
+        # alive forever and let a stale rectangle survive the whole turn.
+        return cached
 
     def _remember(
         self,

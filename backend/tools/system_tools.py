@@ -75,6 +75,113 @@ _INVOKE_EXPRESSION = re.compile(
     r"invoke-cimmethod|invoke-wmimethod|add-type)\b"
 )
 _MUTATING_PROPERTY = re.compile(r"(?<![=<>!])\.[A-Za-z_][\w]*\s*=(?!=)")
+_ENV_ASSIGNMENT = re.compile(r"(?i)\$env:[\w]+\s*=")
+
+# Read-only queries are allowlisted, not denylisted. Anything that is not a
+# Get-* cmdlet, one of these collectors/formatters, or a pure string/path
+# helper is refused. This closes the "python -c ..." / "mshta ..." / Out-File
+# hole that a verb-based denylist cannot cover.
+_READ_ONLY_EXTRA = {
+    "select-string",
+    "select-object",
+    "where-object",
+    "sort-object",
+    "foreach-object",
+    "measure-object",
+    "group-object",
+    "compare-object",
+    "out-string",
+    "convertto-json",
+    "convertto-csv",
+    "convertto-xml",
+    "convertfrom-json",
+    "convertfrom-csv",
+    "test-path",
+    "test-connection",
+    "test-netconnection",
+    "resolve-path",
+    "split-path",
+    "join-path",
+    "write-output",
+    "write-host",
+    "format-table",
+    "format-list",
+    "format-wide",
+    "format-custom",
+}
+_READ_ONLY_GET = re.compile(r"(?i)^get-[a-z][a-z0-9]*$")
+_READ_ONLY_FIRST_TOKEN = re.compile(r"[^\s|;]+")
+_FORBIDDEN_IN_BLOCK = re.compile(
+    r"(?i)(?:\b(?:invoke-|new-object|add-type|start-process|out-file|tee-object|"
+    r"set-item|set-content|remove-item|copy-item|move-item|rename-item|"
+    r"compress-archive|expand-archive|start-job|start-threadjob)\b|::|\$\(|`)"
+)
+
+
+def _strip_quoted(value: str) -> str:
+    """Remove quoted strings so operators inside patterns are not false hits."""
+    return re.sub(r"'(?:[^']|'')*'|\"(?:[^\"`]|\\.)*\"", " ", value)
+
+
+def _split_commands(command: str) -> list[str]:
+    """Split on top-level ; | newline without breaking script blocks."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote = ""
+    for char in command:
+        if quote:
+            buf.append(char)
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            buf.append(char)
+            continue
+        if char in "({[":
+            depth += 1
+        elif char in ")}]" and depth:
+            depth -= 1
+        if depth == 0 and char in ";|\n":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(char)
+    parts.append("".join(buf))
+    return parts
+
+
+def _allowlist_violation(command: str) -> str | None:
+    """Fail closed unless every pipeline stage is an allowlisted read cmdlet."""
+    raw = _strip_quoted(command)
+    if "&&" in raw or "||" in raw or "&" in raw:
+        return "command chaining"
+    if "`" in raw or "$(" in raw:
+        return "expression or subexpression execution"
+    if _ENV_ASSIGNMENT.search(raw):
+        return "environment assignment"
+    for part in _split_commands(command):
+        segment = part.strip()
+        if not segment:
+            continue
+        if segment[0] in "&.@$({[":
+            return "command invocation or expression"
+        match = _READ_ONLY_FIRST_TOKEN.match(segment)
+        if not match:
+            return "empty command segment"
+        token = match.group(0)
+        leaf = token.rsplit("\\", 1)[-1].casefold()
+        if leaf not in _READ_ONLY_EXTRA and not _READ_ONLY_GET.match(leaf):
+            return f"'{token}' is not an allowlisted read-only cmdlet"
+        block = _strip_quoted(segment)
+        if _FORBIDDEN_IN_BLOCK.search(block):
+            return "state-changing command inside a query"
+        if _MUTATING_METHOD.search(block) or _MUTATING_REDIRECT.search(block):
+            return "state-changing method or redirection"
+        if _MUTATING_PARAMETER.search(block):
+            return "file-writing parameter"
+    return None
 
 
 def _powershell_executable() -> str:
@@ -136,7 +243,64 @@ def _read_only_violation(command: str) -> str | None:
     for label, pattern in checks:
         if pattern.search(scan):
             return label
-    return None
+    return _allowlist_violation(command)
+
+
+def _bounded_communicate(
+    process: subprocess.Popen[str],
+    *,
+    timeout: float,
+    hard_limit_chars: int,
+) -> tuple[str, str, bool, bool]:
+    """Read both pipes with a hard memory cap; kill the tree when exceeded.
+
+    ``communicate()`` buffers everything before truncation, so a recursive
+    directory listing could exhaust RAM. This keeps at most ~4x the configured
+    output limit and stops the process once the cap is crossed.
+    """
+    import threading
+
+    out: list[str] = []
+    err: list[str] = []
+    size = [0]
+    capped = [False]
+
+    def reader(stream, sink: list[str]) -> None:
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    return
+                if size[0] >= hard_limit_chars:
+                    capped[0] = True
+                    if process.poll() is None:
+                        _kill_process_tree(process)
+                    continue
+                sink.append(chunk)
+                size[0] += len(chunk)
+        except (OSError, ValueError):
+            return
+
+    threads = [
+        threading.Thread(target=reader, args=(process.stdout, out), daemon=True),
+        threading.Thread(target=reader, args=(process.stderr, err), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process_tree(process)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+    return "".join(out), "".join(err), timed_out, capped[0]
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
@@ -221,17 +385,11 @@ def _run(
             f"Could not start PowerShell: {exc}",
         )
 
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_process_tree(process)
-        try:
-            stdout, stderr = process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            stdout, stderr = process.communicate()
+    stdout, stderr, timed_out, output_capped = _bounded_communicate(
+        process,
+        timeout=timeout,
+        hard_limit_chars=max_output_chars * 4 + 65_536,
+    )
 
     duration_ms = (time.perf_counter() - started) * 1000
     stdout, stdout_truncated = _truncate(stdout or "", max_output_chars)
@@ -255,6 +413,11 @@ def _run(
 
     if truncated:
         message += " Output was truncated."
+    if output_capped:
+        message += (
+            " The command produced far more output than the limit, so it was "
+            "stopped early; narrow the query."
+        )
 
     result = {
         "ok": ok,
@@ -267,6 +430,7 @@ def _run(
         "stderr_truncated": stderr_truncated,
         "truncated": truncated,
         "timeout": timed_out,
+        "output_capped": output_capped,
         "duration_ms": round(duration_ms, 1),
         "message": message,
     }

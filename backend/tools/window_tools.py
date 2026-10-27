@@ -137,6 +137,33 @@ def _matching_windows(window_title: str) -> list[Any]:
     return [window for _score, window in fuzzy]
 
 
+def _is_password_control(control: Any) -> bool:
+    """True for password edits (UIA flag or the classic ES_PASSWORD style)."""
+    try:
+        raw = getattr(getattr(control, "element_info", None), "element", None)
+        if raw is not None and int(getattr(raw, "CurrentIsPassword", 0) or 0):
+            return True
+    except Exception:  # noqa: BLE001 - COM reads can fail per node
+        pass
+    try:
+        checker = getattr(control, "is_password", None)
+        if callable(checker) and checker():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import ctypes
+
+        handle = int(getattr(control, "handle", 0) or 0)
+        if handle:
+            style = ctypes.windll.user32.GetWindowLongW(handle, -16)
+            if int(style) & 0x20:  # ES_PASSWORD
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def _window_text(window: Any) -> tuple[str, int]:
     """Walk a pywinauto UI Automation tree and collect readable text."""
     chunks: list[str] = []
@@ -166,6 +193,10 @@ def _window_text(window: Any) -> tuple[str, int]:
                 continue
         except Exception:  # noqa: BLE001 - some wrappers lack visibility info
             pass
+
+        if _is_password_control(control):
+            # Never read or store password fields, even though UIA can.
+            continue
 
         try:
             add(control.window_text())

@@ -224,9 +224,9 @@ export const FileReference = memo(function FileReference({
         <span
           role="button"
           tabIndex={0}
-          onClick={openFile}
+          onClick={() => setPreviewOpen(true)}
           onKeyDown={handleKeyDown}
-          aria-label={`Open ${name}`}
+          aria-label={`Preview ${name}`}
           className="file-ref-image group relative block w-44 max-w-full cursor-pointer overflow-hidden rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_12px_34px_-14px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
         >
           <span className="block aspect-[4/3] overflow-hidden bg-black/30">
@@ -282,9 +282,10 @@ export const FileReference = memo(function FileReference({
     <span
       role="button"
       tabIndex={0}
-      onClick={openFile}
+      onClick={revealFile}
       onKeyDown={handleKeyDown}
-      aria-label={`Open ${name}`}
+      aria-label={`Show ${name} in its folder`}
+      title="Show in folder"
       className="file-ref-card group flex w-full max-w-md min-w-0 cursor-pointer items-center gap-2.5 rounded-xl border border-white/[0.08] bg-[linear-gradient(150deg,#1e1e20,#171717)] px-3 py-2.5 text-left transition-all duration-200 ease-out hover:border-white/[0.18] hover:shadow-[0_10px_26px_-18px_rgba(0,0,0,0.9)] focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/50"
     >
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/[0.07] bg-white/[0.045] text-white/55 transition-colors duration-200 ease-out group-hover:border-violet-300/15 group-hover:text-violet-200/80">

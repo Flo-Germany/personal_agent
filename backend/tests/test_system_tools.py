@@ -36,8 +36,12 @@ def test_query_rejects_state_changing_commands() -> None:
         assert "run_powershell_action" in result["error"], command
 
 
-def test_query_truncates_large_output() -> None:
-    result = run_powershell_query("'-' * 20000", max_output_chars=1000)
+def test_query_truncates_large_output(tmp_path: Path) -> None:
+    big = tmp_path / "big.txt"
+    big.write_text("x" * 20000, encoding="utf-8")
+    result = run_powershell_query(
+        f"Get-Content -LiteralPath '{big}'", max_output_chars=1000
+    )
 
     assert result["ok"] is True
     assert result["truncated"] is True

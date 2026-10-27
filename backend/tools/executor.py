@@ -468,8 +468,48 @@ class ToolExecutor:
             ),
         }
 
+    def accepts_call(self, name: str, arguments: str) -> bool:
+        """True when this name/schema pair was offered to the model.
+
+        Used to validate tool calls the model emitted as text: a document that
+        happens to contain JSON must not be able to invoke a tool whose schema
+        was never sent, or smuggle unknown arguments past the schema.
+        """
+        import json as _json
+
+        if name not in self._handlers:
+            return False
+        try:
+            parsed = _json.loads(arguments or "{}")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        schema = self._parameters.get(name) or {}
+        required = schema.get("required") or []
+        if any(key not in parsed for key in required):
+            return False
+        allowed = set((schema.get("properties") or {}).keys())
+        if allowed and any(key not in allowed for key in parsed):
+            return False
+        return True
+
     def requires_confirmation(self, name: str) -> bool:
         return os_tools.requires_confirmation(name)
+
+    def shutdown(self) -> None:
+        """Stop global input hooks and restore any isolated window."""
+        guard = getattr(self.automation, "guard", None)
+        stop = getattr(guard, "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+        try:
+            self.workspace.release()
+        except Exception:  # noqa: BLE001
+            pass
 
     def reset_automation(self) -> None:
         """Clear the killswitch halt and stale SoM snapshots for a new turn."""

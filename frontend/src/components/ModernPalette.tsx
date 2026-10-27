@@ -12,6 +12,7 @@ import {
 
 import { hidePalette, onSummon, prettyShortcut, setPaletteHeight } from "../lib/desktop";
 import { shortModelName } from "../lib/display";
+import { CONTENT_ENTRANCE, EASE_IN, EASE_OUT, SPRING } from "../lib/motion";
 import type { DesktopBackdrop } from "../lib/desktop";
 import { QUICK_PROMPTS } from "../lib/prompts";
 import type { ChatMessage, Identity, PendingAction } from "../types";
@@ -321,9 +322,9 @@ export function ModernPalette({
 
       <motion.div
         className="palette-card relative flex min-h-0 flex-1 flex-col overflow-hidden"
-        initial={{ opacity: 0, y: -6 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+        initial={{ opacity: 0, y: -8, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={SPRING}
       >
         <header
           data-tauri-drag-region="deep"
@@ -355,7 +356,7 @@ export function ModernPalette({
                 aria-label="Stop"
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
+                exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.12, ease: EASE_IN } }}
                 className="flex size-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/60 transition-colors hover:text-white/90"
               >
                 <Square className="size-3" />
@@ -369,7 +370,7 @@ export function ModernPalette({
                 aria-label="Send"
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
+                exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.12, ease: EASE_IN } }}
                 className={`flex size-7 items-center justify-center rounded-full border transition-colors ${
                   value.trim() && canSend
                     ? "border-violet-300/30 bg-violet-300/20 text-violet-50"
@@ -426,10 +427,10 @@ export function ModernPalette({
           {expanded ? (
             <motion.div
               key="body"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16, ease: "easeOut" }}
+              initial={{ opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 2, transition: { duration: 0.13, ease: EASE_IN } }}
+              transition={{ duration: 0.18, ease: EASE_OUT }}
               className="flex min-h-0 flex-1 flex-col border-t border-white/[0.055]"
             >
               {settingsOpen ? (
@@ -458,6 +459,7 @@ export function ModernPalette({
                       <motion.p
                         initial={{ opacity: 0, y: -2 }}
                         animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.16, ease: EASE_OUT }}
                         className="truncate text-[11.5px] text-white/54"
                       >
                         {turn.question}
@@ -505,10 +507,10 @@ export function ModernPalette({
           ) : (
             <motion.div
               key="empty"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.14 }}
+              variants={CONTENT_ENTRANCE}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
               className="flex min-h-0 flex-1 items-center px-4"
             >
               <div className="flex flex-wrap gap-1.5">

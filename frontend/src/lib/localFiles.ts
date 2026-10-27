@@ -62,7 +62,7 @@ export function localPathFromHref(
 
     rest = rest.replace(/\//g, "\\");
 
-    if (/^[A-Za-z]:\\/.test(rest) || rest.startsWith("\\\\")) {
+    if (/^[A-Za-z]:\\/.test(rest)) {
       return rest;
     }
 
@@ -83,11 +83,15 @@ export function localPathFromHref(
     }
   }
 
-  if (value.startsWith("\\\\")) {
-    return value;
-  }
-
+  // UNC paths are rejected: revealing one makes Windows authenticate to a
+  // remote host (NTLM hash disclosure). The agent only handles local drives.
   return null;
+}
+
+/** True only for a local drive path (never UNC, never a device path). */
+export function isSafeLocalPath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  return /^[A-Za-z]:[\\/]/.test(path) && !path.startsWith("\\\\");
 }
 
 /** Accept a raw absolute path, optionally wrapped in quotes. */
@@ -103,10 +107,8 @@ export function localPathFromText(
     return localPathFromHref(value) ?? value.replace(/\//g, "\\");
   }
 
-  if (value.startsWith("\\\\")) {
-    return value;
-  }
-
+  // UNC paths are rejected: revealing one makes Windows authenticate to a
+  // remote host (NTLM hash disclosure). The agent only handles local drives.
   return null;
 }
 

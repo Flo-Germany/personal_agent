@@ -240,6 +240,9 @@ def create_app(
         try:
             yield
         finally:
+            shutdown_chat = getattr(chat_service, "shutdown", None)
+            if callable(shutdown_chat):
+                await run_in_threadpool(shutdown_chat)
             await run_in_threadpool(vision.stop)
             await run_in_threadpool(engine.shutdown)
 
@@ -531,6 +534,14 @@ def create_app(
             pending = chat_service.get_pending(payload.approval_id)
         except ApprovalNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        if pending.kind == "display":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This card is a display choice; use POST /chat/display."
+                ),
+            )
 
         events = chat_service.resume(payload.approval_id, payload.approved)
         return stream_response(

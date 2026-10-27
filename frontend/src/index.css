@@ -583,7 +583,7 @@ a:focus-visible {
 }
 
 .palette-card {
-  border-radius: 18px;
+  border-radius: 8px;
   border: 1px solid var(--compa-line);
   background-color: rgba(0, 0, 0, 0.88);
   box-shadow:
@@ -611,7 +611,7 @@ a:focus-visible {
   position: absolute;
   inset: 0;
   z-index: 3;
-  border-radius: 19px;
+  border-radius: 9px;
   pointer-events: none;
   box-shadow:
     0 0 0 1px rgba(167, 139, 250, 0.5),

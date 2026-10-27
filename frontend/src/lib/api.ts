@@ -297,18 +297,49 @@ export async function consumeEventStream(
     }
   };
 
+  let pendingCR = false;
   try {
     while (true) {
       if (signal?.aborted) {
         throw new DOMException("The stream was aborted.", "AbortError");
       }
 
-      const { value, done } = await reader.read();
+      // A terminal event means the turn is over even if the socket stays open.
+      // Without this, Approve/Deny remain disabled forever.
+      if (terminal) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The body may already be closed.
+        }
+        break;
+      }
+
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(
+            () => reject(new Error("The response stream stalled.")),
+            60_000,
+          );
+        }),
+      ]);
+      const { value, done } = chunk;
       if (done) {
         break;
       }
 
-      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let text = decoder.decode(value, { stream: true });
+      // Rejoin a CRLF that straddled two chunks before normalising.
+      if (pendingCR) {
+        text = "\r" + text;
+        pendingCR = false;
+      }
+      if (text.endsWith("\r")) {
+        text = text.slice(0, -1);
+        pendingCR = true;
+      }
+      buffer += text.replace(/\r\n/g, "\n");
 
       let boundary = buffer.indexOf("\n\n");
       while (boundary !== -1) {
@@ -320,7 +351,8 @@ export async function consumeEventStream(
     }
 
     if (!terminal) {
-      buffer += decoder.decode().replace(/\r\n/g, "\n").trim();
+      buffer += (pendingCR ? "\r" : "") + decoder.decode();
+      buffer = buffer.replace(/\r\n/g, "\n").trim();
       if (buffer) {
         processBlock(buffer);
       }

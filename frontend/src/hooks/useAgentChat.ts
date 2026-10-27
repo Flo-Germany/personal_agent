@@ -1064,6 +1064,13 @@ export function useAgentChat() {
     ],
   );
 
+  const appendNotice = useCallback(
+    (content: string) => {
+      addMessage("assistant", content);
+    },
+    [addMessage],
+  );
+
   const sendMessage = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -1156,7 +1163,8 @@ export function useAgentChat() {
         return;
       }
 
-      setPendingAction(null);
+      // Keep the card until the backend accepts the approval. A failed
+      // request must not destroy the only way to retry it.
       resetStreamingRefs();
       syncTaskStatus({
         state: approved ? "executing" : "cancelled",
@@ -1174,6 +1182,7 @@ export function useAgentChat() {
           approved,
           controller.signal,
         );
+        setPendingAction(null);
         const streamConversationId = response.headers.get(
           "X-Conversation-ID",
         );
@@ -1423,6 +1432,7 @@ export function useAgentChat() {
       clearChat,
       refresh,
       refreshIdentity,
+      appendNotice,
     }),
     [
       approve,
@@ -1438,6 +1448,7 @@ export function useAgentChat() {
       refresh,
       refreshIdentity,
       sendMessage,
+      appendNotice,
     ],
   );
 }

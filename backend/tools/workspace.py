@@ -250,8 +250,31 @@ class WorkspaceManager:
         self._lock = threading.Lock()
         self._items: dict[int, Workspace] = {}
         self._load()
+        self.restore_stale()
 
     # ------------------------------------------------------------ persistence
+    def restore_stale(self) -> int:
+        """Restore windows left isolated by a crash or a forced quit.
+
+        The handle and title must still match, so a recycled handle is never
+        captured or clicked on behalf of a new window.
+        """
+        restored = 0
+        for item in list(self._items.values()):
+            try:
+                if not _user32().IsWindow(item.hwnd):
+                    continue
+                if _window_text(item.hwnd).casefold() != item.title.casefold():
+                    continue
+                self.release(item.hwnd)
+                restored += 1
+            except Exception:  # noqa: BLE001 - keep restoring the rest
+                with self._lock:
+                    self._items.pop(item.hwnd, None)
+        if restored:
+            self._save()
+        return restored
+
     def _load(self) -> None:
         try:
             raw = STATE_PATH.read_text(encoding="utf-8")

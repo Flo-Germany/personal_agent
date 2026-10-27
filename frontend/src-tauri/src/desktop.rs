@@ -383,6 +383,20 @@ fn modern_position(window: &tauri::WebviewWindow, width: f64, height: f64) {
     }
 }
 
+/// Ask DWM to round the native window (and with it the Mica backdrop).
+///
+/// A `SetWindowRgn` window region clipped the backdrop correctly but crashed
+/// WebView2 on Windows 11 25H2, so this uses the documented DWM attribute and
+/// the CSS card radius is matched to the OS rounding instead.
+#[cfg(target_os = "windows")]
+fn round_window(window: &tauri::WebviewWindow, _radius_logical: f64) {
+    // Temporarily disabled to bisect a startup crash.
+    let _ = window;
+}
+
+#[cfg(not(target_os = "windows"))]
+fn round_window(_window: &tauri::WebviewWindow, _radius_logical: f64) {}
+
 pub fn apply_mode(app: &AppHandle, settings: &DesktopSettings) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -399,6 +413,7 @@ pub fn apply_mode(app: &AppHandle, settings: &DesktopSettings) -> Result<(), Str
             MODERN_COLLAPSED_HEIGHT
         };
         modern_position(&window, MODERN_WIDTH, height);
+        round_window(&window, 18.0);
         apply_vibrancy(&window, &settings.backdrop)
     } else {
         #[cfg(target_os = "windows")]
@@ -407,6 +422,7 @@ pub fn apply_mode(app: &AppHandle, settings: &DesktopSettings) -> Result<(), Str
         }
         let _ = window.set_size(LogicalSize::new(CLASSIC_WIDTH, CLASSIC_HEIGHT));
         let _ = window.center();
+        round_window(&window, 26.0);
         Ok(())
     }
 }
@@ -449,6 +465,7 @@ pub fn animate_palette_height(app: &AppHandle, target: f64) {
             let height = current + (target - current) * eased;
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_size(LogicalSize::new(MODERN_WIDTH, height));
+                round_window(&window, 18.0);
             }
             std::thread::sleep(Duration::from_millis(12));
         }
@@ -561,6 +578,24 @@ fn apply_settings(app: &AppHandle, incoming: DesktopSettings) -> Result<DesktopS
 }
 
 // -------------------------------------------------------------------- argv
+
+fn analyze_payload(path: &str) -> serde_json::Value {
+    let candidate = std::path::Path::new(path);
+    let exists = candidate.is_file();
+    let canonical = std::fs::canonicalize(candidate)
+        .ok()
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string()
+        });
+    serde_json::json!({
+        "path": path,
+        "exists": exists,
+        "canonical": canonical,
+    })
+}
 
 pub fn analyze_arg(args: &[String]) -> Option<String> {
     args.iter()
@@ -733,7 +768,7 @@ pub fn forward_args(app: &AppHandle, argv: &[String]) {
             *pending = Some(path.clone());
         }
         focus_main(app);
-        let _ = app.emit(EVENT_ANALYZE, path);
+        let _ = app.emit(EVENT_ANALYZE, analyze_payload(&path));
     } else {
         focus_main(app);
     }
@@ -959,12 +994,13 @@ pub fn show_main(app: AppHandle) {
 }
 
 #[tauri::command]
-pub fn take_pending_analyze(runtime: State<'_, DesktopRuntime>) -> Option<String> {
+pub fn take_pending_analyze(runtime: State<'_, DesktopRuntime>) -> Option<serde_json::Value> {
     runtime
         .pending_analyze
         .lock()
         .ok()
         .and_then(|mut value| value.take())
+        .map(|path| analyze_payload(&path))
 }
 
 #[tauri::command]
@@ -1065,6 +1101,21 @@ mod tests {
         let args = vec!["compa.exe".into(), "--analyze".into(), "\"C:\\a b\\c.txt\"".into()];
         assert_eq!(analyze_arg(&args).as_deref(), Some("C:\\a b\\c.txt"));
         assert_eq!(analyze_arg(&["compa.exe".into()]), None);
+    }
+
+    #[test]
+    fn analyze_payload_checks_the_path() {
+        let dir = std::env::temp_dir();
+        let file = dir.join(format!("compa-analyze-{}.txt", std::process::id()));
+        std::fs::write(&file, "hello").expect("temp file");
+        let payload = analyze_payload(&file.to_string_lossy());
+        assert_eq!(payload["exists"], true);
+        assert!(payload["canonical"].as_str().is_some());
+        assert_eq!(
+            analyze_payload(r"C:\definitely\missing\compa-file.txt")["exists"],
+            false
+        );
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

@@ -27,19 +27,29 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": {
           "requireLiteralLeadingDot": false,
-          "allow": ["**/*"]
+          "allow": [
+            "$APPLOCALDATA/**",
+            "$APPDATA/**",
+            "$PICTURE/**",
+            "$DOWNLOAD/**",
+            "$DOCUMENT/**",
+            "$DESKTOP/**"
+          ]
         }
-      }
+      },
+      "devCsp": "default-src 'self' http://localhost:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; img-src 'self' data: blob: asset: http://asset.localhost http://localhost:1420; font-src 'self' data: http://localhost:1420; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 ws://localhost:1420 http://localhost:1420; object-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "shortDescription": "Local personal AI desktop agent",
     "icon": [
       "icons/32x32.png",
@@ -56,7 +66,7 @@
   },
   "plugins": {
     "shell": {
-      "open": "[A-Za-z]:[\\\\/].*"
+      "open": "(?i)^[A-Za-z]:[\\\\/].*\\.(?:pdf|txt|md|markdown|log|csv|tsv|json|xml|ya?ml|ini|cfg|toml|docx?|xlsx?|pptx?|odt|ods|odp|rtf|epub|png|jpe?g|gif|webp|bmp|svg|ico|mp4|m4v|mov|webm|mkv|mp3|wav|flac|ogg|m4a|zip|7z|rar|tar|gz)$"
     }
   }
 }

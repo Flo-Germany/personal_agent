@@ -170,15 +170,40 @@ export async function setPaletteExpanded(expanded: boolean): Promise<void> {
   }
 }
 
-export async function takePendingAnalyze(): Promise<string | null> {
+export type AnalyzeRequest = {
+  path: string;
+  exists: boolean;
+  canonical?: string | null;
+};
+
+/** Path from `--analyze`, with existence checked by the shell. */
+export async function takePendingAnalyze(): Promise<AnalyzeRequest | null> {
   if (!isDesktop()) {
     return null;
   }
   try {
-    return await invoke<string | null>("take_pending_analyze");
+    const value = await invoke<AnalyzeRequest | string | null>(
+      "take_pending_analyze",
+    );
+    return normalizeAnalyze(value);
   } catch {
     return null;
   }
+}
+
+function normalizeAnalyze(
+  value: AnalyzeRequest | string | null | undefined,
+): AnalyzeRequest | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    return { path: value, exists: true, canonical: value };
+  }
+  if (typeof value.path !== "string" || !value.path) return null;
+  return {
+    path: value.path,
+    exists: Boolean(value.exists),
+    canonical: value.canonical ?? value.path,
+  };
 }
 
 export async function recordFrameStats(stats: {
@@ -245,10 +270,11 @@ export function onSummon(handler: () => void) {
   return on(EVENTS.summon, () => handler());
 }
 
-export function onAnalyze(handler: (path: string) => void) {
+export function onAnalyze(handler: (request: AnalyzeRequest) => void) {
   return on(EVENTS.analyze, (payload) => {
-    if (typeof payload === "string" && payload) {
-      handler(payload);
+    const request = normalizeAnalyze(payload as AnalyzeRequest | string);
+    if (request) {
+      handler(request);
     }
   });
 }

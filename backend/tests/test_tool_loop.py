@@ -316,7 +316,8 @@ def test_multiple_modifications_share_one_approval(tmp_path: Path) -> None:
     action = action_event(paused)
 
     assert len(action["actions"]) == 2
-    assert action["auto_approve_remaining"] is True
+    # One card covers exactly the calls it shows; later steps ask again.
+    assert action["auto_approve_remaining"] is False
     assert not first.exists() and not second.exists()
 
     resumed = list(service.resume(action["approval_id"], True))
@@ -582,10 +583,16 @@ def test_approval_covers_remaining_steps_in_the_same_turn(tmp_path: Path) -> Non
 
     resumed = list(service.resume(action["approval_id"], True))
 
+    # The already-approved folder is created, but the second mutating step is
+    # a new decision and must not inherit the first approval.
+    second = action_event(resumed)
     assert folder.is_dir()
+    assert not note.exists()
+    assert second["actions"][0]["tool"] == "create_file"
+
+    final = list(service.resume(second["approval_id"], True))
     assert note.read_text(encoding="utf-8") == "hello"
-    assert final_event(resumed)["reply"] == "Created the folder and the note."
-    assert not any(event["type"] == "action_required" for event in resumed)
+    assert final_event(final)["reply"] == "Created the folder and the note."
     tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
     assert len(tool_messages) == 2
     assert all(json.loads(m["content"])["ok"] for m in tool_messages)
@@ -640,11 +647,19 @@ def test_auto_approval_does_not_repeat_an_action(tmp_path: Path) -> None:
     action = action_event(paused)
     resumed = list(service.resume(action["approval_id"], True))
 
-    assert final_event(resumed)["reply"] == "Done."
+    # Repeating the action is a new decision, so it asks again instead of
+    # silently re-running under the first approval.
+    second = action_event(resumed)
+    assert second["actions"][0]["tool"] == "create_folder"
+    final = list(service.resume(second["approval_id"], True))
+
+    assert final_event(final)["reply"] == "Done."
     tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
     assert len(tool_messages) == 2
     assert json.loads(tool_messages[0]["content"])["ok"] is True
-    assert "already ran" in json.loads(tool_messages[1]["content"])["error"]
+    # The repeat ran only after its own approval; idempotent tools may still
+    # report success, but the first card never authorised it.
+    assert len(tool_messages) == 2
 
 
 def test_auto_approval_preserves_mixed_call_order(tmp_path: Path) -> None:
@@ -673,7 +688,11 @@ def test_auto_approval_preserves_mixed_call_order(tmp_path: Path) -> None:
     action = action_event(paused)
     resumed = list(service.resume(action["approval_id"], True))
 
-    assert final_event(resumed)["reply"] == "Created and read it."
+    second = action_event(resumed)
+    assert second["actions"][0]["tool"] == "create_file"
+    final = list(service.resume(second["approval_id"], True))
+
+    assert final_event(final)["reply"] == "Created and read it."
     tool_messages = [m for m in store.load(conversation_id) if m["role"] == "tool"]
     read_result = next(
         json.loads(message["content"])

@@ -25,6 +25,7 @@ import io
 import json
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Protocol, Sequence
@@ -1415,6 +1416,13 @@ class VisionService:
         context_window: int | None = None,
     ) -> str:
         base = self.ollama_base_url.rstrip("/")
+        host = urlparse(base).hostname or ""
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise RuntimeError(
+                "Screen captures are only sent to a local vision model. "
+                f"ollama.base_url points at {host!r}; set it to 127.0.0.1 or "
+                "use the native llama.cpp engine."
+            )
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
         endpoint = f"{base}/api/chat"
