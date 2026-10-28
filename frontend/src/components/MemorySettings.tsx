@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   BrainCircuit,
   Check,
+  Database,
   FileText,
   Plus,
   RefreshCw,
@@ -12,9 +13,12 @@ import {
 
 import {
   clearKnowledge,
+  clearSemanticMemory,
   fetchKnowledge,
+  fetchSemanticStatus,
   saveKnowledge,
 } from "../lib/settingsApi";
+import type { SemanticStatus } from "../lib/settingsApi";
 import {
   addKnowledgeFact,
   parseKnowledge,
@@ -23,13 +27,17 @@ import {
 import { shortModelName } from "../lib/display";
 import type { Identity } from "../types";
 import { AgentAvatar } from "./AgentAvatar";
+import type { EditableController } from "./SettingsPanes";
 import {
   Badge,
   DangerButton,
+  NumberField,
   PrimaryButton,
   QuietButton,
   SettingsCard,
   SettingsNote,
+  SettingsRow,
+  Switch,
 } from "./SettingsUi";
 
 function IdentityCard({ identity }: { identity: Identity | null }) {
@@ -50,7 +58,13 @@ function IdentityCard({ identity }: { identity: Identity | null }) {
   );
 }
 
-export function MemorySettings({ identity }: { identity: Identity | null }) {
+export function MemorySettings({
+  identity,
+  editable,
+}: {
+  identity: Identity | null;
+  editable: EditableController;
+}) {
   const [content, setContent] = useState<string | null>(null);
   const [saved, setSaved] = useState("");
   const [path, setPath] = useState("");
@@ -61,6 +75,10 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
   const [section, setSection] = useState("");
   const [fact, setFact] = useState("");
   const [resetArmed, setResetArmed] = useState(false);
+  const [semantic, setSemantic] = useState<SemanticStatus | null>(null);
+  const [semanticError, setSemanticError] = useState("");
+  const [semanticBusy, setSemanticBusy] = useState(false);
+  const [forgetArmed, setForgetArmed] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -81,7 +99,16 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
 
   useEffect(() => {
     void load();
+    void loadSemantic();
   }, []);
+
+  useEffect(() => {
+    if (!forgetArmed) {
+      return;
+    }
+    const timer = window.setTimeout(() => setForgetArmed(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [forgetArmed]);
 
   useEffect(() => {
     if (!resetArmed) {
@@ -105,6 +132,37 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
     section && parsed.sections.some((item) => item.title === section)
       ? section
       : (parsed.sections[0]?.title ?? "");
+
+  const loadSemantic = async () => {
+    try {
+      const status = await fetchSemanticStatus();
+      setSemantic(status);
+      setSemanticError(status.last_error || "");
+    } catch (cause) {
+      setSemanticError(
+        cause instanceof Error ? cause.message : "Could not read semantic memory",
+      );
+    }
+  };
+
+  const forgetSemantic = async () => {
+    if (!forgetArmed) {
+      setForgetArmed(true);
+      return;
+    }
+    setSemanticBusy(true);
+    try {
+      await clearSemanticMemory();
+      await loadSemantic();
+      setForgetArmed(false);
+    } catch (cause) {
+      setSemanticError(
+        cause instanceof Error ? cause.message : "Could not clear the index",
+      );
+    } finally {
+      setSemanticBusy(false);
+    }
+  };
 
   const save = async () => {
     if (content === null) {
@@ -315,6 +373,97 @@ export function MemorySettings({ identity }: { identity: Identity | null }) {
             {error}
           </p>
         )}
+      </SettingsCard>
+
+      <SettingsCard
+        title="Semantic memory"
+        description="Local vector recall over notes, learned facts and solved problems."
+        action={
+          <Badge tone={semantic?.ready ? "positive" : "neutral"}>
+            <Database className="size-2.5" />
+            {semantic ? `${semantic.points} chunks` : "Checking?"}
+          </Badge>
+        }
+      >
+        <SettingsRow
+          label="Enable semantic recall"
+          detail="Retrieves related memories with Qdrant and MiniLM before each reply. Everything stays on this PC."
+        >
+          <Switch
+            label="Enable semantic recall"
+            checked={editable.settings?.semantic_enabled ?? false}
+            onChange={(next) => {
+              void editable
+                .patch({ semantic_enabled: next })
+                .then(() => window.setTimeout(() => void loadSemantic(), 300));
+            }}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Results per turn"
+          detail={
+            semantic
+              ? `Minimum similarity ${semantic.min_score.toFixed(2)} ? ${semantic.embedder}`
+              : "How many memory snippets may be injected."
+          }
+        >
+          <NumberField
+            label="Results per turn"
+            value={editable.settings?.semantic_top_k ?? 5}
+            min={1}
+            max={20}
+            onCommit={(value) =>
+              void editable.patch({ semantic_top_k: value ?? 5 })
+            }
+          />
+        </SettingsRow>
+
+        {semantic && (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-xl border border-fg/[0.07] bg-fg/[0.02] px-2.5 py-2">
+              <p className="text-[9px] tracking-[0.1em] text-fg/68 uppercase">
+                Index
+              </p>
+              <p className="mt-0.5 truncate text-[11px] text-fg/85">
+                {semantic.ready
+                  ? `${semantic.points} chunks ? ${semantic.dimension ?? "?"}d`
+                  : "Not built yet"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-fg/[0.07] bg-fg/[0.02] px-2.5 py-2">
+              <p className="text-[9px] tracking-[0.1em] text-fg/68 uppercase">
+                Storage
+              </p>
+              <p
+                className="mt-0.5 truncate font-mono text-[10px] text-fg/72"
+                title={semantic.storage_path}
+              >
+                {semantic.collection || "qdrant"}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {semantic?.using_fallback && (
+          <SettingsNote tone="warning">
+            The embedding model could not load, so Compa is using the offline
+            feature-hashing fallback. Recall quality is lower.
+          </SettingsNote>
+        )}
+        {semanticError && <SettingsNote tone="danger">{semanticError}</SettingsNote>}
+
+        <div className="flex flex-wrap gap-2">
+          <QuietButton onClick={() => void loadSemantic()} disabled={semanticBusy}>
+            <span className="flex items-center gap-1.5">
+              <RefreshCw className={`size-3 ${semanticBusy ? "animate-spin" : ""}`} />
+              Refresh
+            </span>
+          </QuietButton>
+          <DangerButton onClick={() => void forgetSemantic()} disabled={semanticBusy}>
+            {forgetArmed ? "Click again to erase index" : "Erase semantic index"}
+          </DangerButton>
+        </div>
       </SettingsCard>
     </>
   );

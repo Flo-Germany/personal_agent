@@ -191,6 +191,47 @@ class MemorySettings(BaseModel):
         return resolve_data_path(self.knowledge_base_path)
 
 
+class SemanticSettings(BaseModel):
+    """Local Qdrant-backed long-term memory (Phase 29)."""
+
+    enabled: bool = True
+    # Embedded Qdrant mode stores everything in this folder; no server binary.
+    storage_path: Path = Path("memory/qdrant")
+    collection: str = Field(
+        default="compa_memory",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    device: Literal["cpu", "cuda", "auto"] = "cpu"
+    top_k: int = Field(default=5, ge=1, le=20)
+    min_score: float = Field(default=0.28, ge=0.0, le=1.0)
+    chunk_chars: int = Field(default=800, ge=200, le=4000)
+    max_context_chars: int = Field(default=2400, ge=200, le=12_000)
+    ingest_chats: bool = True
+    ingest_min_chars: int = Field(default=40, ge=0, le=2000)
+
+    def resolved_storage_path(self) -> Path:
+        return resolve_data_path(self.storage_path)
+
+
+class BridgeSettings(BaseModel):
+    """LAN WebSocket bridge for the Android companion (Phase 30)."""
+
+    # Off by default: enabling exposes a narrow, token-authenticated socket on
+    # every network interface, so it is an explicit user choice.
+    enabled: bool = False
+    host: str = Field(default="0.0.0.0", min_length=1, max_length=64)
+    port: int = Field(default=8765, ge=1024, le=65535)
+    token_file: Path = Path("bridge-token.txt")
+    notify_finals: bool = True
+    poll_retention: int = Field(default=200, ge=10, le=2000)
+
+    def resolved_token_path(self) -> Path:
+        return resolve_data_path(self.token_file)
+
+
 class ToolSettings(BaseModel):
     max_read_bytes: int = Field(default=1_000_000, ge=1)
     max_search_results: int = Field(default=50, ge=1, le=200)
@@ -358,6 +399,8 @@ class Settings(BaseModel):
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    semantic: SemanticSettings = Field(default_factory=SemanticSettings)
+    bridge: BridgeSettings = Field(default_factory=BridgeSettings)
     tools: ToolSettings = Field(default_factory=ToolSettings)
     vision: VisionSettings = Field(default_factory=VisionSettings)
     automation: AutomationSettings = Field(default_factory=AutomationSettings)

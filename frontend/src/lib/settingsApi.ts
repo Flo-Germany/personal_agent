@@ -15,6 +15,9 @@ export type EditableSettings = {
   vision_max_width: number;
   uia_depth: number;
   allow_foreground_fallback: boolean;
+  semantic_enabled: boolean;
+  semantic_top_k: number;
+  bridge_enabled: boolean;
   config_path: string;
   engine_type: string;
   runtime_model: string;
@@ -69,6 +72,67 @@ export async function saveEditableSettings(
     settings: data.settings,
     restartRequired: Boolean(data.restart_required),
   };
+}
+
+export type SemanticStatus = {
+  enabled: boolean;
+  ready: boolean;
+  collection: string;
+  storage_path: string;
+  embedding_model: string;
+  embedder: string;
+  using_fallback: boolean;
+  dimension: number | null;
+  points: number;
+  top_k: number;
+  min_score: number;
+  last_error: string;
+};
+
+export type SemanticHit = {
+  id: string;
+  score: number;
+  text: string;
+  category: string;
+  source: string;
+  created_at: string;
+};
+
+export async function fetchSemanticStatus(): Promise<SemanticStatus> {
+  return request<SemanticStatus>("/memory/semantic/status");
+}
+
+export async function searchSemantic(
+  query: string,
+  limit = 5,
+): Promise<SemanticHit[]> {
+  const data = await request<{ ok: boolean; results: SemanticHit[] }>(
+    "/memory/semantic/search",
+    { method: "POST", body: JSON.stringify({ query, limit }) },
+  );
+  return data.results;
+}
+
+export async function clearSemanticMemory(): Promise<void> {
+  await request<{ ok: boolean }>("/memory/semantic/clear", { method: "POST" });
+}
+
+export type BridgeStatus = {
+  enabled: boolean;
+  running: boolean;
+  host: string;
+  port: number;
+  addresses: string[];
+  urls: string[];
+  clients: number;
+  cursor: number;
+  token: string;
+  error: string;
+  version: number;
+};
+
+export async function fetchBridgeStatus(): Promise<BridgeStatus> {
+  return request<BridgeStatus>("/bridge/status");
 }
 
 export async function restartEngine(): Promise<void> {

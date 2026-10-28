@@ -50,12 +50,24 @@ engine-data/
 .env.*
 !.env.example
 
+# --- Android companion ---
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+
 # --- Local memory / databases ---
 memory/*
 !memory/.gitkeep
 *.db
 *.sqlite
 *.sqlite3
+
+# --- Local bridge pairing tokens ---
+bridge-token.txt
+phase30-token.txt
 
 # --- Logs ---
 *.log

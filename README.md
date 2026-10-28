@@ -1186,6 +1186,33 @@ packaged app instead. The architecture, scoring matrix, restart mechanism, and
 honest limits are documented in
 [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
 
+## Phase 29: semantic long-term memory
+
+Qdrant runs embedded inside the backend and `sentence-transformers`
+(`all-MiniLM-L6-v2`) produces embeddings locally. Facts learned from chats,
+completed exchanges and manual notes become points in
+`data/memory/qdrant`; before each model call the top-k relevant snippets are
+appended to the system prompt as an invisible `<memory_context>` block. The
+pipeline never calls a hosted API. See
+[docs/semantic-memory.md](docs/semantic-memory.md) for settings, API and the
+five-turn verification gate.
+
+## Phase 30: Android companion
+
+The native Kotlin/Compose app in `android/` pairs with the desktop over a
+token-authenticated WebSocket on `0.0.0.0:8765`. It sends tasks and approvals,
+shows desktop results as native notifications, keeps the socket alive in a
+foreground service, falls back to WorkManager polling, and offers the Android
+battery-optimisation exemption. The bridge is off by default and is enabled in
+**Settings -> System & Permissions -> Mobile bridge**. Allow Python on private
+networks when Windows Firewall asks. See
+[docs/mobile-bridge.md](docs/mobile-bridge.md) for the protocol and build steps.
+
+```powershell
+cd android
+.\gradlew.bat testDebugUnitTest assembleDebug
+```
+
 ## Frontend
 
 Ollama must be running. The desktop app starts the FastAPI backend itself as a

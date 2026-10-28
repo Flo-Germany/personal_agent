@@ -908,10 +908,12 @@ class ChatService:
         tools: ToolExecutor | None = None,
         client: Any | None = None,
         pending_store: PendingActionStore | None = None,
+        semantic: Any | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
         self._knowledge = knowledge
+        self._semantic = semantic
         self._tools = tools or ToolExecutor(
             settings.tools,
             automation=settings.automation,
@@ -985,6 +987,10 @@ class ChatService:
     def set_client(self, client: Any) -> None:
         """Hot-swap the inference transport after an engine switch."""
         self._client = client
+
+    def set_semantic(self, semantic: Any | None) -> None:
+        """Attach or replace the local semantic-memory service."""
+        self._semantic = semantic
 
     # ------------------------------------------------------------- interrupt
     def _cancel_event(self, conversation_id: str) -> threading.Event:
@@ -1197,10 +1203,26 @@ class ChatService:
             self._begin_turn(conversation_id)
 
             try:
-                yield from self._stream_with_improvement(
+                for event in self._stream_with_improvement(
                     conversation_id,
                     self._run_segment(conversation_id),
-                )
+                ):
+                    if (
+                        event.get("type") == "final"
+                        and self._semantic is not None
+                    ):
+                        try:
+                            self._semantic.submit_exchange(
+                                message,
+                                str(event.get("reply") or ""),
+                                conversation_id=conversation_id,
+                            )
+                        except Exception:  # noqa: BLE001 - memory is best effort
+                            logger.debug(
+                                "Semantic exchange ingestion failed",
+                                exc_info=True,
+                            )
+                    yield event
             except TurnCancelled:
                 self._finalize_cancelled_turn(conversation_id)
                 yield {
@@ -2677,6 +2699,11 @@ class ChatService:
         added = self._knowledge.add_facts(learned.facts, deletions)
         if added:
             logger.info("Learned %d new fact(s) about the user", len(added))
+            if self._semantic is not None:
+                try:
+                    self._semantic.ingest_facts(added, source="learning")
+                except Exception:  # noqa: BLE001 - memory is best effort
+                    logger.debug("Semantic fact ingestion failed", exc_info=True)
         return added
 
     # ------------------------------------------------------------------ LLM
@@ -3821,8 +3848,13 @@ class ChatService:
         history: list[dict[str, Any]],
         requested_language: str | None = None,
         now: datetime | None = None,
+        memory_context: str = "",
     ) -> str:
-        """Build the system prompt exactly as the chat request will send it."""
+        """Build the system prompt exactly as the chat request will send it.
+
+        ``memory_context`` is appended after the cached base prompt so the
+        stable prefix (identity, tools, knowledge) keeps its prompt cache.
+        """
         if requested_language is None:
             requested_language = detect_requested_language(history)
 
@@ -3832,7 +3864,8 @@ class ChatService:
             with self._prompt_cache_guard:
                 cached = self._prompt_cache
             if cached is not None and cached[0] == key:
-                return cached[1]
+                base = cached[1]
+                return f"{base}\n\n{memory_context}" if memory_context else base
 
         prompt = build_system_prompt(
             self._settings,
@@ -3843,7 +3876,7 @@ class ChatService:
         if key is not None:
             with self._prompt_cache_guard:
                 self._prompt_cache = (key, prompt)
-        return prompt
+        return f"{prompt}\n\n{memory_context}" if memory_context else prompt
 
     def _build_messages(
         self,
@@ -3852,7 +3885,27 @@ class ChatService:
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
         requested_language = detect_requested_language(history)
-        system_prompt = self._system_prompt(history, requested_language, now=now)
+        memory_context = ""
+        if self._semantic is not None:
+            query = next(
+                (
+                    str(item.get("content") or "")
+                    for item in reversed(history)
+                    if item.get("role") == "user"
+                ),
+                "",
+            )
+            if len(query.strip()) >= 12:
+                try:
+                    memory_context = self._semantic.context_for(query)
+                except Exception:  # noqa: BLE001 - retrieval must not break chat
+                    logger.debug("Semantic retrieval failed", exc_info=True)
+        system_prompt = self._system_prompt(
+            history,
+            requested_language,
+            now=now,
+            memory_context=memory_context,
+        )
         fold_system = self._system_prompt_in_user_message()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},

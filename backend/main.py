@@ -27,8 +27,10 @@ from agent.approvals import ApprovalError, ApprovalNotFound
 from agent.chat import ChatService, ConfirmationRequired, LLMError
 from agent.ollama_client import NativeOllamaClient
 from agent.prompt import load_personality
+from bridge import LanBridge
 from engine import EngineService, get_entry
 from memory.knowledge import KnowledgeBase
+from memory.semantic import SemanticMemory
 from memory.store import ConversationStore
 from settings import DATA_ROOT, DEFAULT_CONFIG_PATH, Settings, load_settings
 from tools.executor import ToolExecutor
@@ -162,10 +164,30 @@ class EditableSettings(BaseModel):
     vision_max_width: int | None = Field(default=None, ge=640, le=3840)
     uia_depth: int | None = Field(default=None, ge=2, le=60)
     allow_foreground_fallback: bool | None = None
+    semantic_enabled: bool | None = None
+    semantic_top_k: int | None = Field(default=None, ge=1, le=20)
+    bridge_enabled: bool | None = None
 
 
 class KnowledgeContent(BaseModel):
     content: str = Field(default="", max_length=200_000)
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    limit: int | None = Field(default=None, ge=1, le=20)
+
+
+class SemanticIngestRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    category: str = Field(default="note", max_length=80)
+    source: str = Field(default="manual", max_length=40)
+
+
+class BridgeNotifyRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(default="", max_length=2000)
+    kind: str = Field(default="info", max_length=20)
 
 
 def _editable_snapshot(settings: Settings, config_file: Path) -> dict[str, Any]:
@@ -184,6 +206,9 @@ def _editable_snapshot(settings: Settings, config_file: Path) -> dict[str, Any]:
         "vision_max_width": settings.automation.screenshot_max_width,
         "uia_depth": settings.automation.max_element_depth,
         "allow_foreground_fallback": settings.automation.allow_foreground_fallback,
+        "semantic_enabled": settings.semantic.enabled,
+        "semantic_top_k": settings.semantic.top_k,
+        "bridge_enabled": settings.bridge.enabled,
         "config_path": str(config_file),
         "engine_type": settings.engine.type,
         "runtime_model": settings.runtime_model,
@@ -267,6 +292,8 @@ def create_app(
     vision_service: VisionService | None = None,
     engine_service: EngineService | None = None,
     config_path: Path | None = None,
+    semantic_service: SemanticMemory | None = None,
+    bridge_service: LanBridge | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     config_file = config_path or DEFAULT_CONFIG_PATH
@@ -276,6 +303,11 @@ def create_app(
     knowledge = KnowledgeBase(settings.memory.resolved_knowledge_path())
     knowledge.ensure_file()
     owned_chat_service = chat_service is None
+    semantic = semantic_service
+    if semantic is None and owned_chat_service:
+        # The service is lazy: no model load or Qdrant file is touched until
+        # the first search/ingest, and settings can disable it at runtime.
+        semantic = SemanticMemory(settings.semantic)
     engine = engine_service or EngineService(
         settings.engine, DATA_ROOT / "engine-data"
     )
@@ -321,7 +353,16 @@ def create_app(
                 automation=settings.automation,
             ),
             client=engine_client or ollama_client,
+            semantic=semantic,
         )
+    elif semantic is not None:
+        setter = getattr(chat_service, "set_semantic", None)
+        if callable(setter):
+            setter(semantic)
+
+    bridge = bridge_service
+    if bridge is None and settings.bridge.enabled:
+        bridge = LanBridge(settings.bridge, chat_service, store)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -335,6 +376,14 @@ def create_app(
                 name="parent-watchdog",
                 daemon=True,
             ).start()
+        if semantic is not None:
+            threading.Thread(
+                target=semantic.warm_up,
+                name="semantic-warmup",
+                daemon=True,
+            ).start()
+        if bridge is not None:
+            bridge.start()
         if owned_chat_service and settings.ollama.warmup_on_startup:
             # Load the model and prefill the stable system/tool prefix in the
             # background so the first real message does not pay an 8-12 second
@@ -350,6 +399,10 @@ def create_app(
             shutdown_chat = getattr(chat_service, "shutdown", None)
             if callable(shutdown_chat):
                 await run_in_threadpool(shutdown_chat)
+            if bridge is not None:
+                await run_in_threadpool(bridge.stop)
+            if semantic is not None:
+                await run_in_threadpool(semantic.shutdown)
             await run_in_threadpool(vision.stop)
             await run_in_threadpool(engine.shutdown)
 
@@ -361,6 +414,8 @@ def create_app(
     )
     app.state.vision = vision
     app.state.engine = engine
+    app.state.semantic = semantic
+    app.state.bridge = bridge
 
     # The Tauri webview and Vite dev server are the only allowed origins.
     # PUT and PATCH are required by the settings and knowledge endpoints; when
@@ -387,6 +442,19 @@ def create_app(
                 async for event in iterate_in_threadpool(events):
                     if event.get("type") == "final":
                         state["final_seen"] = True
+                    if bridge is not None and event.get("type") in {
+                        "final",
+                        "error",
+                        "action_required",
+                        "display_required",
+                        "cancelled",
+                    }:
+                        if event.get("type") != "final" or (
+                            settings.bridge.notify_finals
+                        ):
+                            bridge.broadcast(
+                                {**event, "origin": "desktop"}
+                            )
                     yield _sse(event)
             except Exception:  # noqa: BLE001 - headers are already sent
                 logger.exception(
@@ -472,6 +540,7 @@ def create_app(
             "gpu_layers",
             "vram_override_gb",
             "kv_cache",
+            "bridge_enabled",
         }
         restart_required = bool(restart_fields & set(changes))
 
@@ -513,6 +582,12 @@ def create_app(
             settings.automation.allow_foreground_fallback = bool(
                 changes["allow_foreground_fallback"]
             )
+        if changes.get("semantic_enabled") is not None:
+            settings.semantic.enabled = bool(changes["semantic_enabled"])
+        if changes.get("semantic_top_k") is not None:
+            settings.semantic.top_k = int(changes["semantic_top_k"])
+        if changes.get("bridge_enabled") is not None:
+            settings.bridge.enabled = bool(changes["bridge_enabled"])
 
         try:
             config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -579,6 +654,72 @@ def create_app(
                 status_code=500, detail=f"Could not reset the knowledge base: {exc}"
             ) from exc
         return {"ok": True, "content": knowledge.read(), "path": str(path)}
+
+    @app.get("/memory/semantic/status")
+    async def semantic_status() -> dict[str, Any]:
+        if semantic is None:
+            return {
+                "enabled": False,
+                "ready": False,
+                "points": 0,
+                "last_error": "Semantic memory is not attached to this app.",
+            }
+        return await run_in_threadpool(semantic.status)
+
+    @app.post("/memory/semantic/search")
+    async def semantic_search(payload: SemanticSearchRequest) -> dict[str, Any]:
+        if semantic is None:
+            return {"ok": True, "results": []}
+        results = await run_in_threadpool(
+            semantic.search, payload.query, limit=payload.limit
+        )
+        return {"ok": True, "results": results}
+
+    @app.post("/memory/semantic/ingest")
+    async def semantic_ingest(payload: SemanticIngestRequest) -> dict[str, Any]:
+        if semantic is None:
+            raise HTTPException(status_code=409, detail="Semantic memory disabled")
+        stored = await run_in_threadpool(
+            semantic.ingest,
+            payload.text,
+            category=payload.category,
+            source=payload.source,
+        )
+        return {"ok": True, "chunks": stored}
+
+    @app.post("/memory/semantic/clear")
+    async def semantic_clear() -> dict[str, Any]:
+        if semantic is None:
+            raise HTTPException(status_code=409, detail="Semantic memory disabled")
+        await run_in_threadpool(semantic.clear)
+        return {"ok": True}
+
+    @app.get("/bridge/status")
+    async def bridge_status() -> dict[str, Any]:
+        if bridge is None:
+            return {
+                "enabled": settings.bridge.enabled,
+                "running": False,
+                "host": settings.bridge.host,
+                "port": settings.bridge.port,
+                "addresses": [],
+                "urls": [],
+                "clients": 0,
+                "cursor": 0,
+                "token": "",
+                "error": "",
+                "version": 1,
+            }
+        return bridge.status()
+
+    @app.post("/bridge/notify")
+    async def bridge_notify(payload: BridgeNotifyRequest) -> dict[str, Any]:
+        if bridge is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Enable the mobile bridge and restart the backend first.",
+            )
+        return bridge.notify(payload.title, payload.body, payload.kind)
 
     @app.get("/diagnostics/config")
     async def diagnostics_config() -> dict[str, Any]:

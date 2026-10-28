@@ -252,7 +252,7 @@ function Pane({
     case "general":
       return <GeneralSettings editable={editable} desktop={desktop} />;
     case "memory":
-      return <MemorySettings identity={identity} />;
+      return <MemorySettings identity={identity} editable={editable} />;
     case "appearance":
       return <AppearanceSettings desktop={desktop} />;
     case "system":

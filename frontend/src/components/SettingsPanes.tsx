@@ -2,16 +2,25 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Activity,
+  Copy,
+  Eye,
+  EyeOff,
   Gauge,
   Info,
   Layers,
+  Radio,
+  RefreshCw,
   RotateCw,
   Sparkles,
 } from "lucide-react";
 
 import type { DesktopSettings, DesktopState } from "../lib/desktop";
-import { restartEngine } from "../lib/settingsApi";
-import type { EditablePatch, EditableSettings } from "../lib/settingsApi";
+import { fetchBridgeStatus, restartEngine } from "../lib/settingsApi";
+import type {
+  BridgeStatus,
+  EditablePatch,
+  EditableSettings,
+} from "../lib/settingsApi";
 import { DesktopSettingsSection } from "./DesktopSettings";
 import {
   Badge,
@@ -385,6 +394,49 @@ export function SystemSettings({
   editable: EditableController;
   desktop: DesktopController;
 }) {
+  const [bridge, setBridge] = useState<BridgeStatus | null>(null);
+  const [bridgeError, setBridgeError] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const loadBridge = async () => {
+    try {
+      const status = await fetchBridgeStatus();
+      setBridge(status);
+      setBridgeError(status.error || "");
+    } catch (cause) {
+      setBridgeError(
+        cause instanceof Error ? cause.message : "Could not read bridge status",
+      );
+    }
+  };
+
+  useEffect(() => {
+    void loadBridge();
+    const timer = window.setInterval(() => void loadBridge(), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copyToken = async () => {
+    if (!bridge?.token) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(bridge.token);
+      setCopied(true);
+    } catch {
+      setBridgeError("Clipboard access was refused by the webview.");
+    }
+  };
+
   return (
     <>
       <DesktopSettingsSection
@@ -470,6 +522,88 @@ export function SystemSettings({
                 }
               />
             </SettingsRow>
+          </SettingsCard>
+
+          <SettingsCard
+            title="Mobile bridge"
+            description="Compa for Android talks to this PC over your home Wi-Fi."
+            action={
+              <Badge tone={bridge?.running ? "positive" : "neutral"}>
+                <Radio className="size-2.5" />
+                {bridge?.running ? "Listening" : "Stopped"}
+              </Badge>
+            }
+          >
+            <SettingsRow
+              label="Enable LAN bridge"
+              detail="Opens a token-protected WebSocket on 0.0.0.0, port 8765. A backend restart is required."
+            >
+              <Switch
+                label="Enable LAN bridge"
+                checked={editable.settings?.bridge_enabled ?? false}
+                onChange={(next) =>
+                  void editable.patch({ bridge_enabled: next })
+                }
+              />
+            </SettingsRow>
+
+            {bridge?.running ? (
+              <>
+                <div className="space-y-1.5 rounded-xl border border-fg/[0.07] bg-fg/[0.02] px-2.5 py-2">
+                  <p className="text-[9px] tracking-[0.1em] text-fg/68 uppercase">
+                    Desktop address
+                  </p>
+                  <p className="truncate font-mono text-[10.5px] text-fg/85">
+                    {bridge.urls[0]?.replace("/ws", "") ??
+                      `ws://${bridge.host}:${bridge.port}`}
+                  </p>
+                  <p className="text-[10px] text-fg/68">
+                    {bridge.clients} connected ? port {bridge.port}
+                  </p>
+                </div>
+
+                <SettingsRow
+                  label="Pairing token"
+                  detail="Enter this once in the Android app. It stays on this PC."
+                >
+                  <input
+                    readOnly
+                    aria-label="Pairing token"
+                    value={showToken ? bridge.token : "?".repeat(24)}
+                    className="w-[150px] rounded-lg border border-fg/[0.1] bg-fg/[0.04] px-2 py-1 font-mono text-[10px] text-fg/85"
+                  />
+                  <button
+                    type="button"
+                    aria-label={showToken ? "Hide token" : "Show token"}
+                    onClick={() => setShowToken((value) => !value)}
+                    className="flex size-7 items-center justify-center rounded-lg text-fg/68 hover:bg-fg/[0.06] hover:text-fg/90"
+                  >
+                    {showToken ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Copy pairing token"
+                    onClick={() => void copyToken()}
+                    className="flex size-7 items-center justify-center rounded-lg text-fg/68 hover:bg-fg/[0.06] hover:text-fg/90"
+                  >
+                    {copied ? <Sparkles className="size-3.5" /> : <Copy className="size-3.5" />}
+                  </button>
+                </SettingsRow>
+
+                <p className="flex items-center gap-1.5 text-[10px] text-fg/68">
+                  <RefreshCw className="size-3" />
+                  Auto-refreshing every 5 seconds
+                </p>
+              </>
+            ) : (
+              <SettingsNote tone={bridge?.enabled ? "warning" : "neutral"}>
+                {bridge?.enabled
+                  ? "The setting is saved. Restart Compa to bind the LAN socket."
+                  : "Enable the bridge, restart Compa, then pair the Android app with the token shown here."}
+              </SettingsNote>
+            )}
+
+            {bridgeError && <SettingsNote tone="danger">{bridgeError}</SettingsNote>}
           </SettingsCard>
 
           {editable.error && (
