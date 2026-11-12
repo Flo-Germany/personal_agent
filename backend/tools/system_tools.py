@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tools.os_tools import _redact_secrets
+
 MAX_COMMAND_CHARS = 8_000
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_MAX_OUTPUT_CHARS = 12_000
@@ -76,6 +78,33 @@ _INVOKE_EXPRESSION = re.compile(
 )
 _MUTATING_PROPERTY = re.compile(r"(?<![=<>!])\.[A-Za-z_][\w]*\s*=(?!=)")
 _ENV_ASSIGNMENT = re.compile(r"(?i)\$env:[\w]+\s*=")
+
+# The first-token allowlist cannot see inside a script block, so every
+# identifier in a `{ ... }` body is checked against known mutating aliases and
+# native programs. Without this, `Get-ChildItem | ForEach-Object { ni ... }`
+# passed the read-only guard and ran without approval.
+_MUTATING_TOKENS = frozenset(
+    {
+        "ni", "ac", "ri", "cp", "mi", "mv", "rm", "rd", "md", "rmdir",
+        "mkdir", "del", "erase", "ren", "rename", "copy", "move", "sc",
+        "setx", "start", "start-process", "kill", "stop-process",
+        "taskkill", "certutil", "bitsadmin", "curl", "wget",
+        "invoke-webrequest", "invoke-restmethod", "iex",
+        "invoke-expression", "mshta", "wscript", "cscript", "rundll32",
+        "regsvr32", "cmd", "powershell", "pwsh", "python", "python3", "py",
+        "node", "perl", "ruby", "wmic", "schtasks", "reg", "net", "netsh",
+        "robocopy", "xcopy", "takeown", "icacls", "cacls", "attrib",
+        "bcdedit", "diskpart", "format", "vssadmin", "wevtutil", "winget",
+        "shutdown", "mklink", "fsutil", "regedit",
+    }
+)
+_EXECUTABLE_SUFFIXES = (
+    ".exe", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".wsh", ".hta", ".msi", ".scr", ".pif", ".dll", ".py", ".sh",
+)
+_SCRIPT_BLOCK = re.compile(r"\{([^{}]*)\}")
+_BLOCK_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]*")
+_MEMBER_INVOCATION = re.compile(r"(?i)-membername\b")
 
 # Read-only queries are allowlisted, not denylisted. Anything that is not a
 # Get-* cmdlet, one of these collectors/formatters, or a pure string/path
@@ -152,6 +181,17 @@ def _split_commands(command: str) -> list[str]:
     return parts
 
 
+def _blocked_script_body(body: str) -> str | None:
+    """Reject mutating aliases or executable invocations inside a block."""
+    for token in _BLOCK_TOKEN.findall(body):
+        lowered = token.casefold()
+        if lowered in _MUTATING_TOKENS:
+            return f"state-changing command '{token}' inside a query block"
+        if lowered.endswith(_EXECUTABLE_SUFFIXES):
+            return f"executable invocation '{token}' inside a query block"
+    return None
+
+
 def _allowlist_violation(command: str) -> str | None:
     """Fail closed unless every pipeline stage is an allowlisted read cmdlet."""
     raw = _strip_quoted(command)
@@ -159,6 +199,10 @@ def _allowlist_violation(command: str) -> str | None:
         return "command chaining"
     if "`" in raw or "$(" in raw:
         return "expression or subexpression execution"
+    if "@(" in raw:
+        return "array subexpression execution"
+    if _MEMBER_INVOCATION.search(raw):
+        return "pipeline method invocation"
     if _ENV_ASSIGNMENT.search(raw):
         return "environment assignment"
     for part in _split_commands(command):
@@ -177,6 +221,10 @@ def _allowlist_violation(command: str) -> str | None:
         block = _strip_quoted(segment)
         if _FORBIDDEN_IN_BLOCK.search(block):
             return "state-changing command inside a query"
+        for body in _SCRIPT_BLOCK.findall(block):
+            blocked = _blocked_script_body(body)
+            if blocked is not None:
+                return blocked
         if _MUTATING_METHOD.search(block) or _MUTATING_REDIRECT.search(block):
             return "state-changing method or redirection"
         if _MUTATING_PARAMETER.search(block):
@@ -328,6 +376,7 @@ def _run(
     mode: str,
     timeout: float,
     max_output_chars: int,
+    redact: bool = True,
 ) -> dict[str, Any]:
     command = str(command or "").strip()
     if not command:
@@ -398,6 +447,15 @@ def _run(
     ok = not timed_out and exit_code == 0
     truncated = stdout_truncated or stderr_truncated
 
+    redacted = 0
+    if redact:
+        # A read-only query can print a key file or an env file; redact it the
+        # same way read_file_content does before it reaches the model/history.
+        stdout, removed = _redact_secrets(stdout)
+        redacted += removed
+        stderr, removed = _redact_secrets(stderr)
+        redacted += removed
+
     if timed_out:
         message = (
             f"PowerShell {mode} timed out after {timeout:g} seconds and was "
@@ -434,6 +492,8 @@ def _run(
         "duration_ms": round(duration_ms, 1),
         "message": message,
     }
+    if redacted:
+        result["redacted"] = redacted
     if not ok:
         hint = _failure_hint(stderr)
         if hint:
@@ -458,6 +518,7 @@ def run_powershell_query(
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+    redact: bool = True,
 ) -> dict[str, Any]:
     """Run a read-only PowerShell inspection command without approval."""
     command = str(command or "").strip()
@@ -476,6 +537,7 @@ def run_powershell_query(
         mode="query",
         timeout=timeout,
         max_output_chars=max_output_chars,
+        redact=redact,
     )
 
 
@@ -485,6 +547,7 @@ def run_powershell_action(
     description: str = "",
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_output_chars: int = DEFAULT_MAX_OUTPUT_CHARS,
+    redact: bool = True,
 ) -> dict[str, Any]:
     """Run a state-changing PowerShell command after HITL approval."""
     if not str(description or "").strip():
@@ -498,4 +561,5 @@ def run_powershell_action(
         mode="action",
         timeout=timeout,
         max_output_chars=max_output_chars,
+        redact=redact,
     )

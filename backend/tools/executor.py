@@ -402,6 +402,7 @@ class ToolExecutor:
                     command,
                     timeout=tool_settings.powershell_timeout_seconds,
                     max_output_chars=tool_settings.powershell_max_output_chars,
+                    redact=tool_settings.redact_secrets,
                 )
             ),
             "run_powershell_action": (
@@ -410,6 +411,7 @@ class ToolExecutor:
                     description=description,
                     timeout=tool_settings.powershell_timeout_seconds,
                     max_output_chars=tool_settings.powershell_max_output_chars,
+                    redact=tool_settings.redact_secrets,
                 )
             ),
             "start_program": start_program,

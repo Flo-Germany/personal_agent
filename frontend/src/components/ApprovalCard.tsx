@@ -68,7 +68,7 @@ export const ApprovalCard = memo(function ApprovalCard({
                     key={`${action.tool}-${action.description}-${index}`}
                     className="rounded-lg border border-positive/10 bg-positive/[0.025] px-2 py-1.5"
                   >
-                    <p className="break-words whitespace-pre-wrap text-[11px] leading-4 text-fg/80">
+                    <p className="max-h-40 overflow-y-auto break-words whitespace-pre-wrap text-[11px] leading-4 text-fg/80">
                       {action.description}
                     </p>
                     <span className="mt-0.5 inline-block rounded bg-sunken px-1 py-px font-mono text-[8px] text-fg/68">

@@ -814,7 +814,10 @@ def _tool_status_message(name: str, arguments: dict[str, Any]) -> str:
 def _action_description(name: str, arguments: dict[str, Any]) -> str:
     if name == "run_powershell_action":
         explanation = str(arguments.get("description", "")).strip()
-        command = _short_command(arguments.get("command"), 500)
+        # The card is the only consent surface, and the command itself is
+        # capped at 8,000 chars. Showing a 500-char prefix let a benign head
+        # hide the payload that actually ran.
+        command = str(arguments.get("command") or "(missing command)")
         if explanation:
             return f"PowerShell action: {explanation}\nCommand: {command}"
         return f"PowerShell action:\nCommand: {command}"

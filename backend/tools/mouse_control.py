@@ -439,7 +439,7 @@ class SmoothPointer:
         delay = (
             self.settings.type_interval_seconds
             if interval is None
-            else max(0.0, float(interval))
+            else max(0.0, min(float(interval), 0.2))
         )
 
         self.guard.check()
@@ -537,7 +537,7 @@ class SmoothPointer:
         delay = (
             self.settings.type_interval_seconds
             if interval is None
-            else max(0.0, float(interval))
+            else max(0.0, min(float(interval), 0.2))
         )
         self.guard.check()
         with self.guard.synthetic():

@@ -221,6 +221,23 @@ def _program_path(key: str) -> Path:
 
 
 _PROGRAM_SUFFIXES = {".exe", ".com", ".lnk"}
+# Script hosts execute the file they are given. Allowing one as the "editor"
+# turned open_file into arbitrary code execution: approving "open invoice.vbs"
+# ran it. Real editors (VS Code, Notepad, …) stay allowed.
+_SCRIPT_HOSTS = {
+    "wscript.exe",
+    "cscript.exe",
+    "mshta.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "msiexec.exe",
+    "wmic.exe",
+    "bitsadmin.exe",
+    "curl.exe",
+}
 _COMMON_PROGRAM_KEYS = {
     "chrome": ("chrome", "google chrome", "googlechrome"),
     "msedge": ("edge", "microsoft edge", "msedge"),
@@ -474,6 +491,11 @@ def open_file(path: str, program: str) -> dict[str, Any]:
             f"{application} is not a direct executable. Choose the application's "
             ".exe path instead."
         )
+    if application.name.casefold() in _SCRIPT_HOSTS:
+        raise ToolError(
+            f"{application.name} is a script host, not an editor. Choose the "
+            "application you want to view the file in."
+        )
 
     try:
         subprocess.Popen(
@@ -549,6 +571,13 @@ def _absolute_path(value: str | Path) -> Path:
     text = str(value).strip()
     if not text:
         raise ToolError("A non-empty path is required.")
+    # Extended-length and device paths bypass the protected-root comparison
+    # (``Path.resolve`` keeps the ``\\?\`` prefix), so a write could reach
+    # C:\Windows or the profile root without tripping the guard.
+    if text.startswith(("\\\\?\\", "\\\\.\\")):
+        raise ToolError(
+            "Extended-length and device paths (\\\\?\\, \\\\.\\) are not supported."
+        )
 
     try:
         expanded = os.path.expandvars(os.path.expanduser(text))
